@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "music-assistant-fingerprint-server"
+version = "0.1.0"
+description = "Private, queued landmark ingestion and microphone recognition."
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+    "httpx>=0.28,<1",
+    "pydantic-settings>=2.6,<3",
+    "music-assistant-fingerprint @ git+https://github.com/dmoo500/audio-fingerprint.git@7400c5d86e2c799c1f4034201eb4497161363a0d",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
+
+[tool.setuptools.packages.find]
+include = ["fingerprint_server*"]
+
+[tool.setuptools.package-data]
+fingerprint_server = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["soxr", "scipy.*"]
+ignore_missing_imports = true

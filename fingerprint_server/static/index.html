@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Microphone recognition test</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/microphone.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>Microphone recognition test</h1>
+      <p>Record 10 seconds to identify music from your fingerprint reference collection.</p>
+      <p>Microphone audio is sent to this server for recognition only. It is processed in memory,
+        not stored or added to the reference collection. Only previously sampled song sections
+        can be recognized. Close this page to discard your key.</p>
+      <label for="key">Recognition API key (personal key when using the gateway)</label>
+      <input id="key" type="password" autocomplete="off" minlength="24">
+      <label for="application-key">Application token (required in gateway mode only)</label>
+      <input id="application-key" type="password" autocomplete="off" minlength="24">
+      <p>Use a separate fingerprint application token, never a login token from your MA instance.
+        Both keys remain in this page only and are discarded when you close it.</p>
+      <section aria-labelledby="collection-heading">
+        <h2 id="collection-heading">Fingerprint collection</h2>
+        <dl class="counters">
+          <div><dt>Indexed tracks</dt><dd id="references-total">—</dd></div>
+          <div><dt>Partially covered</dt><dd id="references-partial">—</dd></div>
+          <div><dt>Fully covered</dt><dd id="references-full">—</dd></div>
+        </dl>
+        <p>Counts represent unique acoustic references, not unique song titles.
+          Fully covered means the analysis windows cover the whole track without gaps.
+          New full-track analyses cover the complete decoded track; older sampled references
+          may still have gaps. Full coverage does not guarantee recognition.</p>
+        <h3>Upload queue</h3>
+        <dl class="counters">
+          <div><dt>Waiting / retrying</dt><dd id="submissions-queued">—</dd></div>
+          <div><dt>Processing</dt><dd id="submissions-processing">—</dd></div>
+          <div><dt>Processed</dt><dd id="submissions-processed">—</dd></div>
+          <div><dt>Failed</dt><dd id="submissions-failed">—</dd></div>
+        </dl>
+        <p>Upload counts can exceed indexed tracks because duplicate references are merged.</p>
+        <button id="refresh-statistics" type="button">Refresh collection counts</button>
+        <p id="statistics-status" role="status" aria-live="polite">
+          Enter your recognition key to load counts. Updates every 15 seconds while visible.
+        </p>
+      </section>
+      <button id="record" type="button">Record 10 seconds and recognize</button>
+      <p id="status" role="status" aria-live="polite">Ready. Use localhost or HTTPS.</p>
+      <pre id="result"></pre>
+      <p>This is an experimental matcher, not a calibrated confidence estimate.</p>
+    </main>
+  </body>
+</html>

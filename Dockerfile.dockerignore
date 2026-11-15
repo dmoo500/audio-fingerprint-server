@@ -1,0 +1,16 @@
+*
+!music-assistant-fingerprint
+!music-assistant-fingerprint/**
+!music-assistant-fingerprint-server
+!music-assistant-fingerprint-server/**
+**/.git
+**/.venv
+**/.venv*
+**/.env
+**/data
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/build
+**/*.egg-info

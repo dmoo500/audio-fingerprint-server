@@ -1,0 +1,58 @@
+services:
+  fingerprints:
+    build:
+      context: ..
+      dockerfile: music-assistant-fingerprint-server/Dockerfile
+    environment:
+      FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set a private internal upload key}
+      FP_READ_KEY: ${FP_READ_KEY:?Set a private internal read key}
+      FP_GATEWAY_ENABLED: "true"
+      FP_APPLICATION_KEY: ${FP_APPLICATION_KEY:?Set a separate fingerprint application token}
+      FP_MUSICBRAINZ_ENABLED: ${FP_MUSICBRAINZ_ENABLED:-false}
+      FP_MUSICBRAINZ_CONTACT: ${FP_MUSICBRAINZ_CONTACT:-}
+      FP_MUSICBRAINZ_BASE_URL: ${FP_MUSICBRAINZ_BASE_URL:-https://musicbrainz.org/ws/2}
+    volumes:
+      - fingerprints:/data
+    networks:
+      - backend
+      - outbound
+    restart: unless-stopped
+  gateway:
+    image: apache/apisix:3.20.0-debian
+    environment:
+      FP_GATEWAY_ADMIN_KEY: ${FP_GATEWAY_ADMIN_KEY:?Set a private gateway administration key}
+    volumes:
+      - ./gateway/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    ports:
+      - "127.0.0.1:8097:9080"
+      - "127.0.0.1:9180:9180"
+    networks:
+      - backend
+      - administration
+      - outbound
+    depends_on:
+      - fingerprints
+      - etcd
+    restart: unless-stopped
+  etcd:
+    image: quay.io/coreos/etcd:v3.6.5
+    command:
+      - /usr/local/bin/etcd
+      - --name=gateway
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    volumes:
+      - gateway-credentials:/etcd-data
+    networks:
+      - administration
+    restart: unless-stopped
+networks:
+  backend:
+    internal: true
+  administration:
+    internal: true
+  outbound:
+volumes:
+  fingerprints:
+  gateway-credentials:

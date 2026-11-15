@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.egg-info/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+data/
+dist/
+.DS_Store
+compose.local-gateway.yaml

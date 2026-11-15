@@ -1,0 +1,9 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; }
+main { max-width: 42rem; margin: 3rem auto; padding: 1rem; }
+input, button { display: block; box-sizing: border-box; width: 100%; padding: .8rem;
+  margin: .8rem 0; font: inherit; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.counters { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 1rem; }
+.counters div { padding: .8rem; border: 1px solid GrayText; border-radius: .4rem; }
+.counters dd { margin: .4rem 0 0; font-size: 1.8rem; font-weight: bold; }

@@ -1,0 +1,32 @@
+apisix:
+  node_listen: 9080
+  enable_server_tokens: false
+  ssl:
+    enable: false
+deployment:
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+  admin:
+    admin_listen:
+      ip: 0.0.0.0
+      port: 9180
+    allow_admin:
+      - 0.0.0.0/0
+    admin_key:
+      - name: operator
+        key: "${{FP_GATEWAY_ADMIN_KEY}}"
+        role: admin
+  etcd:
+    host:
+      - http://etcd:2379
+    prefix: /fingerprints
+nginx_config:
+  http:
+    enable_access_log: false
+    client_max_body_size: 36m
+plugins:
+  - key-auth
+  - consumer-restriction
+  - limit-count
+  - proxy-rewrite

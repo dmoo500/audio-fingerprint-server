@@ -1,0 +1,18 @@
+services:
+  fingerprints:
+    build:
+      context: ..
+      dockerfile: music-assistant-fingerprint-server/Dockerfile
+    ports:
+      - "127.0.0.1:8097:8097"
+    environment:
+      FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set a private contribution key}
+      FP_READ_KEY: ${FP_READ_KEY:?Set a separate recognition key}
+      FP_MUSICBRAINZ_ENABLED: ${FP_MUSICBRAINZ_ENABLED:-false}
+      FP_MUSICBRAINZ_CONTACT: ${FP_MUSICBRAINZ_CONTACT:-}
+      FP_MUSICBRAINZ_BASE_URL: ${FP_MUSICBRAINZ_BASE_URL:-https://musicbrainz.org/ws/2}
+    volumes:
+      - fingerprints:/data
+    restart: unless-stopped
+volumes:
+  fingerprints:
