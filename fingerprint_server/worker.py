@@ -38,19 +38,36 @@ class Worker:
         self.client = client
         self.musicbrainz = MusicBrainzService(store, settings, client)
         self.wakeup = asyncio.Event()
+        self.manual_pending_pass = False
 
-    async def run(self) -> None:
+    async def run(self, pending_ids: list[str] | None = None) -> None:
         """Process queued work and eligible pending rechecks until cancelled."""
         while True:
             self.wakeup.clear()
             await self.musicbrainz.wait_for_cooldown()
-            row = await run_sync(self.store.claim)
+            if pending_ids is None and self.settings.musicbrainz_enabled:
+                pending_ids = await run_sync(self.store.take_pending_recheck)
+                if pending_ids is not None:
+                    LOGGER.info(
+                        "Manual pending metadata pass started; submissions=%s; "
+                        "deletions disabled; completed rechecks preserved",
+                        len(pending_ids),
+                    )
+            self.manual_pending_pass = pending_ids is not None
+            row = await run_sync(self.store.claim, pending_ids)
             if row is None:
+                if pending_ids is not None:
+                    LOGGER.info("Manual pending metadata pass completed; no deletions requested")
+                    pending_ids = None
+                    self.manual_pending_pass = False
+                    continue
                 try:
                     await asyncio.wait_for(self.wakeup.wait(), timeout=30)
                 except TimeoutError:
                     pass
                 continue
+            if pending_ids is not None:
+                pending_ids.remove(row["id"])
             self.musicbrainz.lookup_call = "-"
             try:
                 submission = await run_sync(decode_submission, row["document"])
@@ -128,6 +145,8 @@ class Worker:
                         "Submission %s verified with MusicBrainz and published", row["id"]
                     )
             except MusicBrainzUnavailable as err:
+                if pending_ids is not None:
+                    pending_ids.append(row["id"])
                 delay = err.delay
                 LOGGER.warning(
                     "MusicBrainz service cooldown: HTTP status=%s; retrying in %s seconds; "
@@ -146,7 +165,11 @@ class Worker:
             except VerificationPending as err:
                 await self._retain_pending(row, str(err), completed_check=True)
             except UnresolvableVerification as err:
-                if self.settings.musicbrainz_enabled and self.settings.housekeeping_enabled:
+                if (
+                    pending_ids is None
+                    and self.settings.musicbrainz_enabled
+                    and self.settings.housekeeping_enabled
+                ):
                     if await run_sync(self.store.delete_submission, row["id"]):
                         LOGGER.warning(
                             "Submission %s deleted as unresolvable: %s; "
@@ -257,7 +280,7 @@ class Worker:
                 self.store.complete_pending_check,
                 row["id"],
                 reason,
-                row["pending_recheck"],
+                row["pending_recheck"] and not self.manual_pending_pass,
             )
             if deleted:
                 LOGGER.warning(
@@ -274,7 +297,11 @@ class Worker:
                     "completed_rechecks=%s; next_check_days=%s; reason=%s; api_call=%s",
                     row["id"],
                     row["pending_rechecks"]
-                    + int(row["pending_recheck"] and self.settings.housekeeping_enabled),
+                    + int(
+                        row["pending_recheck"]
+                        and self.settings.housekeeping_enabled
+                        and not self.manual_pending_pass
+                    ),
                     self.settings.pending_recheck_days,
                     reason,
                     self.musicbrainz.lookup_call,

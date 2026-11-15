@@ -422,6 +422,8 @@ Enabling verification upgrades the database with a private pre-upgrade SQLite ba
 
 ### Pending metadata housekeeping
 
+For a one-time non-destructive operator pass, run `docker compose exec fingerprints python -c 'from fingerprint_server.settings import Settings; from fingerprint_server.store import Store; Store(Settings().database).request_pending_recheck()'` (use `-f compose.gateway.yaml` for the gateway deployment). The running worker picks up the request within its idle polling interval, snapshots existing pending submissions and checks them regardless of their deadline. MusicBrainz verification must be enabled. This pass never deletes submissions or consumes completed rechecks; successful results publish normally and unresolved results remain pending. Service cooldowns still apply, and start/completion are logged. The request is consumed once, not repeated at every restart; an interrupted pass leaves unprocessed rows pending.
+
 Housekeeping runs in the existing worker, only when both MusicBrainz verification and housekeeping are enabled. Configure these environment settings before starting the server; both Compose deployments pass them through. Recreate the backend after changing them.
 
 | Setting | Default | Meaning |

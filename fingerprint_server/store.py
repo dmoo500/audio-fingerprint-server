@@ -290,19 +290,30 @@ class Store:
                 coverage["total"] += 1
             return {"references": coverage, "submissions": uploads}
 
-    def claim(self) -> dict[str, Any] | None:
+    def claim(self, pending_ids: list[str] | None = None) -> dict[str, Any] | None:
         """Atomically claim the oldest eligible queue entry."""
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             now = time.time()
             can_recheck = self.musicbrainz_enabled and self.housekeeping_enabled
-            row = db.execute(
-                "SELECT *,state='pending_metadata' AS pending_recheck FROM submissions "
-                "WHERE (state='queued' AND retry_at<=?) OR "
-                "(? AND state='pending_metadata' AND pending_due_at<=?) "
-                "ORDER BY created_at LIMIT 1",
-                (now, can_recheck, now),
-            ).fetchone()
+            if pending_ids is not None:
+                if not pending_ids:
+                    return None
+                placeholders = ",".join("?" for _ in pending_ids)
+                row = db.execute(
+                    "SELECT *,1 AS pending_recheck FROM submissions "
+                    f"WHERE state='pending_metadata' AND id IN ({placeholders}) "
+                    "ORDER BY created_at LIMIT 1",
+                    pending_ids,
+                ).fetchone()
+            else:
+                row = db.execute(
+                    "SELECT *,state='pending_metadata' AS pending_recheck FROM submissions "
+                    "WHERE (state='queued' AND retry_at<=?) OR "
+                    "(? AND state='pending_metadata' AND pending_due_at<=?) "
+                    "ORDER BY created_at LIMIT 1",
+                    (now, can_recheck, now),
+                ).fetchone()
             if row is None:
                 return None
             db.execute(
@@ -314,6 +325,31 @@ class Store:
             result["attempts"] += 1
             result["pending_recheck"] = bool(row["pending_recheck"])
             return result
+
+    def request_pending_recheck(self) -> None:
+        """Request one non-destructive pending pass by the running ingestion worker."""
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO service_state(key,value) "
+                "VALUES('manual_pending_recheck','1')"
+            )
+
+    def take_pending_recheck(self) -> list[str] | None:
+        """Atomically consume an operator request and snapshot pending submission IDs."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            request = db.execute(
+                "SELECT value FROM service_state WHERE key='manual_pending_recheck'"
+            ).fetchone()
+            if request is None:
+                return None
+            db.execute("DELETE FROM service_state WHERE key='manual_pending_recheck'")
+            return [
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM submissions WHERE state='pending_metadata' ORDER BY created_at"
+                )
+            ]
 
     def finish(
         self,

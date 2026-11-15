@@ -313,3 +313,36 @@ async def test_failed_delete_does_not_log_success(
             await asyncio.wait_for(Worker(store, config, client).run(), 5)
     assert store.get_submission("no-id") is not None
     assert " deleted " not in caplog.text
+
+
+async def test_manual_pass_preserves_unresolvable_and_retry_budget(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    config = online_settings(tmp_path)
+    store = Store(config.database, True)
+    store.initialize()
+    pending(store, "ambiguous")
+    pending(store, "no-id")
+    payload = document()
+    payload["metadata"] = {"duration": 12.0}
+    with store.connect() as db:
+        db.execute("UPDATE submissions SET pending_rechecks=2")
+        db.execute("UPDATE submissions SET document=? WHERE id='no-id'", (json.dumps(payload),))
+    store.request_pending_recheck()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(404))
+    ) as client:
+        task = asyncio.create_task(Worker(store, config, client).run())
+        try:
+            async with asyncio.timeout(5):
+                while "Manual pending metadata pass completed" not in caplog.text:
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert store.take_pending_recheck() is None
+    assert lifecycle_row(store, "ambiguous")["pending_rechecks"] == 2
+    assert lifecycle_row(store, "no-id")["pending_rechecks"] == 2
+    assert " deleted " not in caplog.text
