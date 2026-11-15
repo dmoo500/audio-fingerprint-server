@@ -5,6 +5,8 @@ from pathlib import Path
 from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+MUSICBRAINZ_CACHE_TTL_DAYS = 7
+
 
 class Settings(BaseSettings):
     """Settings for the local, single-process fingerprint service."""
@@ -21,6 +23,11 @@ class Settings(BaseSettings):
     musicbrainz_enabled: bool = False
     musicbrainz_contact: str = ""
     musicbrainz_base_url: HttpUrl = HttpUrl("https://musicbrainz.org/ws/2")
+    housekeeping_enabled: bool = True
+    pending_max_rechecks: int = Field(default=3, ge=1, le=1000)
+    pending_recheck_days: int = Field(
+        default=MUSICBRAINZ_CACHE_TTL_DAYS, ge=MUSICBRAINZ_CACHE_TTL_DAYS
+    )
     minimum_matches: int = Field(default=30, ge=10)
     minimum_fraction: float = Field(default=0.02, gt=0, le=1)
 

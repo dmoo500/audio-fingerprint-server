@@ -363,9 +363,9 @@ async def test_musicbrainz_enrichment_is_cached_without_guessing(
     store.initialize()
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as connection:
         worker = Worker(store, settings(tmp_path, musicbrainz_base_url=base_url), connection)
-        result = await worker.lookup("isrc", "USAAA2600001")
+        result = await worker.musicbrainz.lookup("isrc", "USAAA2600001")
         assert result["status"] == "resolved"
-        assert await worker.lookup("isrc", "USAAA2600001") == result
+        assert await worker.musicbrainz.lookup("isrc", "USAAA2600001") == result
         assert len(calls) == 1
         assert calls[0].url.path == f"{httpx.URL(base_url).path.rstrip('/')}/isrc/USAAA2600001"
         assert calls[0].url.params["inc"] == "artists+releases"
@@ -405,10 +405,10 @@ async def test_musicbrainz_empty_or_ambiguous_lookup_stays_unresolved(
         transport=httpx.MockTransport(lambda _request: httpx.Response(status, json=response))
     ) as connection:
         worker = Worker(store, settings(tmp_path), connection)
-        from fingerprint_server.worker import EnrichmentError
+        from fingerprint_server.musicbrainz import EnrichmentError
 
         with pytest.raises(EnrichmentError, match="not found" if status == 404 else "ambiguous"):
-            await worker.verify({"isrc": "USAAA2600001"})
+            await worker.musicbrainz.verify({"isrc": "USAAA2600001"})
 
 
 async def test_terminal_processing_failure_is_visible(tmp_path: Path) -> None:

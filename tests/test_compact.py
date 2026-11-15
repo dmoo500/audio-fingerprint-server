@@ -50,6 +50,9 @@ def test_existing_documents_are_compacted_without_changing_ids(tmp_path: Path) -
     with store.connect() as db:
         db.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         db.execute("DROP TABLE service_state")
+        db.execute("DROP INDEX submissions_pending_due")
+        for column in ("pending_rechecks", "pending_due_at", "pending_check"):
+            db.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
         db.execute("PRAGMA user_version=2")
     store.initialize()
     with store.connect() as db:

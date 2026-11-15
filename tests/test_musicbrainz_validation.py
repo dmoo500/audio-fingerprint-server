@@ -14,9 +14,10 @@ import pytest
 from test_metadata_gate import document
 from test_server import settings
 
+from fingerprint_server.musicbrainz import EnrichmentError
 from fingerprint_server.schemas import Submission
 from fingerprint_server.store import Store
-from fingerprint_server.worker import EnrichmentError, Worker
+from fingerprint_server.worker import Worker
 
 MBID = "00000000-0000-4000-8000-000000000001"
 OTHER = "00000000-0000-4000-8000-000000000002"
@@ -78,7 +79,7 @@ async def test_identifier_fills_only_missing_fields(
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
         worker = Worker(store, online_settings(tmp_path), client)
         metadata = {"title": " Supplied ", "duration": 12.0, **identifier}
-        result = await worker.verify(metadata)
+        result = await worker.musicbrainz.verify(metadata)
         assert result["title"] == " Supplied "
         assert result["artists"] == ["Artist"]
         assert result["album"] == "Album"
@@ -91,7 +92,9 @@ async def test_agreement_and_conflict(tmp_path: Path) -> None:
     store = online_store(tmp_path)
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
         worker = Worker(store, online_settings(tmp_path), client)
-        assert (await worker.verify({"recording_mbid": MBID, "isrc": ISRC}))["isrc"] == ISRC
+        assert (await worker.musicbrainz.verify({"recording_mbid": MBID, "isrc": ISRC}))[
+            "isrc"
+        ] == ISRC
 
     def conflict(request: httpx.Request) -> httpx.Response:
         if "/recording/" in request.url.path:
@@ -105,7 +108,7 @@ async def test_agreement_and_conflict(tmp_path: Path) -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(conflict)) as client:
         worker = Worker(other_store, online_settings(tmp_path), client)
         with pytest.raises(EnrichmentError, match="conflict"):
-            await worker.verify({"recording_mbid": MBID, "isrc": ISRC})
+            await worker.musicbrainz.verify({"recording_mbid": MBID, "isrc": ISRC})
 
 
 @pytest.mark.parametrize("status", [404, 301])
@@ -116,7 +119,7 @@ async def test_missing_and_redirect_not_approved(tmp_path: Path, status: int) ->
     ) as client:
         worker = Worker(store, online_settings(tmp_path), client)
         with pytest.raises(EnrichmentError):
-            await worker.verify({"recording_mbid": MBID})
+            await worker.musicbrainz.verify({"recording_mbid": MBID})
 
 
 @pytest.mark.parametrize("body", [b"{}", b"[]", b"not-json", b"x" * 2_000_001])
@@ -127,7 +130,7 @@ async def test_malformed_and_oversized_results_not_cached(tmp_path: Path, body: 
     ) as client:
         worker = Worker(store, online_settings(tmp_path), client)
         with pytest.raises(EnrichmentError):
-            await worker.verify({"recording_mbid": MBID})
+            await worker.musicbrainz.verify({"recording_mbid": MBID})
     with store.connect() as db:
         assert db.execute("SELECT count(*) FROM enrichment_cache").fetchone()[0] == 0
 
@@ -145,8 +148,8 @@ async def test_partial_recording_and_release_lists_are_not_guessed(tmp_path: Pat
     ) as client:
         worker = Worker(store, online_settings(tmp_path), client)
         with pytest.raises(EnrichmentError, match="ambiguous"):
-            await worker.verify({"isrc": ISRC})
-        assert "album" not in worker.parse_recording(partial)
+            await worker.musicbrainz.verify({"isrc": ISRC})
+        assert "album" not in worker.musicbrainz.parse_recording(partial)
 
 
 async def test_ambiguous_album_remains_pending(tmp_path: Path) -> None:
@@ -185,8 +188,10 @@ async def test_cache_namespace_negative_cache_and_pacing(tmp_path: Path) -> None
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
         worker = Worker(store, online_settings(tmp_path), client)
-        await asyncio.gather(worker.lookup("isrc", ISRC), worker.lookup("recording", MBID))
-        await worker.lookup("isrc", ISRC)
+        await asyncio.gather(
+            worker.musicbrainz.lookup("isrc", ISRC), worker.musicbrainz.lookup("recording", MBID)
+        )
+        await worker.musicbrainz.lookup("isrc", ISRC)
     assert len(calls) == 2
     assert calls[1] - calls[0] >= 1.09
 
@@ -239,7 +244,7 @@ async def test_transition_preserves_retained_metadata_and_pending_documents(tmp_
 
     online = online_store(tmp_path)
     assert online.get_submission("old")["state"] == "queued"
-    assert online.get_submission("pending")["state"] == "queued"
+    assert online.get_submission("pending")["state"] == "pending_metadata"
     assert online.get_submission("no-id")["state"] == "pending_metadata"
     assert online.statistics()["references"]["excluded"] == 1
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
@@ -302,6 +307,7 @@ async def test_publication_logged_only_after_verification(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO, logger="uvicorn.error.fingerprint.worker")
+    caplog.set_level(logging.INFO, logger="fingerprint_server.worker")
     store = online_store(tmp_path)
     store.submit("valid", json.dumps(document()), 10)
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
@@ -338,9 +344,15 @@ async def test_conflict_cannot_replace_verified_acoustic_duplicate(tmp_path: Pat
         second = document()
         second["metadata"]["recording_mbid"] = OTHER
         store.submit("second", json.dumps(second), 10)
-        result = await run_until_idle(worker, store, "second")
-    assert result["state"] == "pending_metadata"
-    assert "Conflicting" in result["error"]
+        task = asyncio.create_task(worker.run())
+        try:
+            async with asyncio.timeout(5):
+                while store.get_submission("second") is not None:
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
     assert store.match([("0" * 20, 0)])[0]["metadata"]["recording_mbid"] == MBID
 
 
@@ -395,6 +407,9 @@ def test_version_three_wal_backup_includes_committed_rows(tmp_path: Path) -> Non
         connection.execute("PRAGMA wal_autocheckpoint=0")
         connection.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         connection.execute("DROP TABLE service_state")
+        connection.execute("DROP INDEX submissions_pending_due")
+        for column in ("pending_rechecks", "pending_due_at", "pending_check"):
+            connection.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
         connection.execute("PRAGMA user_version=3")
         connection.execute(
             "INSERT INTO submissions(id,document,state,created_at) VALUES('wal','{}','queued',0)"

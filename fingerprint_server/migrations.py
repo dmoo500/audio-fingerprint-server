@@ -13,17 +13,21 @@ from pathlib import Path
 from audio_fingerprint.codec import encode_document
 
 from fingerprint_server.schemas import decode_submission, metadata_complete
+from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 4
+DB_SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE submissions (
     id TEXT PRIMARY KEY, document TEXT NOT NULL, state TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
-    error TEXT, reference_id TEXT, created_at REAL NOT NULL
+    error TEXT, reference_id TEXT, created_at REAL NOT NULL,
+    pending_rechecks INTEGER NOT NULL DEFAULT 0, pending_due_at REAL NOT NULL DEFAULT 0,
+    pending_check INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX submissions_pending ON submissions(state, retry_at, created_at);
+CREATE INDEX submissions_pending_due ON submissions(state, pending_due_at, created_at);
 CREATE TABLE reference_tracks (
     id INTEGER PRIMARY KEY, reference_key TEXT NOT NULL UNIQUE,
     metadata TEXT NOT NULL, created_at REAL NOT NULL,
@@ -107,11 +111,18 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
                 )
                 db.execute("CREATE TABLE service_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 db.execute("PRAGMA user_version=4")
+            if version < 5:
+                _migrate_pending_housekeeping(db)
+                db.execute("PRAGMA user_version=5")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
             raise RuntimeError("Fingerprint database contains orphaned landmark references")
-        db.execute("UPDATE submissions SET state='queued' WHERE state='processing'")
+        db.execute(
+            "UPDATE submissions SET "
+            "state=CASE WHEN pending_check=1 THEN 'pending_metadata' ELSE 'queued' END,"
+            "pending_check=0 WHERE state='processing'"
+        )
         db.commit()
     except (sqlite3.Error, RuntimeError, ValueError):
         db.rollback()
@@ -149,6 +160,8 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
                 expected.add("reference_key")
             if version >= 4:
                 expected.add("verification_version")
+        if table == "submissions" and version >= 5:
+            expected.update({"pending_rechecks", "pending_due_at", "pending_check"})
         if columns != expected:
             raise RuntimeError(
                 f"Unrecognized fingerprint database columns in {table}; refusing to migrate"
@@ -178,6 +191,25 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
         if "WITHOUT ROWID" not in sql.upper():
             raise RuntimeError("Unrecognized fingerprint landmark layout; refusing to migrate")
     return False
+
+
+def _migrate_pending_housekeeping(db: sqlite3.Connection) -> None:
+    """Add durable pending-check state without deleting or immediately retrying old rows."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(submissions)")}
+    if "pending_rechecks" not in columns:
+        db.execute("ALTER TABLE submissions ADD COLUMN pending_rechecks INTEGER NOT NULL DEFAULT 0")
+    if "pending_due_at" not in columns:
+        db.execute("ALTER TABLE submissions ADD COLUMN pending_due_at REAL NOT NULL DEFAULT 0")
+    if "pending_check" not in columns:
+        db.execute("ALTER TABLE submissions ADD COLUMN pending_check INTEGER NOT NULL DEFAULT 0")
+    db.execute(
+        "UPDATE submissions SET pending_rechecks=0,pending_due_at=? WHERE state='pending_metadata'",
+        (time.time() + MUSICBRAINZ_CACHE_TTL_DAYS * 86400,),
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS submissions_pending_due "
+        "ON submissions(state,pending_due_at,created_at)"
+    )
 
 
 def _migrate_publication_gate(db: sqlite3.Connection) -> None:

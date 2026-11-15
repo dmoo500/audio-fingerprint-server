@@ -13,9 +13,10 @@ import pytest
 from test_metadata_gate import document
 from test_musicbrainz_validation import MBID, api, online_settings, online_store
 
+import fingerprint_server.musicbrainz as worker_module
 import fingerprint_server.store as store_module
-import fingerprint_server.worker as worker_module
-from fingerprint_server.worker import MusicBrainzUnavailable, Worker
+from fingerprint_server.musicbrainz import MusicBrainzUnavailable
+from fingerprint_server.worker import Worker
 
 
 class Clock:
@@ -57,10 +58,10 @@ async def test_retry_after(
     ) as client:
         worker = Worker(store, online_settings(tmp_path), client)
         with pytest.raises(MusicBrainzUnavailable) as caught:
-            await worker.lookup("recording", MBID)
+            await worker.musicbrainz.lookup("recording", MBID)
         assert caught.value.status == 429
         assert caught.value.delay == expected
-        assert worker.cooldown_until == clock.monotonic + expected
+        assert worker.musicbrainz.cooldown_until == clock.monotonic + expected
     with store.connect() as db:
         assert db.execute("SELECT count(*) FROM enrichment_cache").fetchone()[0] == 0
 
@@ -107,17 +108,17 @@ async def test_backoff_growth_cache_and_recovery(
         worker = Worker(store, online_settings(tmp_path), client)
         for expected in delays:
             with pytest.raises(MusicBrainzUnavailable) as caught:
-                await worker.lookup("recording", MBID)
+                await worker.musicbrainz.lookup("recording", MBID)
             assert caught.value.delay == expected
         assert sleeps == delays[:-1]
         assert all(b - a >= 1.1 for a, b in zip(calls, calls[1:], strict=False))
-        assert (await worker.lookup("recording", MBID))["status"] == "resolved"
-        assert worker.backoff == 0
+        assert (await worker.musicbrainz.lookup("recording", MBID))["status"] == "resolved"
+        assert worker.musicbrainz.backoff == 0
         with pytest.raises(MusicBrainzUnavailable) as caught:
-            await worker.lookup("recording", "another")
+            await worker.musicbrainz.lookup("recording", "another")
         assert caught.value.delay == 60
-        assert (await worker.lookup("recording", MBID))["status"] == "resolved"
-        assert worker.backoff == 60
+        assert (await worker.musicbrainz.lookup("recording", MBID))["status"] == "resolved"
+        assert worker.musicbrainz.backoff == 60
         assert len(calls) == len(statuses) + 2
 
 
@@ -216,17 +217,17 @@ async def test_lookup_wait_is_shared_and_cancellable(
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
         worker = Worker(store, online_settings(tmp_path), client)
         with pytest.raises(MusicBrainzUnavailable):
-            await worker.lookup("recording", MBID)
-        task = asyncio.create_task(worker.lookup("recording", "other"))
+            await worker.musicbrainz.lookup("recording", MBID)
+        task = asyncio.create_task(worker.musicbrainz.lookup("recording", "other"))
         await asyncio.wait_for(waiting.wait(), 5)
         assert len(calls) == 1
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert not worker.lookup_lock.locked()
+        assert not worker.musicbrainz.lookup_lock.locked()
         release.set()
         with pytest.raises(MusicBrainzUnavailable):
-            await worker.lookup("recording", "other")
+            await worker.musicbrainz.lookup("recording", "other")
         assert calls == [100, 160]
 
 
@@ -240,7 +241,7 @@ async def test_extended_cooldown_cannot_be_shortened(
     async def sleep(delay: float) -> None:
         sleeps.append(delay)
         if len(sleeps) == 1:
-            worker.cooldown_until += 60
+            worker.musicbrainz.cooldown_until += 60
         clock.advance(delay)
 
     monkeypatch.setattr(
@@ -262,12 +263,12 @@ async def test_extended_cooldown_cannot_be_shortened(
     store = online_store(tmp_path)
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
         worker = Worker(store, online_settings(tmp_path), client)
-        worker.cooldown_until = 130
-        worker.backoff = 60
-        assert (await worker.lookup("recording", MBID))["status"] == "not found"
+        worker.musicbrainz.cooldown_until = 130
+        worker.musicbrainz.backoff = 60
+        assert (await worker.musicbrainz.lookup("recording", MBID))["status"] == "not found"
         assert sleeps == [30, 60]
         assert calls == [190]
-        assert worker.backoff == 0
+        assert worker.musicbrainz.backoff == 0
 
 
 async def test_repeated_outages_retry_exhausted_submission_until_success(

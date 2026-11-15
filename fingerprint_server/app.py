@@ -109,7 +109,13 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         settings = configuration or Settings()  # type: ignore[call-arg]
-        store = Store(settings.database, settings.musicbrainz_enabled)
+        store = Store(
+            settings.database,
+            settings.musicbrainz_enabled,
+            settings.housekeeping_enabled,
+            settings.pending_max_rechecks,
+            settings.pending_recheck_days,
+        )
         await run_sync(store.initialize)
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
             worker = Worker(store, settings, client)

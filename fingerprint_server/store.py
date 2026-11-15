@@ -18,6 +18,7 @@ from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 
 from fingerprint_server.migrations import initialize_database
 from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete
+from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 MATCH_QUERY = """
     SELECT t.reference_key AS reference_id,l.offset-q.offset AS delta,q.idx,q.offset
@@ -56,9 +57,19 @@ class QueryTooBroadError(Exception):
 class Store:
     """Single-process SQLite storage; call methods outside the event loop."""
 
-    def __init__(self, path: Path, musicbrainz_enabled: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        musicbrainz_enabled: bool = False,
+        housekeeping_enabled: bool = True,
+        pending_max_rechecks: int = 3,
+        pending_recheck_days: int = MUSICBRAINZ_CACHE_TTL_DAYS,
+    ) -> None:
         self.path = path
         self.musicbrainz_enabled = musicbrainz_enabled
+        self.housekeeping_enabled = housekeeping_enabled
+        self.pending_max_rechecks = pending_max_rechecks
+        self.pending_recheck_days = pending_recheck_days
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -101,9 +112,8 @@ class Store:
                     rows = db.execute(
                         "SELECT s.id FROM submissions s "
                         "LEFT JOIN reference_tracks t ON t.reference_key=s.reference_id "
-                        "WHERE s.state IN ('processed','pending_metadata') AND "
-                        "(s.state='pending_metadata' OR s.reference_id IS NULL OR "
-                        "coalesce(t.verification_version,0)!=?)",
+                        "WHERE s.state='processed' AND "
+                        "(s.reference_id IS NULL OR coalesce(t.verification_version,0)!=?)",
                         (MUSICBRAINZ_VERIFICATION_VERSION,),
                     ).fetchall()
                     for (submission_id,) in rows:
@@ -134,8 +144,13 @@ class Store:
                         elif row["metadata"] is not None:
                             db.execute(
                                 "UPDATE submissions SET state='pending_metadata',"
-                                "error='MusicBrainz identifier unavailable' WHERE id=?",
-                                (submission_id,),
+                                "error='MusicBrainz identifier unavailable',"
+                                "pending_due_at=CASE WHEN pending_due_at>0 THEN pending_due_at "
+                                "ELSE ? END WHERE id=?",
+                                (
+                                    time.time() + self.pending_recheck_days * 86400,
+                                    submission_id,
+                                ),
                             )
                 else:
                     for row in db.execute(
@@ -210,6 +225,8 @@ class Store:
             )
             if pending and self.musicbrainz_enabled and isinstance(payload["metadata"], dict):
                 pending = not _has_identifier(payload["metadata"])
+            if pending and self.musicbrainz_enabled and self.housekeeping_enabled:
+                pending = False
             state = "pending_metadata" if pending else "queued"
             error = (
                 "MusicBrainz identifier unavailable"
@@ -219,8 +236,17 @@ class Store:
                 else None
             )
             db.execute(
-                "INSERT INTO submissions(id,document,state,error,created_at) VALUES(?,?,?,?,?)",
-                (submission_id, document, state, error, time.time()),
+                "INSERT INTO submissions(id,document,state,error,created_at,pending_rechecks,"
+                "pending_due_at,pending_check) VALUES(?,?,?,?,?,?,?,0)",
+                (
+                    submission_id,
+                    document,
+                    state,
+                    error,
+                    time.time(),
+                    0,
+                    time.time() + self.pending_recheck_days * 86400 if pending else 0,
+                ),
             )
         return {"id": submission_id, "state": state}
 
@@ -268,19 +294,25 @@ class Store:
         """Atomically claim the oldest eligible queue entry."""
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            can_recheck = self.musicbrainz_enabled and self.housekeeping_enabled
             row = db.execute(
-                "SELECT * FROM submissions WHERE state='queued' AND retry_at<=? "
+                "SELECT *,state='pending_metadata' AS pending_recheck FROM submissions "
+                "WHERE (state='queued' AND retry_at<=?) OR "
+                "(? AND state='pending_metadata' AND pending_due_at<=?) "
                 "ORDER BY created_at LIMIT 1",
-                (time.time(),),
+                (now, can_recheck, now),
             ).fetchone()
             if row is None:
                 return None
             db.execute(
-                "UPDATE submissions SET state='processing', attempts=attempts+1 WHERE id=?",
-                (row["id"],),
+                "UPDATE submissions SET state='processing',attempts=attempts+1,"
+                "pending_check=? WHERE id=?",
+                (row["pending_recheck"], row["id"]),
             )
             result = dict(row)
             result["attempts"] += 1
+            result["pending_recheck"] = bool(row["pending_recheck"])
             return result
 
     def finish(
@@ -336,12 +368,55 @@ class Store:
             )
 
     def pending_metadata(self, submission_id: str, reason: str = "Incomplete metadata") -> None:
-        """Retain an incomplete document without retrying or publishing it."""
+        """Retain an incomplete document and establish its first lifecycle deadline."""
         with self.connect() as db:
+            now = time.time()
             db.execute(
-                "UPDATE submissions SET state='pending_metadata',error=?,retry_at=0 WHERE id=?",
-                (reason, submission_id),
+                "UPDATE submissions SET state='pending_metadata',error=?,retry_at=0,"
+                "pending_check=0,pending_due_at=CASE WHEN pending_due_at>0 THEN pending_due_at "
+                "ELSE ? END WHERE id=?",
+                (reason, now + self.pending_recheck_days * 86400, submission_id),
             )
+
+    def complete_pending_check(
+        self, submission_id: str, reason: str, pending_recheck: bool
+    ) -> bool:
+        """Record one completed unresolved lookup, deleting only after the configured limit."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT pending_rechecks FROM submissions WHERE id=?", (submission_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            rechecks = int(row["pending_rechecks"])
+            if pending_recheck and self.musicbrainz_enabled and self.housekeeping_enabled:
+                rechecks += 1
+            if (
+                pending_recheck
+                and self.musicbrainz_enabled
+                and self.housekeeping_enabled
+                and rechecks >= self.pending_max_rechecks
+            ):
+                db.execute("DELETE FROM submissions WHERE id=?", (submission_id,))
+                return True
+            db.execute(
+                "UPDATE submissions SET state='pending_metadata',retry_at=0,"
+                "error=?,pending_rechecks=?,pending_due_at=?,pending_check=0 WHERE id=?",
+                (
+                    reason,
+                    rechecks,
+                    time.time() + self.pending_recheck_days * 86400,
+                    submission_id,
+                ),
+            )
+            return False
+
+    def delete_submission(self, submission_id: str) -> bool:
+        """Delete only the durable submission row, never its reference or landmarks."""
+        with self.connect() as db:
+            deleted = db.execute("DELETE FROM submissions WHERE id=?", (submission_id,)).rowcount
+        return deleted > 0
 
     def reference_metadata(self, reference_id: str | None) -> dict[str, Any]:
         """Return retained reference metadata for a previously published submission."""
@@ -374,14 +449,34 @@ class Store:
                 ),
             )
 
-    def defer_musicbrainz(self, submission_id: str, retry_seconds: float) -> None:
+    def defer_musicbrainz(
+        self, submission_id: str, retry_seconds: float, pending_recheck: bool = False
+    ) -> None:
         """Return a claimed submission to the queue without consuming an attempt."""
         with self.connect() as db:
+            if pending_recheck:
+                db.execute(
+                    "UPDATE submissions SET state='pending_metadata',"
+                    "attempts=max(0,attempts-1),pending_check=0,"
+                    "error='MusicBrainz service unavailable',retry_at=0,pending_due_at=? "
+                    "WHERE id=? AND state='processing'",
+                    (time.time() + retry_seconds, submission_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE submissions SET state='queued',attempts=max(0,attempts-1),"
+                    "pending_check=0,error='MusicBrainz service unavailable',retry_at=? "
+                    "WHERE id=? AND state='processing'",
+                    (time.time() + retry_seconds, submission_id),
+                )
+
+    def defer_pending_recheck(self, submission_id: str, error: str, retry_seconds: float) -> None:
+        """Delay a failed pending lookup without consuming a completed check."""
+        with self.connect() as db:
             db.execute(
-                "UPDATE submissions SET state='queued',attempts=max(0,attempts-1),"
-                "error='MusicBrainz service unavailable',retry_at=? "
-                "WHERE id=? AND state='processing'",
-                (time.time() + retry_seconds, submission_id),
+                "UPDATE submissions SET state='pending_metadata',pending_check=0,error=?,"
+                "pending_due_at=? WHERE id=? AND state='processing'",
+                (error, time.time() + retry_seconds, submission_id),
             )
 
     def cached_enrichment(self, key: str) -> dict[str, Any] | None:
@@ -398,7 +493,7 @@ class Store:
         with self.connect() as db:
             db.execute(
                 "INSERT OR REPLACE INTO enrichment_cache VALUES(?,?,?)",
-                (key, json.dumps(document), time.time() + 7 * 86400),
+                (key, json.dumps(document), time.time() + MUSICBRAINZ_CACHE_TTL_DAYS * 86400),
             )
 
     def match(self, query: list[tuple[str, int]]) -> list[dict[str, Any]]:
