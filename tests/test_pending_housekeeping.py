@@ -100,7 +100,7 @@ def test_outage_and_crash_do_not_consume_checks(tmp_path: Path) -> None:
         db.execute("UPDATE submissions SET pending_due_at=0")
     assert store.claim()["pending_recheck"]
     store.initialize()
-    assert lifecycle_row(store)["state"] == "pending_metadata"
+    assert lifecycle_row(store)["state"] == "queued"
     assert store.claim()["pending_rechecks"] == 0
 
 
@@ -129,8 +129,15 @@ def test_schema_four_migration_preserves_all_rows_and_grace(
     pending(store)
     with store.connect() as db:
         db.execute("UPDATE submissions SET document='not-json',created_at=1")
+        db.execute("DROP INDEX submissions_fifo")
         db.execute("DROP INDEX submissions_pending_due")
-        for column in ("pending_rechecks", "pending_due_at", "pending_check"):
+        for column in (
+            "pending_rechecks",
+            "pending_due_at",
+            "pending_check",
+            "enqueued_at",
+            "background_kind",
+        ):
             db.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
         db.execute("PRAGMA user_version=4")
     now = 1_800_000_000.0

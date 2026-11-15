@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     musicbrainz_contact: str = ""
     musicbrainz_base_url: HttpUrl = HttpUrl("https://musicbrainz.org/ws/2")
     housekeeping_enabled: bool = True
+    background_recheck_queue_window: int = Field(default=2, ge=1, le=1000)
     pending_max_rechecks: int = Field(default=3, ge=1, le=1000)
     pending_recheck_days: int = Field(
         default=MUSICBRAINZ_CACHE_TTL_DAYS, ge=MUSICBRAINZ_CACHE_TTL_DAYS

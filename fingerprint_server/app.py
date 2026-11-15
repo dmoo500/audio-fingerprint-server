@@ -115,6 +115,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
             settings.housekeeping_enabled,
             settings.pending_max_rechecks,
             settings.pending_recheck_days,
+            settings.background_recheck_queue_window,
         )
         await run_sync(store.initialize)
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:

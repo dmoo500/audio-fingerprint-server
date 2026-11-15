@@ -64,12 +64,14 @@ class Store:
         housekeeping_enabled: bool = True,
         pending_max_rechecks: int = 3,
         pending_recheck_days: int = MUSICBRAINZ_CACHE_TTL_DAYS,
+        background_recheck_queue_window: int = 2,
     ) -> None:
         self.path = path
         self.musicbrainz_enabled = musicbrainz_enabled
         self.housekeeping_enabled = housekeeping_enabled
         self.pending_max_rechecks = pending_max_rechecks
         self.pending_recheck_days = pending_recheck_days
+        self.background_recheck_queue_window = background_recheck_queue_window
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -137,9 +139,10 @@ class Store:
                             usable = False
                         if usable:
                             db.execute(
-                                "UPDATE submissions SET state='queued',attempts=0,retry_at=0,"
-                                "error=NULL WHERE id=?",
-                                (submission_id,),
+                                "UPDATE submissions SET state='pending_metadata',attempts=0,"
+                                "retry_at=0,error=NULL,background_kind=2,pending_check=0,"
+                                "pending_due_at=?,enqueued_at=0 WHERE id=?",
+                                (time.time(), submission_id),
                             )
                         elif row["metadata"] is not None:
                             db.execute(
@@ -186,8 +189,9 @@ class Store:
                         if complete:
                             db.execute(
                                 "UPDATE submissions SET state='queued',attempts=0,retry_at=0,"
-                                "error=NULL WHERE id=?",
-                                (submission_id,),
+                                "error=NULL,background_kind=0,pending_check=0,enqueued_at=? "
+                                "WHERE id=?",
+                                (time.time(), submission_id),
                             )
                 db.execute(
                     "INSERT OR REPLACE INTO service_state VALUES('musicbrainz_enabled',?)",
@@ -198,6 +202,11 @@ class Store:
                         "INSERT OR REPLACE INTO service_state VALUES('verification_version',?)",
                         (current_version,),
                     )
+            if not self.housekeeping_enabled or not self.musicbrainz_enabled:
+                db.execute(
+                    "UPDATE submissions SET state='pending_metadata',pending_check=0,"
+                    "background_kind=0 WHERE state='queued' AND background_kind=1"
+                )
 
     def submit(
         self, submission_id: str, document: str, limit: int, byte_limit: int = 256_000_000
@@ -237,7 +246,7 @@ class Store:
             )
             db.execute(
                 "INSERT INTO submissions(id,document,state,error,created_at,pending_rechecks,"
-                "pending_due_at,pending_check) VALUES(?,?,?,?,?,?,?,0)",
+                "pending_due_at,pending_check,enqueued_at) VALUES(?,?,?,?,?,?,?,0,?)",
                 (
                     submission_id,
                     document,
@@ -246,6 +255,7 @@ class Store:
                     time.time(),
                     0,
                     time.time() + self.pending_recheck_days * 86400 if pending else 0,
+                    time.time(),
                 ),
             )
         return {"id": submission_id, "state": state}
@@ -295,7 +305,6 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             now = time.time()
-            can_recheck = self.musicbrainz_enabled and self.housekeeping_enabled
             if pending_ids is not None:
                 if not pending_ids:
                     return None
@@ -307,12 +316,12 @@ class Store:
                     pending_ids,
                 ).fetchone()
             else:
+                self._admit_background(db, now)
                 row = db.execute(
-                    "SELECT *,state='pending_metadata' AS pending_recheck FROM submissions "
-                    "WHERE (state='queued' AND retry_at<=?) OR "
-                    "(? AND state='pending_metadata' AND pending_due_at<=?) "
-                    "ORDER BY created_at LIMIT 1",
-                    (now, can_recheck, now),
+                    "SELECT *,background_kind=1 AS pending_recheck FROM submissions "
+                    "WHERE state='queued' AND retry_at<=? "
+                    "ORDER BY enqueued_at,rowid LIMIT 1",
+                    (now,),
                 ).fetchone()
             if row is None:
                 return None
@@ -399,7 +408,8 @@ class Store:
                     ),
                 )
             db.execute(
-                "UPDATE submissions SET state='processed',reference_id=?,error=NULL WHERE id=?",
+                "UPDATE submissions SET state='processed',reference_id=?,error=NULL,"
+                "background_kind=0,pending_check=0 WHERE id=?",
                 (reference_id, submission_id),
             )
 
@@ -409,7 +419,8 @@ class Store:
             now = time.time()
             db.execute(
                 "UPDATE submissions SET state='pending_metadata',error=?,retry_at=0,"
-                "pending_check=0,pending_due_at=CASE WHEN pending_due_at>0 THEN pending_due_at "
+                "pending_check=0,background_kind=0,"
+                "pending_due_at=CASE WHEN pending_due_at>0 THEN pending_due_at "
                 "ELSE ? END WHERE id=?",
                 (reason, now + self.pending_recheck_days * 86400, submission_id),
             )
@@ -438,7 +449,8 @@ class Store:
                 return True
             db.execute(
                 "UPDATE submissions SET state='pending_metadata',retry_at=0,"
-                "error=?,pending_rechecks=?,pending_due_at=?,pending_check=0 WHERE id=?",
+                "error=?,pending_rechecks=?,pending_due_at=?,pending_check=0,"
+                "background_kind=0 WHERE id=?",
                 (
                     reason,
                     rechecks,
@@ -476,11 +488,12 @@ class Store:
         """Record explicit terminal failure or persist a delayed retry."""
         with self.connect() as db:
             db.execute(
-                "UPDATE submissions SET state=?,error=?,retry_at=? WHERE id=?",
+                "UPDATE submissions SET state=?,error=?,retry_at=?,enqueued_at=? WHERE id=?",
                 (
                     "failed" if retry_seconds is None else "queued",
                     error,
                     time.time() + (retry_seconds or 0),
+                    time.time(),
                     submission_id,
                 ),
             )
@@ -493,7 +506,7 @@ class Store:
             if pending_recheck:
                 db.execute(
                     "UPDATE submissions SET state='pending_metadata',"
-                    "attempts=max(0,attempts-1),pending_check=0,"
+                    "attempts=max(0,attempts-1),pending_check=0,background_kind=0,"
                     "error='MusicBrainz service unavailable',retry_at=0,pending_due_at=? "
                     "WHERE id=? AND state='processing'",
                     (time.time() + retry_seconds, submission_id),
@@ -501,16 +514,18 @@ class Store:
             else:
                 db.execute(
                     "UPDATE submissions SET state='queued',attempts=max(0,attempts-1),"
-                    "pending_check=0,error='MusicBrainz service unavailable',retry_at=? "
+                    "pending_check=0,error='MusicBrainz service unavailable',retry_at=?,"
+                    "enqueued_at=? "
                     "WHERE id=? AND state='processing'",
-                    (time.time() + retry_seconds, submission_id),
+                    (time.time() + retry_seconds, time.time(), submission_id),
                 )
 
     def defer_pending_recheck(self, submission_id: str, error: str, retry_seconds: float) -> None:
         """Delay a failed pending lookup without consuming a completed check."""
         with self.connect() as db:
             db.execute(
-                "UPDATE submissions SET state='pending_metadata',pending_check=0,error=?,"
+                "UPDATE submissions SET state='pending_metadata',pending_check=0,"
+                "background_kind=0,error=?,"
                 "pending_due_at=? WHERE id=? AND state='processing'",
                 (error, time.time() + retry_seconds, submission_id),
             )
@@ -593,6 +608,35 @@ class Store:
                 if len(results) == 2:
                     break
             return results
+
+    def _admit_background(self, db: sqlite3.Connection, now: float) -> None:
+        if not self.musicbrainz_enabled:
+            return
+        admitted = db.execute(
+            "SELECT count(*) FROM submissions WHERE state IN ('queued','processing') "
+            "AND background_kind!=0"
+        ).fetchone()[0]
+        available = max(0, self.background_recheck_queue_window - admitted)
+        if not available:
+            return
+        rows = db.execute(
+            "SELECT id,background_kind FROM submissions WHERE state='pending_metadata' "
+            "AND pending_due_at<=? AND (background_kind=2 OR ?) "
+            "ORDER BY pending_due_at,created_at,rowid LIMIT ?",
+            (now, self.housekeeping_enabled, available),
+        ).fetchall()
+        tail = db.execute(
+            "SELECT max(enqueued_at) FROM submissions WHERE state IN ('queued','processing')"
+        ).fetchone()[0]
+        enqueued_at = max(now, tail or now)
+        for row in rows:
+            enqueued_at += 0.000001
+            kind = 2 if row["background_kind"] == 2 else 1
+            db.execute(
+                "UPDATE submissions SET state='queued',retry_at=0,enqueued_at=?,"
+                "background_kind=?,pending_check=? WHERE id=?",
+                (enqueued_at, kind, int(kind == 1), row["id"]),
+            )
 
     @staticmethod
     def _full_coverage(document: str | None, metadata: str) -> bool:

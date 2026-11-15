@@ -62,7 +62,11 @@ async def run_until_idle(worker: Worker, store: Store, identifier: str) -> dict[
         async with asyncio.timeout(8):
             while True:
                 row = store.get_submission(identifier)
-                if row and row["state"] not in ("queued", "processing"):
+                if (
+                    row
+                    and row["state"] not in ("queued", "processing")
+                    and not (row["state"] == "pending_metadata" and row["error"] is None)
+                ):
                     return row
                 await asyncio.sleep(0.01)
     finally:
@@ -209,7 +213,7 @@ async def test_transition_withholds_republishes_and_is_idempotent(tmp_path: Path
     assert offline.match([("0" * 20, 0)])
     online = online_store(tmp_path)
     assert not online.match([("0" * 20, 0)])
-    assert online.get_submission("old")["state"] == "queued"
+    assert online.get_submission("old")["state"] == "pending_metadata"
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
         row = await run_until_idle(Worker(online, online_settings(tmp_path), client), online, "old")
     assert row["state"] == "processed"
@@ -243,7 +247,7 @@ async def test_transition_preserves_retained_metadata_and_pending_documents(tmp_
     offline.submit("no-id", json.dumps(no_id), 10)
 
     online = online_store(tmp_path)
-    assert online.get_submission("old")["state"] == "queued"
+    assert online.get_submission("old")["state"] == "pending_metadata"
     assert online.get_submission("pending")["state"] == "pending_metadata"
     assert online.get_submission("no-id")["state"] == "pending_metadata"
     assert online.statistics()["references"]["excluded"] == 1
@@ -280,7 +284,7 @@ async def test_disable_restores_offline_gate_after_unresolved_lookup(tmp_path: P
     assert offline.match([("0" * 20, 0)])
     online.initialize()
     assert not online.match([("0" * 20, 0)])
-    assert online.get_submission("new")["state"] == "queued"
+    assert online.get_submission("new")["state"] == "pending_metadata"
 
 
 async def test_exhausted_transient_failure_is_not_cached(
@@ -387,9 +391,9 @@ async def test_verification_version_upgrade_withholds_once(tmp_path: Path) -> No
         db.execute("UPDATE service_state SET value='0' WHERE key='verification_version'")
     store.initialize()
     assert not store.match([("0" * 20, 0)])
-    assert store.get_submission("first")["state"] == "queued"
+    assert store.get_submission("first")["state"] == "pending_metadata"
     store.initialize()
-    assert store.get_submission("first")["state"] == "queued"
+    assert store.get_submission("first")["state"] == "pending_metadata"
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
         assert (
             await run_until_idle(Worker(store, online_settings(tmp_path), client), store, "first")
@@ -407,8 +411,15 @@ def test_version_three_wal_backup_includes_committed_rows(tmp_path: Path) -> Non
         connection.execute("PRAGMA wal_autocheckpoint=0")
         connection.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         connection.execute("DROP TABLE service_state")
+        connection.execute("DROP INDEX submissions_fifo")
         connection.execute("DROP INDEX submissions_pending_due")
-        for column in ("pending_rechecks", "pending_due_at", "pending_check"):
+        for column in (
+            "pending_rechecks",
+            "pending_due_at",
+            "pending_check",
+            "enqueued_at",
+            "background_kind",
+        ):
             connection.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
         connection.execute("PRAGMA user_version=3")
         connection.execute(

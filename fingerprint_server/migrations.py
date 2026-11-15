@@ -16,7 +16,7 @@ from fingerprint_server.schemas import decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE submissions (
@@ -24,10 +24,13 @@ CREATE TABLE submissions (
     attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
     error TEXT, reference_id TEXT, created_at REAL NOT NULL,
     pending_rechecks INTEGER NOT NULL DEFAULT 0, pending_due_at REAL NOT NULL DEFAULT 0,
-    pending_check INTEGER NOT NULL DEFAULT 0
+    pending_check INTEGER NOT NULL DEFAULT 0,
+    enqueued_at REAL NOT NULL DEFAULT 0,
+    background_kind INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX submissions_pending ON submissions(state, retry_at, created_at);
 CREATE INDEX submissions_pending_due ON submissions(state, pending_due_at, created_at);
+CREATE INDEX submissions_fifo ON submissions(state,enqueued_at);
 CREATE TABLE reference_tracks (
     id INTEGER PRIMARY KEY, reference_key TEXT NOT NULL UNIQUE,
     metadata TEXT NOT NULL, created_at REAL NOT NULL,
@@ -114,14 +117,18 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
             if version < 5:
                 _migrate_pending_housekeeping(db)
                 db.execute("PRAGMA user_version=5")
+            if version < 6:
+                _migrate_queue_order(db)
+                db.execute("PRAGMA user_version=6")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
             raise RuntimeError("Fingerprint database contains orphaned landmark references")
         db.execute(
             "UPDATE submissions SET "
-            "state=CASE WHEN pending_check=1 THEN 'pending_metadata' ELSE 'queued' END,"
-            "pending_check=0 WHERE state='processing'"
+            "state=CASE WHEN pending_check=1 AND background_kind=0 "
+            "THEN 'pending_metadata' ELSE 'queued' END "
+            "WHERE state='processing'"
         )
         db.commit()
     except (sqlite3.Error, RuntimeError, ValueError):
@@ -162,6 +169,8 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
                 expected.add("verification_version")
         if table == "submissions" and version >= 5:
             expected.update({"pending_rechecks", "pending_due_at", "pending_check"})
+        if table == "submissions" and version >= 6:
+            expected.update({"enqueued_at", "background_kind"})
         if columns != expected:
             raise RuntimeError(
                 f"Unrecognized fingerprint database columns in {table}; refusing to migrate"
@@ -191,6 +200,21 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
         if "WITHOUT ROWID" not in sql.upper():
             raise RuntimeError("Unrecognized fingerprint landmark layout; refusing to migrate")
     return False
+
+
+def _migrate_queue_order(db: sqlite3.Connection) -> None:
+    columns = {row[1] for row in db.execute("PRAGMA table_info(submissions)")}
+    if "enqueued_at" not in columns:
+        db.execute("ALTER TABLE submissions ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0")
+    if "background_kind" not in columns:
+        db.execute("ALTER TABLE submissions ADD COLUMN background_kind INTEGER NOT NULL DEFAULT 0")
+    db.execute(
+        "UPDATE submissions SET enqueued_at=coalesce(created_at,0),"
+        "background_kind=CASE WHEN pending_check=1 THEN 1 "
+        "WHEN reference_id IS NOT NULL THEN 2 ELSE 0 END "
+        "WHERE state IN ('queued','processing')"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS submissions_fifo ON submissions(state,enqueued_at)")
 
 
 def _migrate_pending_housekeeping(db: sqlite3.Connection) -> None:
