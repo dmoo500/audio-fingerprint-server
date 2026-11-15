@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Audio Fingerprint HTTP API</title>
+  <link rel="stylesheet" href="reference.css">
+  <script src="reference.js" defer></script>
+</head>
+<body>
+  <h1>Audio Fingerprint HTTP API</h1>
+  <p>Independent experimental service. Browse operations and schemas below. Request execution is disabled: this page never asks for credentials or contacts an API server.</p>
+  <p><a href="https://github.com/dmoo500/audio-fingerprint-server/blob/main/docs/api.md">API guide</a> | <a href="openapi.json" download>Download OpenAPI JSON</a></p>
+  <p>Protected operations require both X-API-Key (personal key) and X-Application-Key. Direct legacy deployments use only their scope-specific X-API-Key; export a legacy schema as described in the API guide.</p>
+  <label for="filter">Filter operations and schemas</label>
+  <input id="filter" type="search" placeholder="recognize, submission, metadata...">
+  <p id="status" role="status">Loading specification...</p>
+  <main id="reference"></main>
+</body>
+</html>

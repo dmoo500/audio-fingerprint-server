@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { max-width: 70rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
+input { display: block; width: min(95%, 40rem); padding: .6rem; margin: .5rem 0 1rem; }
+details { border: 1px solid #888; border-radius: .3rem; padding: .7rem; margin: .6rem 0; }
+summary { cursor: pointer; font-family: monospace; overflow-wrap: anywhere; }
+pre { overflow: auto; font-size: .9rem; }
+a { color: light-dark(#0759a5, #82bdff); }

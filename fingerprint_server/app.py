@@ -26,6 +26,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.openapi import DocumentedAPI
 from fingerprint_server.schemas import Submission
 from fingerprint_server.settings import Settings
 from fingerprint_server.store import QueryTooBroadError, QueueFullError, Store
@@ -135,7 +136,8 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
                 except asyncio.CancelledError:
                     pass
 
-    application = FastAPI(title="Music Assistant Fingerprint Server", lifespan=lifespan)
+    application = DocumentedAPI(title="Music Assistant Fingerprint Server", lifespan=lifespan)
+    application.state.openapi_gateway = bool(configuration and configuration.gateway_enabled)
 
     def authorize(request: Request, scope: Literal["read", "upload", "statistics"]) -> None:
         """Check scope-specific credentials before reading or parsing any request body."""

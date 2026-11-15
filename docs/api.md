@@ -4,6 +4,18 @@
 
 ## API
 
+### OpenAPI and generated clients
+
+The canonical [OpenAPI 3.1 specification](../openapi.json) describes the APISIX deployment, including concrete responses, both submission encodings, raw PCM bodies and the two required authentication headers. Use it with an OpenAPI 3.1-capable client generator (such as OpenAPI Generator); pin the specification to a release or commit when generating your client. Acoustic coverage and canonical hashing constraints still require client-side implementation; generated models alone cannot enforce the entire fingerprint contract. There is no API contract change or new API major version.
+
+Generate or refresh the gateway artifact from the repository root with `python -m fingerprint_server.openapi`. For a direct deployment, use `python -m fingerprint_server.openapi --legacy --output openapi-legacy.json` instead; legacy read/upload keys are not the gateway's personal keys. The exporter starts no workers, opens no database, contacts no services and requires no credentials. The committed artifact is checked against generation by `pytest -q tests/test_openapi.py` and the OpenAPI workflow. Regenerate it after API or schema-generation dependency updates.
+
+FastAPI's backend `/openapi.json`, `/docs` and `/redoc` endpoints describe the running deployment's authentication. APISIX does not expose these endpoints, and this work does not change gateway routing or CORS. Gateway security is an AND requirement: `X-API-Key` and `X-Application-Key` belong to one security requirement object, not two alternative objects. Gateway errors may differ from backend error models; treat HTTP status and optional `Retry-After` independently of an error body's shape.
+
+A self-contained, searchable API reference is prepared in [docs/reference](reference/). It uses only bundled HTML, CSS and JavaScript with no CDN, analytics or remote validator, and does not execute API requests or collect credentials. The [Pages workflow](../.github/workflows/api-docs.yaml) publishes only those assets and the specification. Enable GitHub Pages with **GitHub Actions** as the source in repository Settings → Pages before publishing the workflow; once deployed, the reference is available at `https://dmoo500.github.io/audio-fingerprint-server/`. GitHub's repository viewer shows JSON as source, not as an interactive OpenAPI page. To preview locally, copy the three reference assets and `openapi.json` into a temporary directory and serve it with `python -m http.server`; all documentation commands otherwise assume the repository root.
+
+### Endpoints
+
 All mutation/status calls require the upload key; recognition requires the read key in `X-API-Key` in legacy mode. In the optional gateway mode, every protected request instead carries a personal key in `X-API-Key` **and** the fingerprint application's token in `X-Application-Key`. Keys must differ and each contain at least 24 characters.
 
 - `POST /api/v1/dejavu/submissions`: v2 JSON document, max 36,000,000 bytes and

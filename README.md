@@ -20,7 +20,7 @@ This is an experimental service. Recognition quality depends on indexed coverage
 | --- | --- |
 | [Architecture and data flow](docs/architecture.md) | Contribution, queue processing and microphone recognition diagrams; database tables |
 | [Setup and deployment](docs/deployment.md) | Local installation, Docker, logging, DoS admission controls, backups and migrations |
-| [HTTP API](docs/api.md) | Endpoints, credentials, limits and fingerprint-format compatibility |
+| [HTTP API](docs/api.md) | Endpoints, [OpenAPI specification](openapi.json), generated clients, credentials and limits |
 | [Credentials and APISIX gateway](docs/gateway.md) | Personal keys, application tokens, gateway setup, rotation and rollback |
 | [MusicBrainz and pending metadata](docs/metadata.md) | Verification, cooldowns, housekeeping, shared FIFO queue and manual rechecks |
 | [Benchmarks](docs/benchmarks.md) | Storage and codec measurements, charts and short-capture experiments |
