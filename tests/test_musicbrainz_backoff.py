@@ -106,9 +106,9 @@ async def test_backoff_growth_cache_and_recovery(
         assert worker.backoff == 0
         with pytest.raises(MusicBrainzUnavailable) as caught:
             await worker.lookup("recording", "another")
-        assert caught.value.delay == 30
+        assert caught.value.delay == 120
         assert (await worker.lookup("recording", MBID))["status"] == "resolved"
-        assert worker.backoff == 30
+        assert worker.backoff == 120
         assert len(calls) == 9
 
 
@@ -165,7 +165,9 @@ async def test_deferral_preserves_attempts_and_blocks_next_claim(
                 ).fetchone()[0]
             assert retry_at >= time.time() + 115
             assert "HTTP status=503" in caplog.text
+            assert "retrying in 120 seconds" in caplog.text
             assert "attempt preserved" in caplog.text
+            assert "api_call=GET /isrc/USAAA2600001" in caplog.text
             assert len(calls) == 1
         finally:
             task.cancel()
@@ -216,7 +218,7 @@ async def test_lookup_wait_is_shared_and_cancellable(
         release.set()
         with pytest.raises(MusicBrainzUnavailable):
             await worker.lookup("recording", "other")
-        assert calls == [100, 130]
+        assert calls == [100, 220]
 
 
 async def test_extended_cooldown_cannot_be_shortened(
@@ -299,14 +301,14 @@ async def test_repeated_outages_retry_exhausted_submission_until_success(
             assert await asyncio.wait_for(waiting.get(), 5) == 120
             assert store.get_submission("first")["attempts"] == 2
             resume.put_nowait(None)
-            assert await asyncio.wait_for(waiting.get(), 5) == 60
+            assert await asyncio.wait_for(waiting.get(), 5) == 240
             assert store.get_submission("first")["attempts"] == 2
             resume.put_nowait(None)
             async with asyncio.timeout(5):
                 while store.get_submission("first")["state"] != "processed":
                     await asyncio.sleep(0.01)
             assert store.get_submission("first")["attempts"] == 3
-            assert calls == [100, 220, 280]
+            assert calls == [100, 220, 460]
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import sqlite3
 import stat
 import time
@@ -292,8 +293,38 @@ async def test_exhausted_transient_failure_is_not_cached(
     assert row["attempts"] == 3
     assert row["error"] == "Metadata lookup unavailable"
     assert "HTTP status=500; attempt=3; retry_seconds=None" in caplog.text
+    assert f"api_call=GET /isrc/{ISRC}" in caplog.text
     with store.connect() as db:
         assert db.execute("SELECT count(*) FROM enrichment_cache").fetchone()[0] == 0
+
+
+async def test_publication_logged_only_after_verification(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="uvicorn.error.fingerprint.worker")
+    store = online_store(tmp_path)
+    store.submit("valid", json.dumps(document()), 10)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
+        result = await run_until_idle(
+            Worker(store, online_settings(tmp_path), client), store, "valid"
+        )
+    assert result["state"] == "processed"
+    assert "Submission valid verified with MusicBrainz and published" in caplog.text
+    caplog.clear()
+    missing = document()
+    missing["fingerprints"] = [("1" * 20, 0)]
+    missing["metadata"].pop("isrc", None)
+    missing["metadata"]["recording_mbid"] = OTHER
+    store.submit("missing", json.dumps(missing), 10)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(404))
+    ) as client:
+        result = await run_until_idle(
+            Worker(store, online_settings(tmp_path), client), store, "missing"
+        )
+    assert result["state"] == "pending_metadata"
+    assert "verified with MusicBrainz and published" not in caplog.text
+    assert f"api_call=GET /recording/{OTHER}" in caplog.text
 
 
 async def test_conflict_cannot_replace_verified_acoustic_duplicate(tmp_path: Path) -> None:

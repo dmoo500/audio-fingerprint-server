@@ -29,6 +29,7 @@ from fingerprint_server.settings import Settings
 from fingerprint_server.store import MUSICBRAINZ_VERIFICATION_VERSION, Store
 
 LOGGER = logging.getLogger(__name__)
+PUBLICATION_LOGGER = logging.getLogger("uvicorn.error.fingerprint.worker")
 
 
 def _present(value: Any) -> bool:
@@ -83,6 +84,7 @@ class Worker:
         self.lookup_lock = asyncio.Lock()
         self.cooldown_until = 0.0
         self.backoff = 0.0
+        self.lookup_call = "-"
 
     async def _wait_until(self, deadline: float) -> None:
         while (delay := max(deadline, self.cooldown_until) - time.monotonic()) > 0:
@@ -100,6 +102,7 @@ class Worker:
                 except TimeoutError:
                     pass
                 continue
+            self.lookup_call = "-"
             try:
                 submission = await run_sync(decode_submission, row["document"])
                 metadata = submission.metadata.model_dump(exclude_none=True)
@@ -165,17 +168,28 @@ class Worker:
                     await run_sync(self.store.pending_metadata, row["id"], reason)
                     continue
                 await run_sync(self.publish, row["id"], submission, metadata, row["reference_id"])
+                if self.settings.musicbrainz_enabled:
+                    PUBLICATION_LOGGER.info(
+                        "Submission %s verified with MusicBrainz and published", row["id"]
+                    )
             except MusicBrainzUnavailable as err:
                 delay = max(0.0, self.cooldown_until - time.monotonic())
                 LOGGER.warning(
-                    "MusicBrainz service cooldown: HTTP status=%s; retry_seconds=%s; "
-                    "submission=%s; attempt preserved",
+                    "MusicBrainz service cooldown: HTTP status=%s; retrying in %s seconds; "
+                    "submission=%s; attempt preserved; api_call=%s",
                     err.status,
-                    delay,
+                    math.ceil(delay),
                     row["id"],
+                    self.lookup_call,
                 )
                 await run_sync(self.store.defer_musicbrainz, row["id"], delay)
             except EnrichmentError as err:
+                LOGGER.warning(
+                    "Submission %s metadata verification pending: %s; api_call=%s",
+                    row["id"],
+                    err,
+                    self.lookup_call,
+                )
                 await run_sync(self.store.pending_metadata, row["id"], str(err))
             except (ValidationError, ValueError) as err:
                 LOGGER.error("Submission %s failed validation: %s", row["id"], type(err).__name__)
@@ -191,12 +205,13 @@ class Worker:
                 )
                 LOGGER.warning(
                     "Submission %s metadata lookup failed: %s; HTTP status=%s; "
-                    "attempt=%s; retry_seconds=%s",
+                    "attempt=%s; retry_seconds=%s; api_call=%s",
                     row["id"],
                     type(err).__name__,
                     status,
                     row["attempts"],
                     retry,
+                    self.lookup_call,
                 )
                 await run_sync(self.store.fail, row["id"], "Metadata lookup unavailable", retry)
 
@@ -277,6 +292,7 @@ class Worker:
     async def lookup(self, kind: str, identifier: str) -> dict[str, Any]:
         """Fetch and cache a bounded, typed identifier lookup."""
         async with self.lookup_lock:
+            self.lookup_call = f"GET /{kind}/{identifier}"
             return await self._lookup(kind, identifier)
 
     async def _lookup(self, kind: str, identifier: str) -> dict[str, Any]:
@@ -300,7 +316,8 @@ class Worker:
             follow_redirects=False,
         ) as response:
             if response.status_code in (429, 502, 503):
-                self.backoff = min(900.0, self.backoff * 2 if self.backoff else 30.0)
+                minimum = 120.0 if response.status_code == 503 else 30.0
+                self.backoff = min(900.0, max(minimum, self.backoff * 2))
                 delay = max(self.backoff, _retry_after(response.headers.get("Retry-After")))
                 now = time.monotonic()
                 self.cooldown_until = max(self.cooldown_until, now + delay)
