@@ -67,18 +67,21 @@ class Store:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(reference_tracks)")}
             if "publication_ready" not in columns:
                 db.execute(
                     "ALTER TABLE reference_tracks ADD COLUMN "
                     "publication_ready INTEGER NOT NULL DEFAULT 0"
                 )
-                for row in db.execute("SELECT id,metadata FROM reference_tracks"):
-                    if self._complete_json(row["metadata"]):
-                        db.execute(
-                            "UPDATE reference_tracks SET publication_ready=1 WHERE id=?",
-                            (row["id"],),
-                        )
+            for row in db.execute(
+                "SELECT id,metadata FROM reference_tracks WHERE publication_ready=0"
+            ):
+                if self._complete_json(row["metadata"]):
+                    db.execute(
+                        "UPDATE reference_tracks SET publication_ready=1 WHERE id=?",
+                        (row["id"],),
+                    )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS references_ready "
                 "ON reference_tracks(publication_ready,id)"

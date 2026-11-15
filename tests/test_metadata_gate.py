@@ -208,6 +208,19 @@ def test_legacy_complete_reference_remains_searchable(tmp_path: Path) -> None:
     assert store.statistics()["references"] == {"total": 1, "partial": 1, "full": 0, "excluded": 0}
 
 
+def test_interrupted_publication_backfill_recovers(tmp_path: Path) -> None:
+    """An existing column without its backfill does not permanently hide complete references."""
+    store = legacy_store(tmp_path / "legacy.db", json.dumps(metadata()))
+    with store.connect() as db:
+        db.execute(
+            "ALTER TABLE reference_tracks ADD COLUMN publication_ready INTEGER NOT NULL DEFAULT 0"
+        )
+    for _ in range(2):
+        store.initialize()
+        assert store.match([("0" * 20, 0)])[0]["metadata"] == metadata()
+        assert store.get_submission("old")["state"] == "processed"
+
+
 def test_store_publish_defense_and_pending_capacity(tmp_path: Path) -> None:
     """Incomplete metadata cannot merge into a published reference or bypass queue limits."""
     store = Store(tmp_path / "gate.db")
