@@ -77,8 +77,8 @@ covers the **acoustic content and coverage**, excluding metadata. Multiple submi
 can therefore point to one reference, and a later duplicate does not overwrite the
 first published complete metadata. An exact acoustic duplicate with complete metadata can
 make an excluded legacy reference searchable, without deleting its landmarks or original
-submission. Different encodings or different sampled passages are not
-automatically merged into one song.
+submission. Compact and legacy encodings of the same canonical document share an ID.
+Different acoustic formats or sampled passages are not automatically merged into one song.
 
 Publication requires a nonblank title, at least one nonblank artist, a nonblank album,
 a positive finite duration, and either a valid ISRC or a recording UUID. Whitespace is
@@ -129,7 +129,7 @@ history tables. Much of the structured input is retained as JSON:
 
 | Persistent table | Contents | Purpose |
 | --- | --- | --- |
-| `submissions` | Original canonical JSON, queue state, attempts, retry time, error and published reference ID | Durable processing, duplicate upload handling and status; JSON includes analysis windows and supplied metadata |
+| `submissions` | Legacy or compact JSON, queue state, attempts, retry time, error and published reference ID | Durable processing, duplicate upload handling and status; JSON includes analysis windows and supplied metadata |
 | `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time and publication readiness | Searchable references and retained legacy references excluded for incomplete metadata, including optional enrichment |
 | `landmarks` | Ten-byte binary hash, internal reference ID and absolute offset in FFT hops | Compact searchable acoustic index; potentially many rows per reference |
 | `enrichment_cache` | ISRC, lookup result JSON and expiry | Cache successful, empty and ambiguous MusicBrainz results; normally empty when enrichment is disabled |
@@ -235,21 +235,24 @@ port; do not publish the backend.
 
 ### Database upgrades and version policy
 
-Three independent versions describe different contracts:
+Four independent versions describe different contracts:
 
 | Version | Current value | When it changes |
 | --- | --- | --- |
-| Database schema (`PRAGMA user_version`, `DB_SCHEMA_VERSION`) | 2 | Stored tables, columns or indexes need a migration |
+| Database schema (`PRAGMA user_version`, `DB_SCHEMA_VERSION`) | 3 | Stored layout or document encoding needs a migration |
 | HTTP API major version | `/api/v1` | An incompatible request/response contract requires a new API major version |
 | Fingerprint format (`format_id`) | v1 and v2 supported | Acoustic parameters or coverage semantics change |
+| Landmark encoding (`fingerprints_encoding`) | `sha1-80-offset-delta-v1` or legacy JSON | Lossless landmark representation changes |
 
 DB version 0 denotes the original unversioned databases, with or without the
 publication-readiness column. Migration 1 completes the publication gate. Migration 2
 converts hashes to binary storage and assigns internal integer reference IDs.
-Public reference keys, submission IDs, original documents, metadata, offsets, cache
+Public reference keys, submission IDs, decoded documents, metadata, offsets, cache
 entries and publication decisions are retained. This is a storage change, not a
 fingerprint algorithm or HTTP API change; producers need no update or reanalysis.
-New installations create schema 2 directly.
+Migration 3 compacts existing valid canonical submission documents using the shared codec.
+Invalid or noncanonical records are logged and retained unchanged; migration never invents
+replacement IDs. New installations create schema 3 directly.
 
 Before upgrading an existing database, startup creates a consistent SQLite backup beside
 it named `<database>.pre-v<old-version>-<timestamp>.bak` and logs its path. The backup
@@ -288,12 +291,20 @@ token in `X-Application-Key`. Keys must differ and each contain at least 24 char
 - `POST /api/v1/dejavu/submissions`: v2 JSON document, max 36,000,000 bytes and
   1,000,000 landmarks, up to 30 minutes of complete coverage. Legacy v1 documents
   retain their 2,000,000-byte / 100,000-landmark / three-window limits.
-  `Idempotency-Key` is the SHA-256 of canonical JSON (`sort_keys=True`, compact separators,
-  Python's default ASCII escaping). HTTP 202 returns the durable state (`queued`,
+  Legacy pairs and compact `sha1-80-offset-delta-v1` documents are accepted.
+  Size limits apply to the upload and decoded canonical document, so packing does not
+  bypass limits. `Idempotency-Key` is the SHA-256 of **decoded canonical JSON**, without
+  `fingerprints_encoding` (`sort_keys=True`, compact separators, Python's default ASCII
+  escaping). HTTP 202 returns the durable state (`queued`,
   `processing` or `pending_metadata`), not a publication acknowledgement.
   HTTP 200 `processed` acknowledges an already published duplicate.
 - `GET /api/v1/dejavu/submissions/{id}`: processing state, attempts, explicit failure
   and published reference ID. A terminally failed repeated submission returns HTTP 409.
+- `GET /api/v1/dejavu/capabilities`: upload-authenticated supported API major,
+  acoustic formats, landmark encodings and document-size limit. Deploy the updated receiver
+  and reconfigure gateway routes before updating the producer to library 0.3.0.
+  This compatible addition keeps `/api/v1`; an old receiver is explicitly rejected by
+  the compact producer, not silently treated as supporting the codec.
 - `POST /api/v1/dejavu/recognize?sample_rate=48000&channels=1`:
   `application/octet-stream`, little-endian float32 PCM, 3 to 15 seconds,
   8 to 192 kHz, one or two channels. No audio file/container decoding.
@@ -329,7 +340,7 @@ Statistics have a separate 30 requests/minute budget, so refreshes do not consum
 Repetitive queries with excessive candidate counts fail explicitly rather than returning
 a misleading match. The queue is bounded by submission count and by 256,000,000 bytes of
 queued, processing and pending-metadata
-canonical JSON (`FP_QUEUE_BYTES_LIMIT`); full queues return 503 with Retry-After.
+stored JSON (`FP_QUEUE_BYTES_LIMIT`); full queues return 503 with Retry-After.
 This is a private pilot, not a hardened anonymous public contribution service.
 
 ### Upgrade from sampled references
@@ -395,7 +406,8 @@ token using a constant-time comparison. The gateway does not manufacture or subs
 the application token. It replaces `X-API-Key` with the internal read/upload key only
 after personal-key authentication. An application token alone, a personal key alone,
 or forged consumer headers cannot grant API access. The backend ignores consumer
-headers; APISIX uses its authenticated consumer context for permissions and limits.
+headers for permissions; APISIX uses its authenticated consumer context for permissions
+and limits. The verified consumer username is forwarded only for audit logging.
 
 Personal credentials and gateway configuration live in APISIX's separate etcd volume,
 not the fingerprint database. No fingerprint schema migration is needed. `FP_UPLOAD_KEY`
@@ -479,8 +491,20 @@ gateway replicas would need shared counter storage; the backend remains single-p
 
 Back up both the fingerprint collection and the etcd credential/configuration store
 using their respective supported backup mechanisms. The etcd volume contains personal
-keys and internal upstream secrets; treat it as sensitive. Access logs are disabled in
-this gateway configuration; never enable credential logging or put keys in URLs.
+keys and internal upstream secrets; treat it as sensitive.
+
+Gateway Docker logs show method, path and response status.
+Backend logs record successful authentication with the verified consumer ID, scope and the application's
+stable `fingerprint` label. This pilot has one configured application token, not a
+multi-application registry. Public and rejected requests do not establish an application
+identity; legacy shared-key mode has no individual user/application IDs.
+No API keys, key fingerprints, credential headers, query strings or request bodies are
+included in the audit format. Do not put credentials in URLs.
+
+Use the logged consumer ID with `gateway revoke <consumer-id>` to block that user;
+other users are unaffected. Blocking the single application requires rotating its
+configured token and recreating the backend. Protect and rotate logs too: consumer IDs
+are operational identifiers, not anonymous data.
 
 Changing an internal read/upload secret requires recreating the backend with its new
 environment **and** rerunning `configure` to update gateway routes. Changing the

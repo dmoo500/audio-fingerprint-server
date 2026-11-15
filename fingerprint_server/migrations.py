@@ -9,10 +9,12 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from fingerprint_server.schemas import metadata_complete
+from music_assistant_fingerprint.codec import encode_document
+
+from fingerprint_server.schemas import decode_submission, metadata_complete
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE submissions (
@@ -94,6 +96,9 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
             if version < 2:
                 _migrate_binary_landmarks(db)
                 db.execute("PRAGMA user_version=2")
+            if version < 3:
+                _migrate_compact_documents(db)
+                db.execute("PRAGMA user_version=3")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
@@ -231,3 +236,18 @@ def _hash_bytes(digest: str) -> bytes:
     if len(result) != 10:
         raise ValueError("Invalid stored landmark hash")
     return result
+
+
+def _migrate_compact_documents(db: sqlite3.Connection) -> None:
+    for row in db.execute("SELECT id,document FROM submissions"):
+        try:
+            document = json.loads(row[1])
+            decode_submission(row[1])
+            compact = encode_document(document)
+            encoded = json.dumps(compact, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError, UnicodeError) as err:
+            LOGGER.warning(
+                "Retaining unconvertible fingerprint submission %s: %s", row[0], type(err).__name__
+            )
+            continue
+        db.execute("UPDATE submissions SET document=? WHERE id=?", (encoded, row[0]))

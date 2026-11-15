@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import AsyncIterator
@@ -19,6 +20,7 @@ import soxr
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from music_assistant_fingerprint import MAX_DOCUMENT_BYTES, SAMPLE_RATE, decode_pcm, fingerprint
+from music_assistant_fingerprint.codec import ENCODING_ID, decode_document
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
@@ -30,6 +32,7 @@ from fingerprint_server.store import QueryTooBroadError, QueueFullError, Store
 from fingerprint_server.worker import Worker
 
 LOGGER = logging.getLogger(__name__)
+AUDIT_LOGGER = logging.getLogger("uvicorn.error.fingerprint.auth")
 MAX_PCM_BYTES = 15 * 192000 * 2 * 4
 STATIC = Path(__file__).with_name("static")
 
@@ -57,13 +60,21 @@ async def bounded_body(request: Request, limit: int) -> bytes:
 def parse_submission(raw: bytes, key: str) -> tuple[str, str]:
     """Validate the canonical producer document and its SHA-256 idempotency key."""
     try:
-        Submission.model_validate_json(raw)
         document = json.loads(raw)
+        if not isinstance(document, dict):
+            raise ValueError("Fingerprint document must be an object")
+        decoded = decode_document(document)
+        identity = json.dumps(decoded, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        Submission.model_validate_json(identity)
         canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
     except (ValidationError, ValueError, UnicodeError) as err:
         raise HTTPException(422, "Invalid fingerprint document or coverage") from err
-    submission_id = hashlib.sha256(canonical.encode()).hexdigest()
-    if document["format_id"] == "ma-dejavu-landmarks-v1" and len(raw) > 2_000_000:
+    submission_id = hashlib.sha256(identity.encode()).hexdigest()
+    if len(identity.encode()) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(413, "Decoded submission exceeds the size limit")
+    if document["format_id"] == "ma-dejavu-landmarks-v1" and (
+        len(raw) > 2_000_000 or len(identity.encode()) > 2_000_000
+    ):
         raise HTTPException(413, "Legacy submission exceeds the size limit")
     if not hmac.compare_digest(key, submission_id):
         raise HTTPException(422, "Idempotency-Key must be the canonical document SHA-256")
@@ -143,6 +154,21 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
         if len(times) >= (60 if scope == "upload" else 30):
             raise HTTPException(429, "Request rate limit reached", headers={"Retry-After": "60"})
         times.append(now)
+        username = "-"
+        if settings.gateway_enabled:
+            authenticated_user = request.headers.get("X-Consumer-Username", "")
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", authenticated_user):
+                username = authenticated_user
+            else:
+                AUDIT_LOGGER.warning("Authenticated gateway request has no valid consumer identity")
+        AUDIT_LOGGER.info(
+            "authenticated user=%s application=%s scope=%s method=%s route=%s",
+            username,
+            "fingerprint" if settings.gateway_enabled else "-",
+            scope,
+            request.method,
+            request.scope["route"].path,
+        )
 
     @application.middleware("http")
     async def security_headers(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -170,6 +196,16 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
         result = await run_sync(request.app.state.store.statistics)
         result["worker_available"] = not request.app.state.worker_task.done()
         return result
+
+    @application.get("/api/v1/dejavu/capabilities")
+    async def capabilities(request: Request) -> dict[str, Any]:
+        authorize(request, "upload")
+        return {
+            "api_version": 1,
+            "fingerprint_formats": ["ma-dejavu-landmarks-v1", "ma-dejavu-landmarks-v2"],
+            "fingerprint_encodings": ["json", ENCODING_ID],
+            "max_document_bytes": MAX_DOCUMENT_BYTES,
+        }
 
     @application.post("/api/v1/dejavu/submissions")
     async def submit(request: Request) -> JSONResponse:

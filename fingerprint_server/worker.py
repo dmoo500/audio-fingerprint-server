@@ -14,7 +14,7 @@ import httpx
 from pydantic import ValidationError
 
 from fingerprint_server.async_utils import run_sync
-from fingerprint_server.schemas import Submission, metadata_complete
+from fingerprint_server.schemas import Submission, decode_submission, metadata_complete
 from fingerprint_server.settings import Settings
 from fingerprint_server.store import Store
 
@@ -47,7 +47,7 @@ class Worker:
                     pass
                 continue
             try:
-                submission = await run_sync(Submission.model_validate_json, row["document"])
+                submission = await run_sync(decode_submission, row["document"])
                 metadata = submission.metadata.model_dump(exclude_none=True)
                 if not metadata_complete(metadata):
                     await run_sync(self.store.pending_metadata, row["id"])
@@ -61,7 +61,7 @@ class Worker:
                     ):
                         metadata["musicbrainz"]["status"] = "conflict"
                 await run_sync(self.publish, row["id"], submission, metadata)
-            except (ValidationError, EnrichmentError) as err:
+            except (ValidationError, ValueError, EnrichmentError) as err:
                 LOGGER.error("Submission %s failed validation: %s", row["id"], type(err).__name__)
                 await run_sync(
                     self.store.fail, row["id"], "Invalid reference or metadata response", None

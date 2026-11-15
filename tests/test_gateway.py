@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -117,6 +118,43 @@ async def test_two_token_upload_and_recognition(tmp_path: Path) -> None:
             assert 'id="application-key"' in page.text
 
 
+async def test_audit_logs_only_authenticated_user_and_application(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Audit logs expose revocable identities, never credentials or unverified identities."""
+    caplog.set_level(logging.INFO, logger="uvicorn.error.fingerprint.auth")
+    application = create_app(
+        settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION))
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/v1/dejavu/capabilities",
+                headers={
+                    "X-API-Key": UPLOAD,
+                    "X-Application-Key": APPLICATION,
+                    "X-Consumer-Username": "ma-installation",
+                },
+            )
+            assert response.status_code == 200
+            assert "user=ma-installation application=fingerprint" in caplog.text
+            assert UPLOAD not in caplog.text
+            assert APPLICATION not in caplog.text
+            caplog.clear()
+            response = await client.get(
+                "/api/v1/dejavu/capabilities",
+                headers={
+                    "X-API-Key": "wrong",
+                    "X-Application-Key": APPLICATION,
+                    "X-Consumer-Username": "forged",
+                },
+            )
+            assert response.status_code == 401
+            assert "authenticated user=" not in caplog.text
+
+
 def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
     tmp_path: Path,
 ) -> None:
@@ -138,10 +176,11 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         for request in requests
         if "/routes/" in request.url.path
     }
-    assert set(routes) == {"upload", "status", "recognize", "statistics", "public"}
+    assert set(routes) == {"upload", "status", "capabilities", "recognize", "statistics", "public"}
     for name, scope, secret in [
         ("upload", "upload", UPLOAD),
         ("status", "upload", UPLOAD),
+        ("capabilities", "upload", UPLOAD),
         ("recognize", "read", READ),
         ("statistics", "read", READ),
     ]:

@@ -1,5 +1,6 @@
 """Strict versioned reference documents; no audio URLs or arbitrary metadata fields."""
 
+import json
 import re
 from bisect import bisect_right
 from collections.abc import Mapping
@@ -16,6 +17,7 @@ from music_assistant_fingerprint import (
     WINDOW_COUNT,
     WINDOW_SECONDS,
 )
+from music_assistant_fingerprint.codec import decode_document
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{20}$")]
@@ -140,3 +142,14 @@ class Submission(StrictModel):
             if index < 0 or offset > ranges[index][1]:
                 raise ValueError("Fingerprint offset is outside sampled coverage")
         return self
+
+
+def decode_submission(raw: str | bytes) -> Submission:
+    """Validate both legacy and bounded compact documents against the same acoustic schema."""
+    document = json.loads(raw)
+    if not isinstance(document, dict):
+        raise ValueError("Fingerprint document must be an object")
+    decoded = decode_document(document)
+    return Submission.model_validate_json(
+        json.dumps(decoded, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    )
