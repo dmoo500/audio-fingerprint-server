@@ -16,11 +16,51 @@ from fingerprint_server.settings import Settings
 
 ROLES = ("read", "upload", "both")
 
+# Authentication exits during rewrite, before ordinary access-phase rate limiters run.
+PREAUTH_LIMIT = """
+local limit_req = require("resty.limit.req")
+return function(_, ctx)
+    local limiter, err = limit_req.new("plugin-limit-req", 5, 10)
+    if not limiter then
+        ngx.log(ngx.ERR, "fingerprint admission initialization failed: ", err)
+        return 503
+    end
+    local delay, err = limiter:incoming("fingerprint-admission:" .. ctx.var.remote_addr, true)
+    if not delay then
+        if err == "rejected" then
+            return 429
+        end
+        ngx.log(ngx.ERR, "fingerprint admission check failed: ", err)
+        return 503
+    end
+end
+"""
+
 
 def configure(client: httpx.Client, settings: Settings) -> None:
     """Install gateway routes without changing existing personal credentials."""
     if not settings.gateway_enabled:
         raise ValueError("Enable FP_GATEWAY_ENABLED=true before configuring the gateway")
+    client.put(
+        "global_rules/fingerprint-admission",
+        json={
+            "plugins": {
+                "serverless-pre-function": {
+                    "phase": "rewrite",
+                    "functions": [PREAUTH_LIMIT],
+                },
+                "limit-conn": {
+                    "conn": 8,
+                    "burst": 0,
+                    "default_conn_delay": 0.1,
+                    "key": "remote_addr",
+                    "policy": "local",
+                    "rejected_code": 429,
+                    "allow_degradation": False,
+                },
+            }
+        },
+    ).raise_for_status()
     for role in ROLES:
         client.put(
             f"consumer_groups/{role}", json={"desc": f"Fingerprint {role} access", "plugins": {}}

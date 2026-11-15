@@ -65,8 +65,17 @@ async def test_retry_after(
         assert db.execute("SELECT count(*) FROM enrichment_cache").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize(
+    ("statuses", "delays"),
+    [
+        ([429, 502, 429, 502, 429, 502, 429], [30, 60, 120, 240, 480, 900, 900]),
+        ([503] * 7, [60, 70, 80, 90, 100, 110, 120]),
+        ([503] * 86, [*range(60, 901, 10), 900]),
+        ([429, 502, 503, 503, 502, 503, 503], [30, 60, 60, 70, 140, 60, 70]),
+    ],
+)
 async def test_backoff_growth_cache_and_recovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, statuses: list[int], delays: list[int]
 ) -> None:
     clock = Clock()
     sleeps: list[float] = []
@@ -86,7 +95,7 @@ async def test_backoff_growth_cache_and_recovery(
         SimpleNamespace(sleep=sleep, Event=asyncio.Event, Lock=asyncio.Lock),
     )
     store = online_store(tmp_path)
-    responses = iter([429, 502, 503, 503, 503, 503, 503, 200, 503])
+    responses = iter([*statuses, 200, 503])
     calls: list[float] = []
 
     def reply(request: httpx.Request) -> httpx.Response:
@@ -96,20 +105,20 @@ async def test_backoff_growth_cache_and_recovery(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
         worker = Worker(store, online_settings(tmp_path), client)
-        for expected in [30, 60, 120, 240, 480, 900, 900]:
+        for expected in delays:
             with pytest.raises(MusicBrainzUnavailable) as caught:
                 await worker.lookup("recording", MBID)
             assert caught.value.delay == expected
-        assert sleeps == [30, 60, 120, 240, 480, 900]
+        assert sleeps == delays[:-1]
         assert all(b - a >= 1.1 for a, b in zip(calls, calls[1:], strict=False))
         assert (await worker.lookup("recording", MBID))["status"] == "resolved"
         assert worker.backoff == 0
         with pytest.raises(MusicBrainzUnavailable) as caught:
             await worker.lookup("recording", "another")
-        assert caught.value.delay == 120
+        assert caught.value.delay == 60
         assert (await worker.lookup("recording", MBID))["status"] == "resolved"
-        assert worker.backoff == 120
-        assert len(calls) == 9
+        assert worker.backoff == 60
+        assert len(calls) == len(statuses) + 2
 
 
 async def test_deferral_preserves_attempts_and_blocks_next_claim(
@@ -218,7 +227,7 @@ async def test_lookup_wait_is_shared_and_cancellable(
         release.set()
         with pytest.raises(MusicBrainzUnavailable):
             await worker.lookup("recording", "other")
-        assert calls == [100, 220]
+        assert calls == [100, 160]
 
 
 async def test_extended_cooldown_cannot_be_shortened(
@@ -301,14 +310,14 @@ async def test_repeated_outages_retry_exhausted_submission_until_success(
             assert await asyncio.wait_for(waiting.get(), 5) == 120
             assert store.get_submission("first")["attempts"] == 2
             resume.put_nowait(None)
-            assert await asyncio.wait_for(waiting.get(), 5) == 240
+            assert await asyncio.wait_for(waiting.get(), 5) == 120
             assert store.get_submission("first")["attempts"] == 2
             resume.put_nowait(None)
             async with asyncio.timeout(5):
                 while store.get_submission("first")["state"] != "processed":
                     await asyncio.sleep(0.01)
             assert store.get_submission("first")["attempts"] == 3
-            assert calls == [100, 220, 460]
+            assert calls == [100, 220, 340]
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

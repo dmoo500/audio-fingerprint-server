@@ -84,6 +84,7 @@ class Worker:
         self.lookup_lock = asyncio.Lock()
         self.cooldown_until = 0.0
         self.backoff = 0.0
+        self.last_unavailable_status: int | None = None
         self.lookup_call = "-"
 
     async def _wait_until(self, deadline: float) -> None:
@@ -316,20 +317,29 @@ class Worker:
             follow_redirects=False,
         ) as response:
             if response.status_code in (429, 502, 503):
-                minimum = 120.0 if response.status_code == 503 else 30.0
-                self.backoff = min(900.0, max(minimum, self.backoff * 2))
+                if response.status_code == 503:
+                    self.backoff = (
+                        min(900.0, self.backoff + 10)
+                        if self.last_unavailable_status == 503 and self.backoff
+                        else 60.0
+                    )
+                else:
+                    self.backoff = min(900.0, max(30.0, self.backoff * 2))
+                self.last_unavailable_status = response.status_code
                 delay = max(self.backoff, _retry_after(response.headers.get("Retry-After")))
                 now = time.monotonic()
                 self.cooldown_until = max(self.cooldown_until, now + delay)
                 raise MusicBrainzUnavailable(response.status_code, self.cooldown_until - now)
             if response.status_code == 404:
                 self.backoff = 0.0
+                self.last_unavailable_status = None
                 result: dict[str, Any] = {"status": "not found"}
             elif 300 <= response.status_code < 400:
                 raise EnrichmentError("MusicBrainz identifier redirected; verification required")
             else:
                 response.raise_for_status()
                 self.backoff = 0.0
+                self.last_unavailable_status = None
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     if len(body) + len(chunk) > 2_000_000:

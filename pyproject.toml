@@ -24,7 +24,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
 include = ["fingerprint_server*"]
 
 [tool.setuptools.package-data]
-fingerprint_server = ["static/*"]
+fingerprint_server = ["static/*", "logging.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

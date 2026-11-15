@@ -192,6 +192,21 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         assert "X-Application-Key" not in plugins["proxy-rewrite"]["headers"]["remove"]
     assert not any("/consumers/" in request.url.path for request in requests)
     assert APPLICATION not in "".join(request.content.decode() for request in requests)
+    admission = [
+        json.loads(request.content)["plugins"]
+        for request in requests
+        if "/global_rules/" in request.url.path
+    ]
+    assert len(admission) == 1
+    preauth = admission[0]["serverless-pre-function"]
+    assert preauth["phase"] == "rewrite"
+    assert 'require("resty.limit.req")' in preauth["functions"][0]
+    assert 'limit_req.new("plugin-limit-req", 5, 10)' in preauth["functions"][0]
+    assert admission[0]["limit-conn"]["conn"] == 8
+    for plugin in (admission[0]["limit-conn"],):
+        assert plugin["key"] == "remote_addr"
+        assert plugin["rejected_code"] == 429
+        assert plugin["allow_degradation"] is False
 
 
 def test_provisioning_and_errors_are_explicit() -> None:
@@ -225,3 +240,16 @@ def test_provisioning_and_errors_are_explicit() -> None:
     ) as client:
         with pytest.raises(httpx.HTTPStatusError):
             provision(client, "installation-1", "read", READ)
+
+
+def test_admission_configuration_failure_is_reported(tmp_path: Path) -> None:
+    """A rejected global rule stops provisioning instead of pretending protection is active."""
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _: httpx.Response(400)),
+        base_url="http://localhost/apisix/admin/",
+    ) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            configure(
+                client,
+                settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION)),
+            )

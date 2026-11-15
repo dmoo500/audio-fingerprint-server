@@ -25,11 +25,17 @@ nginx_config:
   http:
     enable_access_log: true
     access_log: /dev/stdout
-    access_log_format: '{"method":"$request_method","path":"$uri","status":$status}'
+    access_log_format: '{"timestamp":$msec,"level":"INFO","method":"$request_method","path":"$uri","status":$status}'
     access_log_format_escape: json
     client_max_body_size: 36m
+    client_header_timeout: 10s
+    client_body_timeout: 30s
+    keepalive_timeout: 30s
 plugins:
   - key-auth
   - consumer-restriction
   - limit-count
+  - limit-req
+  - limit-conn
+  - serverless-pre-function
   - proxy-rewrite
