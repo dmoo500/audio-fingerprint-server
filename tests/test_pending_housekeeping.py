@@ -129,6 +129,8 @@ def test_schema_four_migration_preserves_all_rows_and_grace(
     pending(store)
     with store.connect() as db:
         db.execute("UPDATE submissions SET document='not-json',created_at=1")
+        db.execute("DROP INDEX references_recording")
+        db.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         db.execute("DROP INDEX submissions_fifo")
         db.execute("DROP INDEX submissions_pending_due")
         for column in (
@@ -277,8 +279,7 @@ async def test_official_isrc_shape_and_mbid_disambiguation(tmp_path: Path) -> No
                 with pytest.raises(VerificationPending, match="not found"):
                     await service.verify({"isrc": ISRC})
             else:
-                with pytest.raises(VerificationPending, match="ambiguous"):
-                    await service.verify({"isrc": ISRC})
+                assert await service.verify({"isrc": ISRC}) == {"isrc": ISRC}
                 assert (await service.verify({"isrc": ISRC, "recording_mbid": MBID}))[
                     "recording_mbid"
                 ] == MBID

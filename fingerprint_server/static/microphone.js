@@ -6,6 +6,7 @@ const result = document.getElementById("result");
 const refreshButton = document.getElementById("refresh-statistics");
 const statisticsStatus = document.getElementById("statistics-status");
 const counterNames = {
+  recordings: ["total", "partial", "full", "excluded"],
   references: ["total", "partial", "full", "excluded"],
   submissions: ["queued", "processing", "processed", "failed", "pending_metadata"],
 };

@@ -52,10 +52,19 @@ class Capabilities(BaseModel):
 
 
 class ReferenceCounts(BaseModel):
-    total: int
-    partial: int
-    full: int
-    excluded: int
+    total: int = Field(description="Searchable acoustic references, including retained variants.")
+    partial: int = Field(description="Searchable references with incomplete acoustic coverage.")
+    full: int = Field(description="Searchable references with full acoustic coverage.")
+    excluded: int = Field(description="Retained references withheld from recognition.")
+
+
+class RecordingCounts(BaseModel):
+    total: int = Field(description="Searchable logical recordings.")
+    partial: int = Field(
+        description="Recordings with searchable variants but no full-coverage variant."
+    )
+    full: int = Field(description="Recordings with at least one full-coverage searchable variant.")
+    excluded: int = Field(description="Logical recordings with no searchable variants.")
 
 
 class SubmissionCounts(BaseModel):
@@ -68,6 +77,7 @@ class SubmissionCounts(BaseModel):
 
 class Statistics(BaseModel):
     references: ReferenceCounts
+    recordings: RecordingCounts
     submissions: SubmissionCounts
     worker_available: bool
 

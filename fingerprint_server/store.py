@@ -16,17 +16,21 @@ from uuid import UUID
 
 from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 
-from fingerprint_server.migrations import initialize_database
+from fingerprint_server.migrations import (
+    MUSICBRAINZ_VERIFICATION_VERSION,
+    initialize_database,
+)
 from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 MATCH_QUERY = """
-    SELECT t.reference_key AS reference_id,l.offset-q.offset AS delta,q.idx,q.offset
+    SELECT t.reference_key AS reference_id,t.recording_key,
+        l.offset-q.offset AS delta,q.idx,q.offset
     FROM query q CROSS JOIN landmarks l ON l.hash=q.hash
     JOIN reference_tracks t ON t.id=l.reference_id
     WHERE t.publication_ready=1 LIMIT 100001
 """
-MUSICBRAINZ_VERIFICATION_VERSION = 1
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -270,7 +274,7 @@ class Store:
             return dict(row) if row else None
 
     def statistics(self) -> dict[str, Any]:
-        """Count published acoustic references by coverage and uploads by queue state."""
+        """Count acoustic references, logical recordings and uploads by coverage and state."""
         with self.connect() as db:
             db.execute("BEGIN")
             uploads = {
@@ -282,15 +286,14 @@ class Store:
             }
             for row in db.execute("SELECT state,count(*) AS count FROM submissions GROUP BY state"):
                 uploads[row["state"]] = row["count"]
-            excluded = db.execute(
-                "SELECT count(*) FROM reference_tracks WHERE publication_ready=0"
-            ).fetchone()[0]
-            coverage = {"total": 0, "partial": 0, "full": 0, "excluded": excluded}
+            coverage = {"total": 0, "partial": 0, "full": 0, "excluded": 0}
+            recordings: dict[str, dict[str, bool]] = {}
             rows = db.execute(
                 "WITH representatives AS ("
                 "SELECT reference_id,min(id) AS id FROM submissions "
                 "WHERE state='processed' GROUP BY reference_id) "
-                "SELECT s.document,t.metadata FROM reference_tracks t "
+                "SELECT t.id,t.reference_key,t.recording_key,t.publication_ready,"
+                "s.document,t.metadata FROM reference_tracks t "
                 "LEFT JOIN representatives r ON t.reference_key=r.reference_id "
                 "LEFT JOIN submissions s ON s.id=r.id WHERE t.publication_ready=1"
             )
@@ -298,7 +301,28 @@ class Store:
                 full = self._full_coverage(row["document"], row["metadata"])
                 coverage["full" if full else "partial"] += 1
                 coverage["total"] += 1
-            return {"references": coverage, "submissions": uploads}
+                logical_key = row["recording_key"] or f"reference:{row['id']}"
+                logical = recordings.setdefault(logical_key, {"searchable": False, "full": False})
+                logical["searchable"] = True
+                logical["full"] |= full
+            for row in db.execute(
+                "SELECT id,recording_key FROM reference_tracks WHERE publication_ready=0"
+            ):
+                logical_key = row["recording_key"] or f"reference:{row['id']}"
+                recordings.setdefault(logical_key, {"searchable": False, "full": False})
+                coverage["excluded"] += 1
+            logical_coverage = {"total": 0, "partial": 0, "full": 0, "excluded": 0}
+            for recording in recordings.values():
+                if not recording["searchable"]:
+                    logical_coverage["excluded"] += 1
+                else:
+                    logical_coverage["total"] += 1
+                    logical_coverage["full" if recording["full"] else "partial"] += 1
+            return {
+                "references": coverage,
+                "recordings": logical_coverage,
+                "submissions": uploads,
+            }
 
     def claim(self, pending_ids: list[str] | None = None) -> dict[str, Any] | None:
         """Atomically claim the oldest eligible queue entry."""
@@ -374,17 +398,21 @@ class Store:
         if not metadata_complete(metadata):
             self.pending_metadata(submission_id)
             return
+        recording_key = None
+        if verified and isinstance(metadata.get("recording_mbid"), str):
+            recording_key = UUID(metadata["recording_mbid"]).hex
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             inserted = db.execute(
                 "INSERT OR IGNORE INTO reference_tracks"
-                "(reference_key,metadata,created_at,publication_ready,verification_version) "
-                "VALUES(?,?,?,1,?)",
+                "(reference_key,metadata,created_at,publication_ready,verification_version,"
+                "recording_key) VALUES(?,?,?,1,?,?)",
                 (
                     reference_id,
                     json.dumps(metadata),
                     time.time(),
                     MUSICBRAINZ_VERIFICATION_VERSION if verified else 0,
+                    recording_key,
                 ),
             )
             if inserted.rowcount:
@@ -399,11 +427,12 @@ class Store:
             else:
                 db.execute(
                     "UPDATE reference_tracks SET metadata=?,publication_ready=1,"
-                    "verification_version=? "
+                    "verification_version=?,recording_key=coalesce(?,recording_key) "
                     "WHERE reference_key=? AND publication_ready=0",
                     (
                         json.dumps(metadata),
                         MUSICBRAINZ_VERIFICATION_VERSION if verified else 0,
+                        recording_key,
                         reference_id,
                     ),
                 )
@@ -562,17 +591,21 @@ class Store:
             rows = db.execute(MATCH_QUERY).fetchall()
             if len(rows) > 100000:
                 raise QueryTooBroadError
+            recording_keys = {row["reference_id"]: row["recording_key"] for row in rows}
             groups: dict[tuple[str, int], set[int]] = defaultdict(set)
             for row in rows:
                 groups[(row["reference_id"], row["delta"])].add(row["idx"])
-            best: dict[str, tuple[int, set[int]]] = {}
+            best: dict[str, tuple[int, set[int], str | None]] = {}
             for (reference_id, delta), indices in groups.items():
                 if reference_id not in best or len(indices) > len(best[reference_id][1]):
-                    best[reference_id] = (delta, indices)
+                    best[reference_id] = (delta, indices, recording_keys[reference_id])
             ranked = sorted(best.items(), key=lambda entry: (-len(entry[1][1]), entry[0]))
             results = []
-            accepted: list[tuple[int, set[int], dict[str, Any]]] = []
-            for reference_id, (delta, indices) in ranked:
+            accepted: list[tuple[int, set[int], dict[str, Any], str | None]] = []
+            seen_recordings: set[str] = set()
+            for reference_id, (delta, indices, recording_key) in ranked:
+                if recording_key is not None and recording_key in seen_recordings:
+                    continue
                 offsets = [query[index][1] for index in indices]
                 raw_metadata = db.execute(
                     "SELECT metadata FROM reference_tracks WHERE reference_key=?", (reference_id,)
@@ -584,14 +617,27 @@ class Store:
                     or metadata.get("isrc")
                     or (metadata.get("title") and metadata.get("artists"))
                 )
-                if identified and any(
-                    other_delta == delta
-                    and other_metadata == metadata
-                    and len(indices & other_indices) >= 0.9 * min(len(indices), len(other_indices))
-                    for other_delta, other_indices, other_metadata in accepted
+                if (
+                    identified
+                    and recording_key is None
+                    and any(
+                        other_recording_key is None
+                        and other_delta == delta
+                        and other_metadata == metadata
+                        and len(indices & other_indices)
+                        >= 0.9 * min(len(indices), len(other_indices))
+                        for (
+                            other_delta,
+                            other_indices,
+                            other_metadata,
+                            other_recording_key,
+                        ) in accepted
+                    )
                 ):
                     continue
-                accepted.append((delta, indices, metadata))
+                accepted.append((delta, indices, metadata, recording_key))
+                if recording_key is not None:
+                    seen_recordings.add(recording_key)
                 results.append(
                     {
                         "reference_id": reference_id,

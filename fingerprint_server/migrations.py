@@ -9,6 +9,7 @@ import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
+from uuid import UUID
 
 from audio_fingerprint.codec import encode_document
 
@@ -16,7 +17,8 @@ from fingerprint_server.schemas import decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 7
+MUSICBRAINZ_VERIFICATION_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE submissions (
@@ -35,9 +37,11 @@ CREATE TABLE reference_tracks (
     id INTEGER PRIMARY KEY, reference_key TEXT NOT NULL UNIQUE,
     metadata TEXT NOT NULL, created_at REAL NOT NULL,
     publication_ready INTEGER NOT NULL DEFAULT 0,
-    verification_version INTEGER NOT NULL DEFAULT 0
+    verification_version INTEGER NOT NULL DEFAULT 0,
+    recording_key TEXT
 );
 CREATE INDEX references_ready ON reference_tracks(publication_ready,id);
+CREATE INDEX references_recording ON reference_tracks(recording_key,id);
 CREATE TABLE landmarks (
     hash BLOB NOT NULL CHECK(typeof(hash)='blob' AND length(hash)=10),
     reference_id INTEGER NOT NULL REFERENCES reference_tracks(id),
@@ -120,6 +124,9 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
             if version < 6:
                 _migrate_queue_order(db)
                 db.execute("PRAGMA user_version=6")
+            if version < 7:
+                _migrate_logical_recordings(db)
+                db.execute("PRAGMA user_version=7")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
@@ -167,6 +174,8 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
                 expected.add("reference_key")
             if version >= 4:
                 expected.add("verification_version")
+            if version >= 7:
+                expected.add("recording_key")
         if table == "submissions" and version >= 5:
             expected.update({"pending_rechecks", "pending_due_at", "pending_check"})
         if table == "submissions" and version >= 6:
@@ -215,6 +224,37 @@ def _migrate_queue_order(db: sqlite3.Connection) -> None:
         "WHERE state IN ('queued','processing')"
     )
     db.execute("CREATE INDEX IF NOT EXISTS submissions_fifo ON submissions(state,enqueued_at)")
+
+
+def _migrate_logical_recordings(db: sqlite3.Connection) -> None:
+    """Associate only references with current, verified MusicBrainz recording IDs."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(reference_tracks)")}
+    if "recording_key" not in columns:
+        db.execute("ALTER TABLE reference_tracks ADD COLUMN recording_key TEXT")
+    for row in db.execute(
+        "SELECT id,metadata FROM reference_tracks WHERE verification_version=?",
+        (MUSICBRAINZ_VERIFICATION_VERSION,),
+    ).fetchall():
+        try:
+            metadata = json.loads(row["metadata"])
+            mbid = metadata.get("recording_mbid") if isinstance(metadata, dict) else None
+            if not isinstance(mbid, str):
+                raise ValueError("recording identifier missing")
+            recording_key = UUID(mbid).hex
+        except (AttributeError, TypeError, ValueError, UnicodeError, RecursionError):
+            LOGGER.warning(
+                "Skipping logical recording migration for reference %s with invalid verified "
+                "metadata",
+                row["id"],
+            )
+            continue
+        db.execute(
+            "UPDATE reference_tracks SET recording_key=? WHERE id=?",
+            (recording_key, row["id"]),
+        )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS references_recording ON reference_tracks(recording_key,id)"
+    )
 
 
 def _migrate_pending_housekeeping(db: sqlite3.Connection) -> None:

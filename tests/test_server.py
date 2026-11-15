@@ -387,7 +387,7 @@ def test_musicbrainz_base_url_rejects_invalid_configuration(tmp_path: Path, base
 
 
 @pytest.mark.parametrize("status", [404, 200])
-async def test_musicbrainz_empty_or_ambiguous_lookup_stays_unresolved(
+async def test_musicbrainz_missing_or_multiple_results_never_fabricate_recording_id(
     tmp_path: Path, status: int
 ) -> None:
     """Missing or multiple ISRC candidates cannot fabricate a recording assignment."""
@@ -407,8 +407,13 @@ async def test_musicbrainz_empty_or_ambiguous_lookup_stays_unresolved(
         worker = Worker(store, settings(tmp_path), connection)
         from fingerprint_server.musicbrainz import EnrichmentError
 
-        with pytest.raises(EnrichmentError, match="not found" if status == 404 else "ambiguous"):
-            await worker.musicbrainz.verify({"isrc": "USAAA2600001"})
+        if status == 404:
+            with pytest.raises(EnrichmentError, match="not found"):
+                await worker.musicbrainz.verify({"isrc": "USAAA2600001"})
+        else:
+            assert await worker.musicbrainz.verify({"isrc": "USAAA2600001"}) == {
+                "isrc": "USAAA2600001"
+            }
 
 
 async def test_terminal_processing_failure_is_visible(tmp_path: Path) -> None:
@@ -492,6 +497,7 @@ async def test_statistics_empty_and_authenticated(client: httpx.AsyncClient) -> 
     response = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
     assert response.json() == {
         "references": {"total": 0, "partial": 0, "full": 0, "excluded": 0},
+        "recordings": {"total": 0, "partial": 0, "full": 0, "excluded": 0},
         "submissions": {
             "queued": 0,
             "processing": 0,
@@ -543,6 +549,7 @@ def test_statistics_measure_exact_coverage_and_deduplicate(tmp_path: Path) -> No
     store.fail("rejected", "Invalid", None)
     assert store.statistics() == {
         "references": {"total": 3, "partial": 0, "full": 3, "excluded": 0},
+        "recordings": {"total": 3, "partial": 0, "full": 3, "excluded": 0},
         "submissions": {
             "queued": 1,
             "processing": 1,

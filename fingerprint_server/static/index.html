@@ -22,17 +22,28 @@
         Both keys remain in this page only and are discarded when you close it.</p>
       <section aria-labelledby="collection-heading">
         <h2 id="collection-heading">Fingerprint collection</h2>
+        <h3>Unique recordings</h3>
         <dl class="counters">
-          <div><dt>Indexed tracks</dt><dd id="references-total">—</dd></div>
-          <div><dt>Partially covered</dt><dd id="references-partial">—</dd></div>
-          <div><dt>Fully covered</dt><dd id="references-full">—</dd></div>
-          <div><dt>Excluded: incomplete metadata</dt><dd id="references-excluded">—</dd></div>
+          <div><dt>Indexed recordings</dt><dd id="recordings-total">—</dd></div>
+          <div><dt>Partially covered</dt><dd id="recordings-partial">—</dd></div>
+          <div><dt>Fully covered</dt><dd id="recordings-full">—</dd></div>
+          <div><dt>Excluded: no searchable variant</dt><dd id="recordings-excluded">—</dd></div>
         </dl>
-        <p>Counts represent unique acoustic references, not unique song titles.
-          Fully covered means the analysis windows cover the whole track without gaps.
-          New full-track analyses cover the complete decoded track; older sampled references
-          may still have gaps. Full coverage does not guarantee recognition.
-          Excluded references are retained but cannot be recognized.</p>
+        <p>References are grouped only when they have the same verified recording ID; uncertain
+          references count separately. A recording is fully covered when any searchable variant
+          covers the whole track without gaps, and partially covered when none does. Excluded
+          recordings have no searchable variants. Full coverage does not guarantee recognition.</p>
+        <h3>Acoustic references (variants)</h3>
+        <dl class="counters">
+          <div><dt>Searchable variants</dt><dd id="references-total">—</dd></div>
+          <div><dt>Partially covered variants</dt><dd id="references-partial">—</dd></div>
+          <div><dt>Fully covered variants</dt><dd id="references-full">—</dd></div>
+          <div><dt>Excluded variants</dt><dd id="references-excluded">—</dd></div>
+        </dl>
+        <p>Each distinct fingerprint reference is retained for recognition, including alternate
+          acoustic variants; grouping recordings does not reduce stored fingerprints or database
+          size. New full-track analyses cover the complete decoded track; older sampled references
+          may still have gaps. Excluded variants are retained but cannot be recognized.</p>
         <h3>Upload queue</h3>
         <dl class="counters">
           <div><dt>Waiting / retrying</dt><dd id="submissions-queued">—</dd></div>

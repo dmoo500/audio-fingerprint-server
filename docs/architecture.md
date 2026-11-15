@@ -84,7 +84,7 @@ This is a recognition index with a durable ingestion queue, not a full music-lib
 | Persistent table | Contents | Purpose |
 | --- | --- | --- |
 | `submissions` | Legacy or compact JSON, queue state, attempts, retry time, error, published reference ID, FIFO admission time and background-check lifecycle | Durable processing, duplicate upload handling, bounded background admission and status; JSON includes analysis windows and supplied metadata |
-| `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time, publication readiness and verification version | Searchable references and retained references withheld pending metadata or identifier verification |
+| `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time, publication readiness, verification version and optional verified recording key | Retained acoustic variants; verified recording keys group logical recordings without merging their fingerprints |
 | `landmarks` | Ten-byte binary hash, internal reference ID and absolute offset in FFT hops | Compact searchable acoustic index; potentially many rows per reference |
 | `enrichment_cache` | Versioned endpoint and identifier key, lookup result JSON and expiry | Cache successful, empty and ambiguous MusicBrainz results; normally empty when enrichment is disabled |
 | `service_state` | Configuration transition markers | Keep enable and disable transitions durable and idempotent |
@@ -108,6 +108,7 @@ erDiagram
         INTEGER id PK
         TEXT reference_key UK
         TEXT metadata
+        TEXT recording_key
     }
     landmarks {
         BLOB hash PK

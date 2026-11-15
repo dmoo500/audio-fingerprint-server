@@ -72,6 +72,7 @@ function page(applicationKey = "") {
         return { ok: true, async json() { return { status: "no_match", match: null }; } };
       }
       return { ok: true, async json() { return {
+        recordings: { total: 0, partial: 0, full: 0, excluded: 1 },
         references: { total: 0, partial: 0, full: 0, excluded: 2 },
         submissions: { queued: 0, processing: 0, processed: 0, failed: 0, pending_metadata: 3 },
         worker_available: true,
@@ -88,6 +89,7 @@ for (const applicationKey of ["", "fingerprint-application-key-at-least-24-chara
     await new Promise(setImmediate);
     await elements.get("record").handlers.click();
     assert.equal(requests.length, 2);
+    assert.equal(elements.get("recordings-excluded").textContent, "1");
     assert.equal(elements.get("references-excluded").textContent, "2");
     assert.equal(elements.get("submissions-pending_metadata").textContent, "3");
     for (const { options } of requests) {

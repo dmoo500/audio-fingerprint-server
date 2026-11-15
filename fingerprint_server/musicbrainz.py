@@ -130,8 +130,16 @@ class MusicBrainzService:
                     if not response["complete"]:
                         raise VerificationPending("MusicBrainz ISRC recording list incomplete")
                     raise UnresolvableVerification("MusicBrainz recording and ISRC conflict")
-            elif not response["complete"] or len(candidates) != 1:
+            elif not response["complete"] or not candidates:
                 raise VerificationPending("MusicBrainz ISRC ambiguous")
+            elif len(candidates) > 1:
+                LOGGER.info(
+                    "MusicBrainz confirmed ISRC %s with %s candidate recordings; "
+                    "retaining supplied metadata without assigning a recording MBID",
+                    normalized,
+                    len(candidates),
+                )
+                return dict(metadata)
             else:
                 recording = candidates[0]
         assert recording is not None

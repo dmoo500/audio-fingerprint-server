@@ -156,6 +156,65 @@ async def test_partial_recording_and_release_lists_are_not_guessed(tmp_path: Pat
         assert "album" not in worker.musicbrainz.parse_recording(partial)
 
 
+@pytest.mark.parametrize("complete_metadata", [True, False])
+async def test_multiple_isrc_recordings_confirm_identifier_without_guessing_metadata(
+    tmp_path: Path, complete_metadata: bool
+) -> None:
+    store = online_store(tmp_path)
+    payload = document()
+    payload["metadata"]["isrc"] = ISRC
+    payload["metadata"].pop("recording_mbid", None)
+    if not complete_metadata:
+        payload["metadata"].pop("album", None)
+    supplied = dict(payload["metadata"])
+    store.submit("submission", json.dumps(payload), 10)
+
+    def reply(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "isrc": ISRC,
+                "recording-count": 2,
+                "recordings": [recording(), recording(OTHER)],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        worker = Worker(store, online_settings(tmp_path), client)
+        assert await worker.musicbrainz.verify(supplied) == supplied
+        row = await run_until_idle(worker, store, "submission")
+    assert row["state"] == ("processed" if complete_metadata else "pending_metadata")
+    with store.connect() as db:
+        references = db.execute("SELECT metadata,recording_key FROM reference_tracks").fetchall()
+    if complete_metadata:
+        assert len(references) == 1
+        assert json.loads(references[0]["metadata"]) == supplied
+        assert references[0]["recording_key"] is None
+    else:
+        assert "Incomplete metadata" in row["error"]
+        assert references == []
+
+
+async def test_multiple_isrc_recordings_still_check_supplied_mbid(tmp_path: Path) -> None:
+    store = online_store(tmp_path)
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        if "/recording/" in request.url.path:
+            return httpx.Response(200, json=recording())
+        return httpx.Response(
+            200,
+            json={
+                "isrc": ISRC,
+                "recordings": [recording(OTHER), recording(MBID)],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        worker = Worker(store, online_settings(tmp_path), client)
+        result = await worker.musicbrainz.verify({"isrc": ISRC, "recording_mbid": MBID})
+        assert result["recording_mbid"] == MBID
+
+
 async def test_ambiguous_album_remains_pending(tmp_path: Path) -> None:
     store = online_store(tmp_path)
     payload = document()
@@ -409,6 +468,8 @@ def test_version_three_wal_backup_includes_committed_rows(tmp_path: Path) -> Non
     store.initialize()
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute("DROP INDEX references_recording")
+        connection.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         connection.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         connection.execute("DROP TABLE service_state")
         connection.execute("DROP INDEX submissions_fifo")

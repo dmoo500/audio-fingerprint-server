@@ -48,6 +48,8 @@ def test_existing_documents_are_compacted_without_changing_ids(tmp_path: Path) -
     store.submit(identifier, body.decode(), 10)
     store.finish(identifier, "reference", payload["metadata"], [("0" * 20, 0)])
     with store.connect() as db:
+        db.execute("DROP INDEX references_recording")
+        db.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         db.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         db.execute("DROP TABLE service_state")
         db.execute("DROP INDEX submissions_fifo")

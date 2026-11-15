@@ -210,6 +210,12 @@ def test_legacy_incomplete_references_excluded_without_deletion(
             "full": 0,
             "excluded": 1,
         }
+        assert store.statistics()["recordings"] == {
+            "total": 0,
+            "partial": 0,
+            "full": 0,
+            "excluded": 1,
+        }
         with store.connect() as db:
             assert db.execute("SELECT metadata FROM reference_tracks").fetchone()[0] == supplied
             assert db.execute("SELECT count(*) FROM landmarks").fetchone()[0] == 1
@@ -225,6 +231,7 @@ def test_legacy_complete_reference_remains_searchable(tmp_path: Path) -> None:
     assert store.match([("0" * 20, 0)])[0]["metadata"] == supplied
     assert store.get_submission("old")["state"] == "processed"
     assert store.statistics()["references"] == {"total": 1, "partial": 1, "full": 0, "excluded": 0}
+    assert store.statistics()["recordings"] == {"total": 1, "partial": 1, "full": 0, "excluded": 0}
 
 
 def test_interrupted_publication_backfill_recovers(tmp_path: Path) -> None:

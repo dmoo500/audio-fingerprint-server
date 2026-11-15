@@ -297,21 +297,57 @@
         "title": "Recognition",
         "type": "object"
       },
-      "ReferenceCounts": {
+      "RecordingCounts": {
         "properties": {
           "excluded": {
+            "description": "Logical recordings with no searchable variants.",
             "title": "Excluded",
             "type": "integer"
           },
           "full": {
+            "description": "Recordings with at least one full-coverage searchable variant.",
             "title": "Full",
             "type": "integer"
           },
           "partial": {
+            "description": "Recordings with searchable variants but no full-coverage variant.",
             "title": "Partial",
             "type": "integer"
           },
           "total": {
+            "description": "Searchable logical recordings.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "partial",
+          "full",
+          "excluded"
+        ],
+        "title": "RecordingCounts",
+        "type": "object"
+      },
+      "ReferenceCounts": {
+        "properties": {
+          "excluded": {
+            "description": "Retained references withheld from recognition.",
+            "title": "Excluded",
+            "type": "integer"
+          },
+          "full": {
+            "description": "Searchable references with full acoustic coverage.",
+            "title": "Full",
+            "type": "integer"
+          },
+          "partial": {
+            "description": "Searchable references with incomplete acoustic coverage.",
+            "title": "Partial",
+            "type": "integer"
+          },
+          "total": {
+            "description": "Searchable acoustic references, including retained variants.",
             "title": "Total",
             "type": "integer"
           }
@@ -327,6 +363,9 @@
       },
       "Statistics": {
         "properties": {
+          "recordings": {
+            "$ref": "#/components/schemas/RecordingCounts"
+          },
           "references": {
             "$ref": "#/components/schemas/ReferenceCounts"
           },
@@ -340,6 +379,7 @@
         },
         "required": [
           "references",
+          "recordings",
           "submissions",
           "worker_available"
         ],

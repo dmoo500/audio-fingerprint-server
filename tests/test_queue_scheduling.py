@@ -163,6 +163,8 @@ def test_schema_five_migration_preserves_queue_and_pending_deadlines(tmp_path: P
         ).fetchone()[0]
         db.execute("UPDATE submissions SET created_at=100 WHERE id='first'")
         db.execute("UPDATE submissions SET created_at=200 WHERE id='second'")
+        db.execute("DROP INDEX references_recording")
+        db.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         db.execute("DROP INDEX submissions_fifo")
         db.execute("ALTER TABLE submissions DROP COLUMN enqueued_at")
         db.execute("ALTER TABLE submissions DROP COLUMN background_kind")
