@@ -6,8 +6,8 @@ const result = document.getElementById("result");
 const refreshButton = document.getElementById("refresh-statistics");
 const statisticsStatus = document.getElementById("statistics-status");
 const counterNames = {
-  references: ["total", "partial", "full"],
-  submissions: ["queued", "processing", "processed", "failed"],
+  references: ["total", "partial", "full", "excluded"],
+  submissions: ["queued", "processing", "processed", "failed", "pending_metadata"],
 };
 let statisticsPending = false;
 

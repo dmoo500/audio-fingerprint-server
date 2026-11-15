@@ -1,6 +1,9 @@
 """Strict versioned reference documents; no audio URLs or arbitrary metadata fields."""
 
+import re
 from bisect import bisect_right
+from collections.abc import Mapping
+from math import isfinite
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -18,6 +21,43 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{20}$")]
 Offset = Annotated[int, Field(ge=0, le=MAX_DURATION * SAMPLE_RATE // HOP_SIZE)]
 Text = Annotated[str, Field(max_length=500)]
+ISRC_PATTERN = r"^[A-Za-z]{2}[A-Za-z0-9]{3}[0-9]{7}$"
+
+
+def metadata_complete(metadata: object) -> bool:
+    """Whether supplied metadata is sufficient to publish a searchable reference."""
+    if not isinstance(metadata, Mapping):
+        return False
+    title, artists, album = (metadata.get(key) for key in ("title", "artists", "album"))
+    duration = metadata.get("duration")
+    if (
+        not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(artists, list)
+        or not any(isinstance(artist, str) and artist.strip() for artist in artists)
+        or not isinstance(album, str)
+        or not album.strip()
+        or isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or duration <= 0
+    ):
+        return False
+    try:
+        if not isfinite(duration):
+            return False
+    except OverflowError:
+        return False
+    isrc = metadata.get("isrc")
+    if isinstance(isrc, str) and re.fullmatch(ISRC_PATTERN, isrc):
+        return True
+    mbid = metadata.get("recording_mbid")
+    if isinstance(mbid, str):
+        try:
+            UUID(mbid)
+        except ValueError:
+            return False
+        return True
+    return False
 
 
 class StrictModel(BaseModel):
@@ -29,12 +69,12 @@ class StrictModel(BaseModel):
 class Metadata(StrictModel):
     """Allowlisted supplied music metadata."""
 
-    duration: float = Field(gt=0, le=MAX_DURATION)
+    duration: float | None = Field(default=None, gt=0, le=MAX_DURATION)
     title: Text | None = None
     artists: list[Text] = Field(default_factory=list, max_length=30)
     album: Text | None = None
     recording_mbid: str | None = None
-    isrc: Annotated[str, Field(pattern=r"^[A-Za-z]{2}[A-Za-z0-9]{3}[0-9]{7}$")] | None = None
+    isrc: Annotated[str, Field(pattern=ISRC_PATTERN)] | None = None
 
     @field_validator("recording_mbid")
     @classmethod
@@ -71,7 +111,8 @@ class Submission(StrictModel):
         previous_end = 0
         previous_start = -1
         ranges: list[tuple[int, int]] = []
-        total = round(self.metadata.duration * SAMPLE_RATE)
+        duration = self.metadata.duration
+        total = round((duration if duration is not None else MAX_DURATION) * SAMPLE_RATE)
         for window in self.windows:
             end = window.start_sample + window.sample_count
             if (
@@ -89,7 +130,7 @@ class Submission(StrictModel):
                 ranges.append((lo, hi))
             previous_end = end
             previous_start = window.start_sample
-        if not legacy and previous_end != total:
+        if not legacy and duration is not None and previous_end != total:
             raise ValueError("Full-track coverage must reach the exact track end")
         if len(set(self.fingerprints)) != len(self.fingerprints):
             raise ValueError("Duplicate fingerprint/offset pairs")

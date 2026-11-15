@@ -62,8 +62,8 @@ def document(samples: np.ndarray[Any, Any] | None = None) -> dict[str, Any]:
             "duration": len(samples) / SAMPLE_RATE,
             "title": "Synthetic reference",
             "artists": ["Test signal"],
-            "album": None,
-            "isrc": None,
+            "album": "Synthetic album",
+            "isrc": "USAAA2600001",
             "recording_mbid": None,
         },
     }
@@ -481,8 +481,14 @@ async def test_statistics_empty_and_authenticated(client: httpx.AsyncClient) -> 
     ).status_code == 401
     response = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
     assert response.json() == {
-        "references": {"total": 0, "partial": 0, "full": 0},
-        "submissions": {"queued": 0, "processing": 0, "processed": 0, "failed": 0},
+        "references": {"total": 0, "partial": 0, "full": 0, "excluded": 0},
+        "submissions": {
+            "queued": 0,
+            "processing": 0,
+            "processed": 0,
+            "failed": 0,
+            "pending_metadata": 0,
+        },
         "worker_available": True,
     }
 
@@ -508,14 +514,14 @@ def test_statistics_measure_exact_coverage_and_deduplicate(tmp_path: Path) -> No
                 {"start_sample": window.start_sample, "sample_count": window.sample_count}
                 for window in windows
             ],
-            "metadata": {"duration": duration},
+            "metadata": {**document()["metadata"], "duration": duration},
         }
         identifier = str(duration)
         store.submit(identifier, json.dumps(payload), 10)
         store.finish(identifier, identifier, payload["metadata"], [])
     payload = {
         "windows": [{"start_sample": 0, "sample_count": 10 * SAMPLE_RATE}],
-        "metadata": {"duration": 11},
+        "metadata": {**document()["metadata"], "duration": 11},
     }
     store.submit("duplicate", json.dumps(payload), 10)
     store.finish("duplicate", "10", payload["metadata"], [])
@@ -526,8 +532,14 @@ def test_statistics_measure_exact_coverage_and_deduplicate(tmp_path: Path) -> No
     store.submit("rejected", "{}", 10)
     store.fail("rejected", "Invalid", None)
     assert store.statistics() == {
-        "references": {"total": 3, "partial": 0, "full": 3},
-        "submissions": {"queued": 1, "processing": 1, "processed": 4, "failed": 1},
+        "references": {"total": 3, "partial": 0, "full": 3, "excluded": 0},
+        "submissions": {
+            "queued": 1,
+            "processing": 1,
+            "processed": 4,
+            "failed": 1,
+            "pending_metadata": 0,
+        },
     }
 
 
@@ -541,11 +553,11 @@ def test_statistics_zero_gap_windows_cover_full_track(tmp_path: Path) -> None:
             {"start_sample": 0, "sample_count": size},
             {"start_sample": size, "sample_count": size},
         ],
-        "metadata": {"duration": 2 * size / SAMPLE_RATE},
+        "metadata": {**document()["metadata"], "duration": 2 * size / SAMPLE_RATE},
     }
     store.submit("adjacent", json.dumps(payload), 10)
     store.finish("adjacent", "adjacent", payload["metadata"], [])
-    assert store.statistics()["references"] == {"total": 1, "partial": 0, "full": 1}
+    assert store.statistics()["references"] == {"total": 1, "partial": 0, "full": 1, "excluded": 0}
 
 
 def test_short_or_identical_secrets_are_rejected(tmp_path: Path) -> None:

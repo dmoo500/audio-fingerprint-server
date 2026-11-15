@@ -198,8 +198,9 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
             ) from err
         if row["state"] == "failed":
             raise HTTPException(409, "Submission processing failed; inspect submission status")
-        request.app.state.worker.wakeup.set()
-        state = "processed" if row["state"] == "processed" else "queued"
+        if row["state"] == "queued":
+            request.app.state.worker.wakeup.set()
+        state = "queued" if row["state"] == "processing" else row["state"]
         return JSONResponse(
             {"submission_id": submission_id, "status": state},
             status_code=200 if state == "processed" else 202,

@@ -39,8 +39,8 @@ flowchart TD
     D --> E["JSON: format, windows, fingerprints and allowlisted metadata"]
     E --> F["POST submissions: upload key and canonical document SHA-256"]
     F --> G["Server: authenticate, enforce limits and validate document and coverage"]
-    G --> H["Commit submission to durable SQLite queue"]
-    H --> I["HTTP 202 queued: accepted, not yet searchable"]
+    G --> H["Commit submission: queued if metadata complete, otherwise pending_metadata"]
+    H --> I["HTTP 202: accepted, not yet searchable"]
 ```
 
 The shared `music-assistant-fingerprint` library implements window sampling and landmark
@@ -57,7 +57,9 @@ HTTP 200 instead of adding queue work.
 flowchart TD
     A["Durable queue: queued submission eligible for processing"] --> B["Worker claims entry: processing, attempts incremented"]
     B --> C["Validate stored document again"]
-    C --> D{"MusicBrainz enabled and ISRC supplied?"}
+    C --> L{"Supplied metadata complete?"}
+    L -->|No| M["Durable pending_metadata: not published or retried"]
+    L -->|Yes| D{"MusicBrainz enabled and ISRC supplied?"}
     D -->|No| G["Compute acoustic reference ID from format, windows and sorted fingerprints"]
     D -->|Yes| E["Check ISRC cache; if needed, perform paced MusicBrainz lookup"]
     E --> F["Preserve supplied metadata and attach explicit enrichment result"]
@@ -73,8 +75,21 @@ flowchart TD
 The submission ID covers the **whole document**, including metadata. The reference ID
 covers the **acoustic content and coverage**, excluding metadata. Multiple submissions
 can therefore point to one reference, and a later duplicate does not overwrite the
-first published metadata. Different encodings or different sampled passages are not
+first published complete metadata. An exact acoustic duplicate with complete metadata can
+make an excluded legacy reference searchable, without deleting its landmarks or original
+submission. Different encodings or different sampled passages are not
 automatically merged into one song.
+
+Publication requires a nonblank title, at least one nonblank artist, a nonblank album,
+a positive finite duration, and either a valid ISRC or a recording UUID. Whitespace is
+checked but supplied metadata is not trimmed or rewritten. Structurally valid submissions
+missing these fields are retained as `pending_metadata`, not recognized, merged or retried.
+A missing duration defers the exact track-end coverage check, but window, offset, duration
+and upload limits still apply; supplied invalid durations or identifiers are rejected.
+To complete metadata, submit a corrected document; its whole-document submission ID is
+different. The original pending document remains retained. There is no automatic backfill,
+title guessing or online lookup for pending documents. Configured MusicBrainz enrichment
+continues to attach identifier lookup results only to complete submissions.
 
 Publishing is atomic: recognition cannot see a half-inserted reference. On startup,
 interrupted `processing` entries return to `queued`. An unexpected worker crash is
@@ -115,7 +130,7 @@ history tables. Much of the structured input is retained as JSON:
 | Persistent table | Contents | Purpose |
 | --- | --- | --- |
 | `submissions` | Original canonical JSON, queue state, attempts, retry time, error and published reference ID | Durable processing, duplicate upload handling and status; JSON includes analysis windows and supplied metadata |
-| `reference_tracks` | Acoustic reference ID, metadata JSON and creation time | Published references and metadata returned for matches, including optional enrichment |
+| `reference_tracks` | Acoustic reference ID, metadata JSON, creation time and publication readiness | Searchable references and retained legacy references excluded for incomplete metadata, including optional enrichment |
 | `landmarks` | Hash, reference ID and absolute offset in FFT hops | Searchable acoustic index; potentially many rows per reference |
 | `enrichment_cache` | ISRC, lookup result JSON and expiry | Cache successful, empty and ambiguous MusicBrainz results; normally empty when enrichment is disabled |
 
@@ -202,7 +217,11 @@ Do not scale it to multiple workers/replicas: queue recovery, request throttling
 the ingestion worker are single-process. PostgreSQL and distributed workers are not included.
 Never delete the volume during upgrades; back up the SQLite database with SQLite's
 backup API (or with the service stopped), not by copying a live database without its WAL.
-There is no existing database migration because this is a new project and schema.
+Startup adds a publication-readiness column to older databases and checks their stored
+metadata once. This additive, repeatable migration retains references, landmarks and original
+submissions, including malformed or missing historical metadata. Incomplete references are
+excluded from recognition and their formerly processed uploads become `pending_metadata`.
+Malformed historical coverage is counted as partial for otherwise complete references.
 
 Never run two receiver workers against the same database. Keep credentials,
 collection backups and machine-specific Compose overrides outside version control.
@@ -220,8 +239,9 @@ token in `X-Application-Key`. Keys must differ and each contain at least 24 char
   1,000,000 landmarks, up to 30 minutes of complete coverage. Legacy v1 documents
   retain their 2,000,000-byte / 100,000-landmark / three-window limits.
   `Idempotency-Key` is the SHA-256 of canonical JSON (`sort_keys=True`, compact separators,
-  Python's default ASCII escaping). HTTP 202 `queued` means the request was committed,
-  not that reference processing is complete. HTTP 200 `processed` acknowledges duplicates.
+  Python's default ASCII escaping). HTTP 202 returns the durable state (`queued`,
+  `processing` or `pending_metadata`), not a publication acknowledgement.
+  HTTP 200 `processed` acknowledges an already published duplicate.
 - `GET /api/v1/dejavu/submissions/{id}`: processing state, attempts, explicit failure
   and published reference ID. A terminally failed repeated submission returns HTTP 409.
 - `POST /api/v1/dejavu/recognize?sample_rate=48000&channels=1`:
@@ -230,11 +250,12 @@ token in `X-Application-Key`. Keys must differ and each contain at least 24 char
   Returns `matched`, `no_match` or `ambiguous`; `match` is null unless matched.
 - `GET /health`: 503 if the ingestion worker has stopped.
 - `GET /api/v1/dejavu/statistics`: read-key authenticated counts of indexed acoustic
-  references (total, partially covered, fully covered), uploads by queue state and worker status.
+  references (searchable total, partially covered, fully covered, and separately excluded
+  legacy references), uploads by queue state including `pending_metadata`, and worker status.
   The microphone page refreshes these every 15 seconds while visible after entering the read key.
   Failed requests clear the displayed counts instead of presenting stale data as current.
 
-Coverage is computed from the stored windows without changing the database schema.
+Coverage is computed from stored windows rather than a separate stored coverage flag.
 Full coverage means the union of windows starts at zero, has no gaps and reaches the exact track duration
 in samples; even small unsampled gaps count as partial. This describes sampled audio,
 not guaranteed recognition of every passage. New v2 references have full coverage;
@@ -249,12 +270,15 @@ Only the worker can publish them. Exact acoustic submissions
 deduplicate even when metadata differs; original supplied metadata is retained rather
 than overwritten by a later conflicting contribution. Acoustic deduplication here means
 identical landmarks/coverage, **not** merging all different encodings or partial recordings.
+An excluded reference can receive complete supplied metadata from an exact duplicate;
+already complete reference metadata is never overwritten.
 
 Submissions are limited to 60/minute; recognition and status reads use their respective
 credential scopes (30 read requests/minute). Two recognition computations can run at once.
 Statistics have a separate 30 requests/minute budget, so refreshes do not consume recognition requests.
 Repetitive queries with excessive candidate counts fail explicitly rather than returning
-a misleading match. The queue is bounded by submission count and by 256,000,000 bytes of queued/processing
+a misleading match. The queue is bounded by submission count and by 256,000,000 bytes of
+queued, processing and pending-metadata
 canonical JSON (`FP_QUEUE_BYTES_LIMIT`); full queues return 503 with Retry-After.
 This is a private pilot, not a hardened anonymous public contribution service.
 

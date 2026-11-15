@@ -26,19 +26,24 @@
           <div><dt>Indexed tracks</dt><dd id="references-total">—</dd></div>
           <div><dt>Partially covered</dt><dd id="references-partial">—</dd></div>
           <div><dt>Fully covered</dt><dd id="references-full">—</dd></div>
+          <div><dt>Excluded: incomplete metadata</dt><dd id="references-excluded">—</dd></div>
         </dl>
         <p>Counts represent unique acoustic references, not unique song titles.
           Fully covered means the analysis windows cover the whole track without gaps.
           New full-track analyses cover the complete decoded track; older sampled references
-          may still have gaps. Full coverage does not guarantee recognition.</p>
+          may still have gaps. Full coverage does not guarantee recognition.
+          Excluded references are retained but cannot be recognized.</p>
         <h3>Upload queue</h3>
         <dl class="counters">
           <div><dt>Waiting / retrying</dt><dd id="submissions-queued">—</dd></div>
           <div><dt>Processing</dt><dd id="submissions-processing">—</dd></div>
           <div><dt>Processed</dt><dd id="submissions-processed">—</dd></div>
           <div><dt>Failed</dt><dd id="submissions-failed">—</dd></div>
+          <div><dt>Pending metadata</dt><dd id="submissions-pending_metadata">—</dd></div>
         </dl>
-        <p>Upload counts can exceed indexed tracks because duplicate references are merged.</p>
+        <p>Upload counts can exceed indexed tracks because exact acoustic duplicates reuse
+          a reference. Pending metadata uploads are retained, not retried or searchable;
+          submit a new document with complete metadata to publish.</p>
         <button id="refresh-statistics" type="button">Refresh collection counts</button>
         <p id="statistics-status" role="status" aria-live="polite">
           Enter your recognition key to load counts. Updates every 15 seconds while visible.

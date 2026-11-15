@@ -13,6 +13,8 @@ from typing import Any
 
 from music_assistant_fingerprint import HOP_SIZE, SAMPLE_RATE
 
+from fingerprint_server.schemas import metadata_complete
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS submissions (
     id TEXT PRIMARY KEY, document TEXT NOT NULL, state TEXT NOT NULL,
@@ -60,11 +62,32 @@ class Store:
             connection.close()
 
     def initialize(self) -> None:
-        """Create only the new service's tables and recover interrupted queue work."""
+        """Initialize storage, gate legacy references and recover interrupted queue work."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(reference_tracks)")}
+            if "publication_ready" not in columns:
+                db.execute(
+                    "ALTER TABLE reference_tracks ADD COLUMN "
+                    "publication_ready INTEGER NOT NULL DEFAULT 0"
+                )
+                for row in db.execute("SELECT id,metadata FROM reference_tracks"):
+                    if self._complete_json(row["metadata"]):
+                        db.execute(
+                            "UPDATE reference_tracks SET publication_ready=1 WHERE id=?",
+                            (row["id"],),
+                        )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS references_ready "
+                "ON reference_tracks(publication_ready,id)"
+            )
+            db.execute(
+                "UPDATE submissions SET state='pending_metadata',error='Incomplete metadata' "
+                "WHERE state='processed' AND reference_id IN "
+                "(SELECT id FROM reference_tracks WHERE publication_ready=0)"
+            )
             db.execute("UPDATE submissions SET state='queued' WHERE state='processing'")
 
     def submit(
@@ -78,15 +101,26 @@ class Store:
                 return dict(row)
             count, queued_bytes = db.execute(
                 "SELECT count(*),coalesce(sum(length(document)),0) FROM submissions "
-                "WHERE state IN ('queued','processing')"
+                "WHERE state IN ('queued','processing','pending_metadata')"
             ).fetchone()
             if count >= limit or queued_bytes + len(document.encode("utf-8")) > byte_limit:
                 raise QueueFullError
-            db.execute(
-                "INSERT INTO submissions(id, document, state, created_at) VALUES(?,?,'queued',?)",
-                (submission_id, document, time.time()),
+            try:
+                payload = json.loads(document)
+            except (ValueError, UnicodeError):
+                payload = None
+            pending = (
+                isinstance(payload, dict)
+                and "metadata" in payload
+                and not metadata_complete(payload["metadata"])
             )
-        return {"id": submission_id, "state": "queued"}
+            state = "pending_metadata" if pending else "queued"
+            error = "Incomplete metadata" if pending else None
+            db.execute(
+                "INSERT INTO submissions(id,document,state,error,created_at) VALUES(?,?,?,?,?)",
+                (submission_id, document, state, error, time.time()),
+            )
+        return {"id": submission_id, "state": state}
 
     def get_submission(self, submission_id: str) -> dict[str, Any] | None:
         """Return a submission's processing state."""
@@ -101,28 +135,29 @@ class Store:
         """Count published acoustic references by coverage and uploads by queue state."""
         with self.connect() as db:
             db.execute("BEGIN")
-            uploads = {"queued": 0, "processing": 0, "processed": 0, "failed": 0}
+            uploads = {
+                "queued": 0,
+                "processing": 0,
+                "processed": 0,
+                "failed": 0,
+                "pending_metadata": 0,
+            }
             for row in db.execute("SELECT state,count(*) AS count FROM submissions GROUP BY state"):
                 uploads[row["state"]] = row["count"]
-            coverage = {"total": 0, "partial": 0, "full": 0}
+            excluded = db.execute(
+                "SELECT count(*) FROM reference_tracks WHERE publication_ready=0"
+            ).fetchone()[0]
+            coverage = {"total": 0, "partial": 0, "full": 0, "excluded": excluded}
             rows = db.execute(
                 "WITH representatives AS ("
                 "SELECT reference_id,min(id) AS id FROM submissions "
                 "WHERE state='processed' GROUP BY reference_id) "
-                "SELECT json_extract(s.document,'$.windows') AS windows,"
-                "json_extract(t.metadata,'$.duration') AS duration "
-                "FROM representatives r JOIN submissions s ON s.id=r.id "
-                "JOIN reference_tracks t ON t.id=r.reference_id"
+                "SELECT s.document,t.metadata FROM reference_tracks t "
+                "LEFT JOIN representatives r ON t.id=r.reference_id "
+                "LEFT JOIN submissions s ON s.id=r.id WHERE t.publication_ready=1"
             )
             for row in rows:
-                windows = json.loads(row["windows"])
-                end = 0
-                contiguous = True
-                for window in windows:
-                    if window["start_sample"] > end:
-                        contiguous = False
-                    end = max(end, window["start_sample"] + window["sample_count"])
-                full = contiguous and end == round(row["duration"] * SAMPLE_RATE)
+                full = self._full_coverage(row["document"], row["metadata"])
                 coverage["full" if full else "partial"] += 1
                 coverage["total"] += 1
             return {"references": coverage, "submissions": uploads}
@@ -154,10 +189,14 @@ class Store:
         fingerprints: list[tuple[str, int]],
     ) -> None:
         """Publish a validated reference and mark queue completion in one transaction."""
+        if not metadata_complete(metadata):
+            self.pending_metadata(submission_id)
+            return
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             inserted = db.execute(
-                "INSERT OR IGNORE INTO reference_tracks VALUES(?,?,?)",
+                "INSERT OR IGNORE INTO reference_tracks(id,metadata,created_at,publication_ready) "
+                "VALUES(?,?,?,1)",
                 (reference_id, json.dumps(metadata), time.time()),
             )
             if inserted.rowcount:
@@ -165,9 +204,24 @@ class Store:
                     "INSERT INTO landmarks VALUES(?,?,?)",
                     ((digest, reference_id, offset) for digest, offset in fingerprints),
                 )
+            else:
+                db.execute(
+                    "UPDATE reference_tracks SET metadata=?,publication_ready=1 "
+                    "WHERE id=? AND publication_ready=0",
+                    (json.dumps(metadata), reference_id),
+                )
             db.execute(
                 "UPDATE submissions SET state='processed',reference_id=?,error=NULL WHERE id=?",
                 (reference_id, submission_id),
+            )
+
+    def pending_metadata(self, submission_id: str) -> None:
+        """Retain an incomplete document without retrying or publishing it."""
+        with self.connect() as db:
+            db.execute(
+                "UPDATE submissions SET state='pending_metadata',error='Incomplete metadata',"
+                "retry_at=0 WHERE id=?",
+                (submission_id,),
             )
 
     def fail(self, submission_id: str, error: str, retry_seconds: int | None) -> None:
@@ -210,7 +264,9 @@ class Store:
             )
             rows = db.execute(
                 "SELECT l.reference_id,l.offset-q.offset AS delta,q.idx,q.offset "
-                "FROM query q JOIN landmarks l ON l.hash=q.hash LIMIT 100001"
+                "FROM query q JOIN landmarks l ON l.hash=q.hash "
+                "JOIN reference_tracks t ON t.id=l.reference_id "
+                "WHERE t.publication_ready=1 LIMIT 100001"
             ).fetchall()
             if len(rows) > 100000:
                 raise QueryTooBroadError
@@ -260,3 +316,29 @@ class Store:
                 if len(results) == 2:
                     break
             return results
+
+    @staticmethod
+    def _complete_json(raw: str) -> bool:
+        """Check legacy metadata without rejecting missing or malformed stored values."""
+        try:
+            return metadata_complete(json.loads(raw))
+        except (TypeError, ValueError, UnicodeError):
+            return False
+
+    @staticmethod
+    def _full_coverage(document: str | None, metadata: str) -> bool:
+        """Check coverage, treating missing or malformed historical coverage as partial."""
+        if document is None:
+            return False
+        try:
+            windows = json.loads(document)["windows"]
+            duration = json.loads(metadata)["duration"]
+            end = 0
+            contiguous = bool(windows)
+            for window in windows:
+                if window["start_sample"] > end:
+                    contiguous = False
+                end = max(end, window["start_sample"] + window["sample_count"])
+            return contiguous and end == round(duration * SAMPLE_RATE)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False

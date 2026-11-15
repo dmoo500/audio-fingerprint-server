@@ -45,6 +45,8 @@ def full_document(samples: np.ndarray) -> dict:
             "duration": len(samples) / SAMPLE_RATE,
             "title": "Full reference",
             "artists": ["Test"],
+            "album": "Synthetic album",
+            "isrc": "USAAA2600001",
         },
     }
 

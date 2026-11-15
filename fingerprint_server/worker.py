@@ -14,7 +14,7 @@ import httpx
 from pydantic import ValidationError
 
 from fingerprint_server.async_utils import run_sync
-from fingerprint_server.schemas import Submission
+from fingerprint_server.schemas import Submission, metadata_complete
 from fingerprint_server.settings import Settings
 from fingerprint_server.store import Store
 
@@ -49,6 +49,9 @@ class Worker:
             try:
                 submission = await run_sync(Submission.model_validate_json, row["document"])
                 metadata = submission.metadata.model_dump(exclude_none=True)
+                if not metadata_complete(metadata):
+                    await run_sync(self.store.pending_metadata, row["id"])
+                    continue
                 if self.settings.musicbrainz_enabled and metadata.get("isrc"):
                     metadata["musicbrainz"] = await self.enrich(metadata["isrc"])
                     if (
