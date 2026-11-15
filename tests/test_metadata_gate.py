@@ -14,8 +14,27 @@ from test_server import READ, UPLOAD, canonical, settings
 
 from fingerprint_server.app import create_app
 from fingerprint_server.schemas import Submission, metadata_complete
-from fingerprint_server.store import SCHEMA, QueueFullError, Store
+from fingerprint_server.store import QueueFullError, Store
 from fingerprint_server.worker import Worker
+
+LEGACY_SCHEMA = """
+CREATE TABLE submissions (
+    id TEXT PRIMARY KEY, document TEXT NOT NULL, state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
+    error TEXT, reference_id TEXT, created_at REAL NOT NULL
+);
+CREATE INDEX submissions_pending ON submissions(state,retry_at,created_at);
+CREATE TABLE reference_tracks (
+    id TEXT PRIMARY KEY, metadata TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE landmarks (
+    hash TEXT NOT NULL, reference_id TEXT NOT NULL REFERENCES reference_tracks(id),
+    offset INTEGER NOT NULL, PRIMARY KEY(hash,reference_id,offset)
+);
+CREATE TABLE enrichment_cache (
+    isrc TEXT PRIMARY KEY, document TEXT NOT NULL, expires_at REAL NOT NULL
+);
+"""
 
 
 def metadata() -> dict[str, Any]:
@@ -152,7 +171,7 @@ async def test_pending_api_state_survives_restart(tmp_path: Path, missing: str) 
 def legacy_store(path: Path, supplied: str, payload: str = "{}") -> Store:
     """Populate only an isolated fixture with the schema from before the publication gate."""
     with sqlite3.connect(path) as db:
-        db.executescript(SCHEMA)
+        db.executescript(LEGACY_SCHEMA)
         db.execute("INSERT INTO reference_tracks VALUES('legacy',?,0)", (supplied,))
         db.execute("INSERT INTO landmarks VALUES(?,'legacy',0)", ("0" * 20,))
         db.execute(

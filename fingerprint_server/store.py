@@ -13,25 +13,14 @@ from typing import Any
 
 from music_assistant_fingerprint import HOP_SIZE, SAMPLE_RATE
 
+from fingerprint_server.migrations import initialize_database
 from fingerprint_server.schemas import metadata_complete
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS submissions (
-    id TEXT PRIMARY KEY, document TEXT NOT NULL, state TEXT NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
-    error TEXT, reference_id TEXT, created_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS submissions_pending ON submissions(state, retry_at, created_at);
-CREATE TABLE IF NOT EXISTS reference_tracks (
-    id TEXT PRIMARY KEY, metadata TEXT NOT NULL, created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS landmarks (
-    hash TEXT NOT NULL, reference_id TEXT NOT NULL REFERENCES reference_tracks(id),
-    offset INTEGER NOT NULL, PRIMARY KEY(hash, reference_id, offset)
-);
-CREATE TABLE IF NOT EXISTS enrichment_cache (
-    isrc TEXT PRIMARY KEY, document TEXT NOT NULL, expires_at REAL NOT NULL
-);
+MATCH_QUERY = """
+    SELECT t.reference_key AS reference_id,l.offset-q.offset AS delta,q.idx,q.offset
+    FROM query q CROSS JOIN landmarks l ON l.hash=q.hash
+    JOIN reference_tracks t ON t.id=l.reference_id
+    WHERE t.publication_ready=1 LIMIT 100001
 """
 
 
@@ -62,36 +51,10 @@ class Store:
             connection.close()
 
     def initialize(self) -> None:
-        """Initialize storage, gate legacy references and recover interrupted queue work."""
+        """Upgrade storage safely and recover interrupted queue work before serving requests."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(SCHEMA)
-            db.execute("BEGIN IMMEDIATE")
-            columns = {row["name"] for row in db.execute("PRAGMA table_info(reference_tracks)")}
-            if "publication_ready" not in columns:
-                db.execute(
-                    "ALTER TABLE reference_tracks ADD COLUMN "
-                    "publication_ready INTEGER NOT NULL DEFAULT 0"
-                )
-            for row in db.execute(
-                "SELECT id,metadata FROM reference_tracks WHERE publication_ready=0"
-            ):
-                if self._complete_json(row["metadata"]):
-                    db.execute(
-                        "UPDATE reference_tracks SET publication_ready=1 WHERE id=?",
-                        (row["id"],),
-                    )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS references_ready "
-                "ON reference_tracks(publication_ready,id)"
-            )
-            db.execute(
-                "UPDATE submissions SET state='pending_metadata',error='Incomplete metadata' "
-                "WHERE state='processed' AND reference_id IN "
-                "(SELECT id FROM reference_tracks WHERE publication_ready=0)"
-            )
-            db.execute("UPDATE submissions SET state='queued' WHERE state='processing'")
+            initialize_database(db, self.path)
 
     def submit(
         self, submission_id: str, document: str, limit: int, byte_limit: int = 256_000_000
@@ -156,7 +119,7 @@ class Store:
                 "SELECT reference_id,min(id) AS id FROM submissions "
                 "WHERE state='processed' GROUP BY reference_id) "
                 "SELECT s.document,t.metadata FROM reference_tracks t "
-                "LEFT JOIN representatives r ON t.id=r.reference_id "
+                "LEFT JOIN representatives r ON t.reference_key=r.reference_id "
                 "LEFT JOIN submissions s ON s.id=r.id WHERE t.publication_ready=1"
             )
             for row in rows:
@@ -198,19 +161,24 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             inserted = db.execute(
-                "INSERT OR IGNORE INTO reference_tracks(id,metadata,created_at,publication_ready) "
+                "INSERT OR IGNORE INTO reference_tracks"
+                "(reference_key,metadata,created_at,publication_ready) "
                 "VALUES(?,?,?,1)",
                 (reference_id, json.dumps(metadata), time.time()),
             )
             if inserted.rowcount:
+                internal_id = inserted.lastrowid
                 db.executemany(
                     "INSERT INTO landmarks VALUES(?,?,?)",
-                    ((digest, reference_id, offset) for digest, offset in fingerprints),
+                    (
+                        (bytes.fromhex(digest), internal_id, offset)
+                        for digest, offset in fingerprints
+                    ),
                 )
             else:
                 db.execute(
                     "UPDATE reference_tracks SET metadata=?,publication_ready=1 "
-                    "WHERE id=? AND publication_ready=0",
+                    "WHERE reference_key=? AND publication_ready=0",
                     (json.dumps(metadata), reference_id),
                 )
             db.execute(
@@ -260,17 +228,16 @@ class Store:
     def match(self, query: list[tuple[str, int]]) -> list[dict[str, Any]]:
         """Rank offset-consistent matches, with distinct query pairs and bounded work."""
         with self.connect() as db:
-            db.execute("CREATE TEMP TABLE query(hash TEXT, offset INTEGER, idx INTEGER)")
+            db.execute("CREATE TEMP TABLE query(hash BLOB, offset INTEGER, idx INTEGER)")
             db.executemany(
                 "INSERT INTO query VALUES(?,?,?)",
-                ((digest, offset, index) for index, (digest, offset) in enumerate(query)),
+                (
+                    (bytes.fromhex(digest), offset, index)
+                    for index, (digest, offset) in enumerate(query)
+                ),
             )
-            rows = db.execute(
-                "SELECT l.reference_id,l.offset-q.offset AS delta,q.idx,q.offset "
-                "FROM query q JOIN landmarks l ON l.hash=q.hash "
-                "JOIN reference_tracks t ON t.id=l.reference_id "
-                "WHERE t.publication_ready=1 LIMIT 100001"
-            ).fetchall()
+            # Keep the small query outermost instead of scanning the whole landmark collection.
+            rows = db.execute(MATCH_QUERY).fetchall()
             if len(rows) > 100000:
                 raise QueryTooBroadError
             groups: dict[tuple[str, int], set[int]] = defaultdict(set)
@@ -286,7 +253,7 @@ class Store:
             for reference_id, (delta, indices) in ranked:
                 offsets = [query[index][1] for index in indices]
                 raw_metadata = db.execute(
-                    "SELECT metadata FROM reference_tracks WHERE id=?", (reference_id,)
+                    "SELECT metadata FROM reference_tracks WHERE reference_key=?", (reference_id,)
                 ).fetchone()[0]
                 metadata = json.loads(raw_metadata)
                 # Old sampled and new full references can describe the same aligned recording.
@@ -319,14 +286,6 @@ class Store:
                 if len(results) == 2:
                     break
             return results
-
-    @staticmethod
-    def _complete_json(raw: str) -> bool:
-        """Check legacy metadata without rejecting missing or malformed stored values."""
-        try:
-            return metadata_complete(json.loads(raw))
-        except (TypeError, ValueError, UnicodeError):
-            return False
 
     @staticmethod
     def _full_coverage(document: str | None, metadata: str) -> bool:

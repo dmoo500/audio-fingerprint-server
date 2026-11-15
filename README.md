@@ -130,8 +130,8 @@ history tables. Much of the structured input is retained as JSON:
 | Persistent table | Contents | Purpose |
 | --- | --- | --- |
 | `submissions` | Original canonical JSON, queue state, attempts, retry time, error and published reference ID | Durable processing, duplicate upload handling and status; JSON includes analysis windows and supplied metadata |
-| `reference_tracks` | Acoustic reference ID, metadata JSON, creation time and publication readiness | Searchable references and retained legacy references excluded for incomplete metadata, including optional enrichment |
-| `landmarks` | Hash, reference ID and absolute offset in FFT hops | Searchable acoustic index; potentially many rows per reference |
+| `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time and publication readiness | Searchable references and retained legacy references excluded for incomplete metadata, including optional enrichment |
+| `landmarks` | Ten-byte binary hash, internal reference ID and absolute offset in FFT hops | Compact searchable acoustic index; potentially many rows per reference |
 | `enrichment_cache` | ISRC, lookup result JSON and expiry | Cache successful, empty and ambiguous MusicBrainz results; normally empty when enrichment is disabled |
 
 ```mermaid
@@ -145,12 +145,13 @@ erDiagram
         TEXT reference_id
     }
     reference_tracks {
-        TEXT id PK
+        INTEGER id PK
+        TEXT reference_key UK
         TEXT metadata
     }
     landmarks {
-        TEXT hash PK
-        TEXT reference_id PK, FK
+        BLOB hash PK
+        INTEGER reference_id PK, FK
         INTEGER offset PK
     }
     enrichment_cache {
@@ -161,9 +162,14 @@ erDiagram
 ```
 
 Only `landmarks.reference_id` has a database-enforced foreign key; the submission link
-is set by the worker. The landmark primary key is the combination of hash, reference
-and offset, and its hash-first index supports recognition lookups. Queue selection has
-an additional index on state, retry time and creation time.
+is set by the worker and retains the public acoustic key, not the internal integer ID.
+The landmark primary key is the combination of hash, reference and offset. Its
+`WITHOUT ROWID` table stores that key once, and its hash-first order supports recognition
+lookups. The lookup keeps the small query table before the landmark table in the join
+order, avoiding a scan of the entire reference collection. Hashes are stored losslessly
+as ten bytes rather than twenty hexadecimal characters; upload documents and API
+reference IDs remain unchanged. Queue selection has an additional index on state,
+retry time and creation time.
 
 Recognition creates a connection-local temporary `query` table for the hash join;
 it is not a fifth persistent table and disappears when the connection closes.
@@ -217,16 +223,60 @@ Do not scale it to multiple workers/replicas: queue recovery, request throttling
 the ingestion worker are single-process. PostgreSQL and distributed workers are not included.
 Never delete the volume during upgrades; back up the SQLite database with SQLite's
 backup API (or with the service stopped), not by copying a live database without its WAL.
-Startup adds a publication-readiness column to older databases and checks their stored
-metadata once. This additive, repeatable migration retains references, landmarks and original
-submissions, including malformed or missing historical metadata. Incomplete references are
-excluded from recognition and their formerly processed uploads become `pending_metadata`.
+Startup upgrades recognized older databases before starting the worker or serving requests;
+see the version and recovery policy below. Incomplete historical references remain excluded
+from recognition and their formerly processed uploads become `pending_metadata`.
 Malformed historical coverage is counted as partial for otherwise complete references.
 
 Never run two receiver workers against the same database. Keep credentials,
 collection backups and machine-specific Compose overrides outside version control.
 If MA already binds port 8097, use a local override for the gateway's published
 port; do not publish the backend.
+
+### Database upgrades and version policy
+
+Three independent versions describe different contracts:
+
+| Version | Current value | When it changes |
+| --- | --- | --- |
+| Database schema (`PRAGMA user_version`, `DB_SCHEMA_VERSION`) | 2 | Stored tables, columns or indexes need a migration |
+| HTTP API major version | `/api/v1` | An incompatible request/response contract requires a new API major version |
+| Fingerprint format (`format_id`) | v1 and v2 supported | Acoustic parameters or coverage semantics change |
+
+DB version 0 denotes the original unversioned databases, with or without the
+publication-readiness column. Migration 1 completes the publication gate. Migration 2
+converts hashes to binary storage and assigns internal integer reference IDs.
+Public reference keys, submission IDs, original documents, metadata, offsets, cache
+entries and publication decisions are retained. This is a storage change, not a
+fingerprint algorithm or HTTP API change; producers need no update or reanalysis.
+New installations create schema 2 directly.
+
+Before upgrading an existing database, startup creates a consistent SQLite backup beside
+it named `<database>.pre-v<old-version>-<timestamp>.bak` and logs its path. The backup
+includes committed WAL data, is private to the file owner and is not automatically deleted.
+Allow space for this full backup, the replacement tables and the migration WAL.
+Large collections can take time to upgrade; do not start a second server process.
+All migration steps and version changes commit together. A failed migration rolls back
+and stops startup with an error instead of resetting the collection. Invalid hashes,
+orphaned landmarks, unknown layouts and newer unsupported schema versions are refused
+rather than discarded or guessed.
+
+The compact tables use fewer active pages, but SQLite reuses freed pages rather than
+automatically shrinking the file. Optional file compaction with SQLite `VACUUM` should
+be scheduled separately while the service is stopped, after a backup and with enough
+temporary disk space. Startup does not run `VACUUM`.
+
+For a downgrade, stop the service and restore the pre-upgrade backup using SQLite's
+backup tooling before starting the older executable. Do not run old code against the
+compact schema or copy over a database while its WAL/SHM files are still in use.
+A restore loses uploads accepted after that backup; retain the upgraded database
+separately if those later uploads need recovery.
+
+Future DB changes add ordered migrations and increase `DB_SCHEMA_VERSION`; unsupported
+newer versions must continue to stop startup. A storage-only change does not bump the API.
+An incompatible API change needs a new route version and coordinated producer support.
+A new acoustic format needs an explicit `format_id`, receiver support before producers
+enable it, and a compatibility decision; a DB migration never relabels old fingerprints.
 
 ## API
 
@@ -290,8 +340,9 @@ analyses eligible for replacement on the next normal full playback or an existin
 filesystem-only scan. It does not fetch streaming-provider audio for backfill, redirect old
 uploads, or retroactively upload private analyses.
 
-Existing server references and pending v1 submissions remain valid; there is no database
-schema migration or deletion. They do not become fully covered just by upgrading.
+Existing server references and pending v1 submissions remain valid and are not deleted.
+The current storage upgrade preserves them without changing their fingerprint format.
+They do not become fully covered just by upgrading.
 Statistics count acoustic references, so one recording can have an old partial and a new
 full reference. Matching groups strongly overlapping, equally aligned references with
 identical nonempty identifying metadata to avoid treating old/new copies as competing
