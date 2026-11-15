@@ -281,8 +281,8 @@ def test_exact_duplicate_promotes_excluded_reference_without_acoustic_merge(tmp_
     assert store.match([("0" * 20, 0)])[0]["metadata"] == payload["metadata"]
 
 
-async def test_worker_defers_legacy_incomplete_queue_without_lookup(tmp_path: Path) -> None:
-    """Pre-gate queued work becomes terminal pending, never repeatedly claimed or enriched."""
+async def test_worker_defers_unresolved_legacy_incomplete_queue(tmp_path: Path) -> None:
+    """Pre-gate queued work is looked up and retained when the identifier is not found."""
     configuration = settings(
         tmp_path, musicbrainz_enabled=True, musicbrainz_contact="test@example.invalid"
     )
@@ -296,10 +296,10 @@ async def test_worker_defers_legacy_incomplete_queue_without_lookup(tmp_path: Pa
             (json.dumps(payload),),
         )
 
-    def no_lookup(request: httpx.Request) -> httpx.Response:
-        pytest.fail(f"Incomplete metadata must not trigger an online lookup: {request.url}")
+    def no_match(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(no_lookup)) as client:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(no_match)) as client:
         worker = Worker(store, configuration, client)
         task = asyncio.create_task(worker.run())
         try:

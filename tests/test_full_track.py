@@ -8,7 +8,7 @@ import httpx
 import numpy as np
 import pytest
 import test_server
-from music_assistant_fingerprint import (
+from audio_fingerprint import (
     FORMAT_ID,
     HOP_SIZE,
     LEGACY_FORMAT_ID,

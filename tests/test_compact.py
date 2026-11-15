@@ -7,8 +7,8 @@ from pathlib import Path
 import httpx
 import pytest
 import test_server
+from audio_fingerprint.codec import ENCODING_ID, decode_document, encode_document
 from fastapi import HTTPException
-from music_assistant_fingerprint.codec import ENCODING_ID, decode_document, encode_document
 from test_metadata_gate import document
 from test_server import UPLOAD, canonical
 
@@ -48,6 +48,8 @@ def test_existing_documents_are_compacted_without_changing_ids(tmp_path: Path) -
     store.submit(identifier, body.decode(), 10)
     store.finish(identifier, "reference", payload["metadata"], [("0" * 20, 0)])
     with store.connect() as db:
+        db.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
+        db.execute("DROP TABLE service_state")
         db.execute("PRAGMA user_version=2")
     store.initialize()
     with store.connect() as db:

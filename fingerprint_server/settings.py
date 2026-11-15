@@ -50,6 +50,6 @@ class Settings(BaseSettings):
             raise ValueError("FP_APPLICATION_KEY requires FP_GATEWAY_ENABLED=true")
         if self.application_key in (self.upload_key, self.read_key):
             raise ValueError("The application key must differ from the internal scope keys")
-        if self.musicbrainz_enabled and not self.musicbrainz_contact:
+        if self.musicbrainz_enabled and not self.musicbrainz_contact.strip():
             raise ValueError("MusicBrainz lookups require FP_MUSICBRAINZ_CONTACT")
         return self

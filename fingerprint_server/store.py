@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import sqlite3
 import time
 from collections import defaultdict
@@ -10,11 +12,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
-from music_assistant_fingerprint import HOP_SIZE, SAMPLE_RATE
+from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 
 from fingerprint_server.migrations import initialize_database
-from fingerprint_server.schemas import metadata_complete
+from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete
 
 MATCH_QUERY = """
     SELECT t.reference_key AS reference_id,l.offset-q.offset AS delta,q.idx,q.offset
@@ -22,6 +25,24 @@ MATCH_QUERY = """
     JOIN reference_tracks t ON t.id=l.reference_id
     WHERE t.publication_ready=1 LIMIT 100001
 """
+MUSICBRAINZ_VERIFICATION_VERSION = 1
+LOGGER = logging.getLogger(__name__)
+
+
+def _has_identifier(metadata: object) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    isrc = metadata.get("isrc")
+    if isinstance(isrc, str) and re.fullmatch(ISRC_PATTERN, isrc):
+        return True
+    mbid = metadata.get("recording_mbid")
+    if isinstance(mbid, str):
+        try:
+            UUID(mbid)
+        except ValueError:
+            return False
+        return True
+    return False
 
 
 class QueueFullError(Exception):
@@ -35,8 +56,9 @@ class QueryTooBroadError(Exception):
 class Store:
     """Single-process SQLite storage; call methods outside the event loop."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, musicbrainz_enabled: bool = False) -> None:
         self.path = path
+        self.musicbrainz_enabled = musicbrainz_enabled
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -51,10 +73,116 @@ class Store:
             connection.close()
 
     def initialize(self) -> None:
-        """Upgrade storage safely and recover interrupted queue work before serving requests."""
+        """Upgrade storage and apply verification transitions before serving requests."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             initialize_database(db, self.path)
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT value FROM service_state WHERE key='musicbrainz_enabled'"
+            ).fetchone()
+            previous_version = db.execute(
+                "SELECT value FROM service_state WHERE key='verification_version'"
+            ).fetchone()
+            enabled = "1" if self.musicbrainz_enabled else "0"
+            current_version = str(MUSICBRAINZ_VERIFICATION_VERSION)
+            changed = previous is None or previous[0] != enabled
+            if self.musicbrainz_enabled and (
+                previous_version is None or previous_version[0] != current_version
+            ):
+                changed = True
+            if changed:
+                if self.musicbrainz_enabled:
+                    db.execute(
+                        "UPDATE reference_tracks SET publication_ready=0 "
+                        "WHERE verification_version!=?",
+                        (MUSICBRAINZ_VERIFICATION_VERSION,),
+                    )
+                    rows = db.execute(
+                        "SELECT s.id FROM submissions s "
+                        "LEFT JOIN reference_tracks t ON t.reference_key=s.reference_id "
+                        "WHERE s.state IN ('processed','pending_metadata') AND "
+                        "(s.state='pending_metadata' OR s.reference_id IS NULL OR "
+                        "coalesce(t.verification_version,0)!=?)",
+                        (MUSICBRAINZ_VERIFICATION_VERSION,),
+                    ).fetchall()
+                    for (submission_id,) in rows:
+                        row = db.execute(
+                            "SELECT s.document,s.state,t.metadata FROM submissions s "
+                            "LEFT JOIN reference_tracks t ON t.reference_key=s.reference_id "
+                            "WHERE s.id=?",
+                            (submission_id,),
+                        ).fetchone()
+                        try:
+                            supplied = json.loads(row["document"]).get("metadata", {})
+                            existing = json.loads(row["metadata"]) if row["metadata"] else {}
+                            usable = _has_identifier(supplied) or (
+                                row["state"] == "processed" and _has_identifier(existing)
+                            )
+                        except (ValueError, TypeError, AttributeError):
+                            LOGGER.warning(
+                                "Cannot inspect retained metadata for submission %s",
+                                submission_id,
+                            )
+                            usable = False
+                        if usable:
+                            db.execute(
+                                "UPDATE submissions SET state='queued',attempts=0,retry_at=0,"
+                                "error=NULL WHERE id=?",
+                                (submission_id,),
+                            )
+                        elif row["metadata"] is not None:
+                            db.execute(
+                                "UPDATE submissions SET state='pending_metadata',"
+                                "error='MusicBrainz identifier unavailable' WHERE id=?",
+                                (submission_id,),
+                            )
+                else:
+                    for row in db.execute(
+                        "SELECT id,metadata FROM reference_tracks WHERE publication_ready=0"
+                    ).fetchall():
+                        try:
+                            complete = metadata_complete(json.loads(row["metadata"]))
+                        except (TypeError, ValueError):
+                            LOGGER.warning(
+                                "Cannot restore reference %s with invalid retained metadata",
+                                row["id"],
+                            )
+                            complete = False
+                        if complete:
+                            db.execute(
+                                "UPDATE reference_tracks SET publication_ready=1 WHERE id=?",
+                                (row["id"],),
+                            )
+                    for (submission_id,) in db.execute(
+                        "SELECT id FROM submissions WHERE state='pending_metadata'"
+                    ).fetchall():
+                        document = db.execute(
+                            "SELECT document FROM submissions WHERE id=?", (submission_id,)
+                        ).fetchone()[0]
+                        try:
+                            complete = metadata_complete(json.loads(document)["metadata"])
+                        except (TypeError, ValueError, KeyError):
+                            LOGGER.warning(
+                                "Cannot restore submission %s with invalid retained metadata",
+                                submission_id,
+                            )
+                            complete = False
+                        if complete:
+                            db.execute(
+                                "UPDATE submissions SET state='queued',attempts=0,retry_at=0,"
+                                "error=NULL WHERE id=?",
+                                (submission_id,),
+                            )
+                db.execute(
+                    "INSERT OR REPLACE INTO service_state VALUES('musicbrainz_enabled',?)",
+                    (enabled,),
+                )
+                if self.musicbrainz_enabled:
+                    db.execute(
+                        "INSERT OR REPLACE INTO service_state VALUES('verification_version',?)",
+                        (current_version,),
+                    )
 
     def submit(
         self, submission_id: str, document: str, limit: int, byte_limit: int = 256_000_000
@@ -80,8 +208,16 @@ class Store:
                 and "metadata" in payload
                 and not metadata_complete(payload["metadata"])
             )
+            if pending and self.musicbrainz_enabled and isinstance(payload["metadata"], dict):
+                pending = not _has_identifier(payload["metadata"])
             state = "pending_metadata" if pending else "queued"
-            error = "Incomplete metadata" if pending else None
+            error = (
+                "MusicBrainz identifier unavailable"
+                if pending and self.musicbrainz_enabled
+                else "Incomplete metadata"
+                if pending
+                else None
+            )
             db.execute(
                 "INSERT INTO submissions(id,document,state,error,created_at) VALUES(?,?,?,?,?)",
                 (submission_id, document, state, error, time.time()),
@@ -153,8 +289,11 @@ class Store:
         reference_id: str,
         metadata: dict[str, Any],
         fingerprints: list[tuple[str, int]],
+        verified: bool = False,
     ) -> None:
         """Publish a validated reference and mark queue completion in one transaction."""
+        if self.musicbrainz_enabled and not verified:
+            raise ValueError("MusicBrainz verification is required to publish")
         if not metadata_complete(metadata):
             self.pending_metadata(submission_id)
             return
@@ -162,9 +301,14 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             inserted = db.execute(
                 "INSERT OR IGNORE INTO reference_tracks"
-                "(reference_key,metadata,created_at,publication_ready) "
-                "VALUES(?,?,?,1)",
-                (reference_id, json.dumps(metadata), time.time()),
+                "(reference_key,metadata,created_at,publication_ready,verification_version) "
+                "VALUES(?,?,?,1,?)",
+                (
+                    reference_id,
+                    json.dumps(metadata),
+                    time.time(),
+                    MUSICBRAINZ_VERIFICATION_VERSION if verified else 0,
+                ),
             )
             if inserted.rowcount:
                 internal_id = inserted.lastrowid
@@ -177,23 +321,45 @@ class Store:
                 )
             else:
                 db.execute(
-                    "UPDATE reference_tracks SET metadata=?,publication_ready=1 "
+                    "UPDATE reference_tracks SET metadata=?,publication_ready=1,"
+                    "verification_version=? "
                     "WHERE reference_key=? AND publication_ready=0",
-                    (json.dumps(metadata), reference_id),
+                    (
+                        json.dumps(metadata),
+                        MUSICBRAINZ_VERIFICATION_VERSION if verified else 0,
+                        reference_id,
+                    ),
                 )
             db.execute(
                 "UPDATE submissions SET state='processed',reference_id=?,error=NULL WHERE id=?",
                 (reference_id, submission_id),
             )
 
-    def pending_metadata(self, submission_id: str) -> None:
+    def pending_metadata(self, submission_id: str, reason: str = "Incomplete metadata") -> None:
         """Retain an incomplete document without retrying or publishing it."""
         with self.connect() as db:
             db.execute(
-                "UPDATE submissions SET state='pending_metadata',error='Incomplete metadata',"
-                "retry_at=0 WHERE id=?",
-                (submission_id,),
+                "UPDATE submissions SET state='pending_metadata',error=?,retry_at=0 WHERE id=?",
+                (reason, submission_id),
             )
+
+    def reference_metadata(self, reference_id: str | None) -> dict[str, Any]:
+        """Return retained reference metadata for a previously published submission."""
+        if reference_id is None:
+            return {}
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT metadata FROM reference_tracks WHERE reference_key=?", (reference_id,)
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            result = json.loads(row[0])
+        except (ValueError, TypeError) as err:
+            raise ValueError("Invalid retained reference metadata") from err
+        if not isinstance(result, dict):
+            raise ValueError("Invalid retained reference metadata")
+        return result
 
     def fail(self, submission_id: str, error: str, retry_seconds: int | None) -> None:
         """Record explicit terminal failure or persist a delayed retry."""
@@ -208,21 +374,31 @@ class Store:
                 ),
             )
 
-    def cached_enrichment(self, isrc: str) -> dict[str, Any] | None:
+    def defer_musicbrainz(self, submission_id: str, retry_seconds: float) -> None:
+        """Return a claimed submission to the queue without consuming an attempt."""
+        with self.connect() as db:
+            db.execute(
+                "UPDATE submissions SET state='queued',attempts=max(0,attempts-1),"
+                "error='MusicBrainz service unavailable',retry_at=? "
+                "WHERE id=? AND state='processing'",
+                (time.time() + retry_seconds, submission_id),
+            )
+
+    def cached_enrichment(self, key: str) -> dict[str, Any] | None:
         """Return unexpired MusicBrainz lookup data."""
         with self.connect() as db:
             row = db.execute(
                 "SELECT document FROM enrichment_cache WHERE isrc=? AND expires_at>?",
-                (isrc, time.time()),
+                (key, time.time()),
             ).fetchone()
             return json.loads(row[0]) if row else None
 
-    def cache_enrichment(self, isrc: str, document: dict[str, Any]) -> None:
+    def cache_enrichment(self, key: str, document: dict[str, Any]) -> None:
         """Persist positive, ambiguous and empty lookups to avoid repeat requests."""
         with self.connect() as db:
             db.execute(
                 "INSERT OR REPLACE INTO enrichment_cache VALUES(?,?,?)",
-                (isrc, json.dumps(document), time.time() + 7 * 86400),
+                (key, json.dumps(document), time.time() + 7 * 86400),
             )
 
     def match(self, query: list[tuple[str, int]]) -> list[dict[str, Any]]:

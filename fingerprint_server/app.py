@@ -17,10 +17,10 @@ from typing import Any, Literal
 
 import httpx
 import soxr
+from audio_fingerprint import MAX_DOCUMENT_BYTES, SAMPLE_RATE, decode_pcm, fingerprint
+from audio_fingerprint.codec import ENCODING_ID, decode_document
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
-from music_assistant_fingerprint import MAX_DOCUMENT_BYTES, SAMPLE_RATE, decode_pcm, fingerprint
-from music_assistant_fingerprint.codec import ENCODING_ID, decode_document
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
@@ -109,7 +109,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         settings = configuration or Settings()  # type: ignore[call-arg]
-        store = Store(settings.database)
+        store = Store(settings.database, settings.musicbrainz_enabled)
         await run_sync(store.initialize)
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
             worker = Worker(store, settings, client)

@@ -14,7 +14,7 @@ import httpx
 import numpy as np
 import pytest
 import soxr
-from music_assistant_fingerprint import FORMAT_ID, HOP_SIZE, SAMPLE_RATE, fingerprint, plan_windows
+from audio_fingerprint import FORMAT_ID, HOP_SIZE, SAMPLE_RATE, fingerprint, plan_windows
 from pydantic import SecretStr, ValidationError
 
 from fingerprint_server.app import MAX_DOCUMENT_BYTES, create_app
@@ -354,6 +354,7 @@ async def test_musicbrainz_enrichment_is_cached_without_guessing(
             200,
             json={
                 "isrc": "USAAA2600001",
+                "recording-count": 1,
                 "recordings": [{"id": "00000000-0000-4000-8000-000000000001"}],
             },
         )
@@ -362,11 +363,12 @@ async def test_musicbrainz_enrichment_is_cached_without_guessing(
     store.initialize()
     async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as connection:
         worker = Worker(store, settings(tmp_path, musicbrainz_base_url=base_url), connection)
-        result = await worker.enrich("USAAA2600001")
+        result = await worker.lookup("isrc", "USAAA2600001")
         assert result["status"] == "resolved"
-        assert await worker.enrich("USAAA2600001") == result
+        assert await worker.lookup("isrc", "USAAA2600001") == result
         assert len(calls) == 1
-        assert str(calls[0].url) == f"{base_url.rstrip('/')}/isrc/USAAA2600001?fmt=json"
+        assert calls[0].url.path == f"{httpx.URL(base_url).path.rstrip('/')}/isrc/USAAA2600001"
+        assert calls[0].url.params["inc"] == "artists+releases"
 
 
 @pytest.mark.parametrize(
@@ -391,14 +393,22 @@ async def test_musicbrainz_empty_or_ambiguous_lookup_stays_unresolved(
     """Missing or multiple ISRC candidates cannot fabricate a recording assignment."""
     store = Store(tmp_path / "test.db")
     store.initialize()
-    response = {"isrc": "USAAA2600001", "recordings": [{"id": "one"}, {"id": "two"}]}
+    response = {
+        "isrc": "USAAA2600001",
+        "recording-count": 2,
+        "recordings": [
+            {"id": "00000000-0000-4000-8000-000000000001"},
+            {"id": "00000000-0000-4000-8000-000000000002"},
+        ],
+    }
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _request: httpx.Response(status, json=response))
     ) as connection:
         worker = Worker(store, settings(tmp_path), connection)
-        result = await worker.enrich("USAAA2600001")
-        assert result["status"] == ("not_found" if status == 404 else "ambiguous")
-        assert "recording_mbid" not in result
+        from fingerprint_server.worker import EnrichmentError
+
+        with pytest.raises(EnrichmentError, match="not found" if status == 404 else "ambiguous"):
+            await worker.verify({"isrc": "USAAA2600001"})
 
 
 async def test_terminal_processing_failure_is_visible(tmp_path: Path) -> None:
@@ -430,7 +440,7 @@ async def test_online_lookup_failure_persists_retry(tmp_path: Path) -> None:
     store.initialize()
     store.submit(identifier, body.decode(), 10)
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _request: httpx.Response(503))
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500))
     ) as connection:
         worker = Worker(store, configuration, connection)
         task = asyncio.create_task(worker.run())

@@ -1,10 +1,8 @@
 # Audio Fingerprint Server
 
-An independent experimental service compatible with Music Assistant fingerprint submissions. This is not an official Music Assistant or Open Home Foundation (OHF) project, and no endorsement or adoption is implied. Future integration would require agreement with the respective maintainers. Music Assistant names below describe compatibility, not ownership. The existing package/directory names and fingerprint format identifier remain unchanged for now, so installation and protocol compatibility are preserved.
+An independent experimental service compatible with Music Assistant fingerprint submissions. This is not an official Music Assistant or Open Home Foundation (OHF) project, and no endorsement or adoption is implied. Future integration would require agreement with the respective maintainers. Music Assistant names below describe compatibility, not ownership. The shared library uses the neutral distribution name `audio-fingerprint` and Python import `audio_fingerprint`; stored fingerprint format IDs and this server's deployment directory remain unchanged for compatibility.
 
-Licensed under [MIT](LICENSE). The shared library is available at
-[dmoo500/audio-fingerprint](https://github.com/dmoo500/audio-fingerprint).
-Its exact Git revision is pinned because there is no PyPI release.
+Licensed under [MIT](LICENSE). The shared library is available at [dmoo500/audio-fingerprint](https://github.com/dmoo500/audio-fingerprint). Its exact Git revision is pinned because there is no PyPI release.
 
 The old analysis server is not modified. It accepts the MA `dejavu_analysis` provider's full-track `ma-dejavu-landmarks-v2` fingerprints and legacy sampled `ma-dejavu-landmarks-v1` documents, durably queues them and publishes validated references atomically. A local microphone page tests recognition against those references. No original provider audio is requested or stored; microphone PCM is processed in memory and discarded.
 
@@ -24,11 +22,11 @@ flowchart TD
     D --> E["JSON: format, windows, fingerprints and allowlisted metadata"]
     E --> F["POST submissions: upload key and canonical document SHA-256"]
     F --> G["Server: authenticate, enforce limits and validate document and coverage"]
-    G --> H["Commit submission: queued if metadata complete, otherwise pending_metadata"]
+    G --> H["Commit submission: queue eligible work or retain pending_metadata"]
     H --> I["HTTP 202: accepted, not yet searchable"]
 ```
 
-The shared `music-assistant-fingerprint` library implements window sampling and landmark extraction. A landmark is a frequency-pair hash plus a time offset, not an audio file or a title-based identifier. New v2 windows cover the entire decoded track; their approximately ten-second overlap protects context at section boundaries. Old v1 references still have unsampled gaps. Existing private analyses are not automatically uploaded. Repeated identical documents reuse their submission ID; already processed ones return HTTP 200 instead of adding queue work.
+The shared `audio-fingerprint` library implements window sampling and landmark extraction. A landmark is a frequency-pair hash plus a time offset, not an audio file or a title-based identifier. New v2 windows cover the entire decoded track; their approximately ten-second overlap protects context at section boundaries. Old v1 references still have unsampled gaps. Existing private analyses are not automatically uploaded. Repeated identical documents reuse their submission ID; already processed ones return HTTP 200 instead of adding queue work.
 
 ### 2. Process the queue and publish a reference
 
@@ -36,24 +34,27 @@ The shared `music-assistant-fingerprint` library implements window sampling and 
 flowchart TD
     A["Durable queue: queued submission eligible for processing"] --> B["Worker claims entry: processing, attempts incremented"]
     B --> C["Validate stored document again"]
-    C --> L{"Supplied metadata complete?"}
-    L -->|No| M["Durable pending_metadata: not published or retried"]
-    L -->|Yes| D{"MusicBrainz enabled and ISRC supplied?"}
-    D -->|No| G["Compute acoustic reference ID from format, windows and sorted fingerprints"]
-    D -->|Yes| E["Check ISRC cache; if needed, perform paced MusicBrainz lookup"]
-    E --> F["Preserve supplied metadata and attach explicit enrichment result"]
-    F --> G
+    C --> D{"MusicBrainz enabled?"}
+    D -->|Yes| E["Verify recording MBID and/or ISRC with paced cached lookups"]
+    E -->|Unverifiable or conflicting| M["Durable pending_metadata: not published or retried"]
+    E -->|Verified| F["Fill only missing unambiguous metadata"]
+    D -->|No| L{"Metadata complete?"}
+    F --> L
+    L -->|No| M
+    L -->|Yes| G["Compute acoustic reference ID from format, windows and sorted fingerprints"]
     G --> H["One transaction: insert reference and landmarks if new; mark submission processed"]
     H --> I["Reference is searchable; exact acoustic duplicates reuse existing reference"]
     C -->|Invalid document| J["Terminal failed state with explicit error"]
-    E -->|Malformed response| J
+    E -->|Malformed response| M
+    E -->|HTTP 429, 502 or 503| N["Service-wide cooldown; defer without consuming an attempt"]
+    N -->|Retry due| A
     E -->|Network failure or timeout| K["Delayed retry; failed after three attempts"]
     K -->|Retry due| A
 ```
 
 The submission ID covers the **whole document**, including metadata. The reference ID covers the **acoustic content and coverage**, excluding metadata. Multiple submissions can therefore point to one reference, and a later duplicate does not overwrite the first published complete metadata. An exact acoustic duplicate with complete metadata can make an excluded legacy reference searchable, without deleting its landmarks or original submission. Compact and legacy encodings of the same canonical document share an ID. Different acoustic formats or sampled passages are not automatically merged into one song.
 
-Publication requires a nonblank title, at least one nonblank artist, a nonblank album, a positive finite duration, and either a valid ISRC or a recording UUID. Whitespace is checked but supplied metadata is not trimmed or rewritten. Structurally valid submissions missing these fields are retained as `pending_metadata`, not recognized, merged or retried. A missing duration defers the exact track-end coverage check, but window, offset, duration and upload limits still apply; supplied invalid durations or identifiers are rejected. To complete metadata, submit a corrected document; its whole-document submission ID is different. The original pending document remains retained. There is no automatic backfill, title guessing or online lookup for pending documents. Configured MusicBrainz enrichment continues to attach identifier lookup results only to complete submissions.
+Publication requires a nonblank title, at least one nonblank artist, a nonblank album, a positive finite duration, and either a valid ISRC or a recording UUID. Whitespace is checked but supplied metadata is not trimmed or rewritten. With MusicBrainz disabled, incomplete documents remain `pending_metadata`; with it enabled, documents with an identifier are checked before completeness and missing fields can be filled from an unambiguous result. An unresolved identifier, conflicting identifiers or missing required metadata remains pending with a reason and is not published. A missing duration defers the exact track-end coverage check, but window, offset, duration and upload limits still apply; duration is not inferred from MusicBrainz. To correct metadata, submit a corrected document; its whole-document submission ID is different and the original document remains retained.
 
 Publishing is atomic: recognition cannot see a half-inserted reference. On startup, interrupted `processing` entries return to `queued`. An unexpected worker crash is reported and makes the health check fail rather than pretending ingestion still works.
 
@@ -77,16 +78,17 @@ For each matching hash, the matcher subtracts the query offset from the referenc
 
 Only indexed passages can contribute matching landmarks. MusicBrainz enrichment adds metadata, not fingerprints, and cannot make an unindexed song recognizable.
 
-## Why only four database tables?
+## Database tables
 
 This is a recognition index with a durable ingestion queue, not a full music-library database. It does not maintain separate artist, album, user, audio-file or recognition history tables. Much of the structured input is retained as JSON:
 
 | Persistent table | Contents | Purpose |
 | --- | --- | --- |
 | `submissions` | Legacy or compact JSON, queue state, attempts, retry time, error and published reference ID | Durable processing, duplicate upload handling and status; JSON includes analysis windows and supplied metadata |
-| `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time and publication readiness | Searchable references and retained legacy references excluded for incomplete metadata, including optional enrichment |
+| `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time, publication readiness and verification version | Searchable references and retained references withheld pending metadata or identifier verification |
 | `landmarks` | Ten-byte binary hash, internal reference ID and absolute offset in FFT hops | Compact searchable acoustic index; potentially many rows per reference |
-| `enrichment_cache` | ISRC, lookup result JSON and expiry | Cache successful, empty and ambiguous MusicBrainz results; normally empty when enrichment is disabled |
+| `enrichment_cache` | Versioned endpoint and identifier key, lookup result JSON and expiry | Cache successful, empty and ambiguous MusicBrainz results; normally empty when enrichment is disabled |
+| `service_state` | Configuration transition markers | Keep enable and disable transitions durable and idempotent |
 
 ```mermaid
 erDiagram
@@ -113,11 +115,15 @@ erDiagram
         TEXT document
         REAL expires_at
     }
+    service_state {
+        TEXT key PK
+        TEXT value
+    }
 ```
 
 Only `landmarks.reference_id` has a database-enforced foreign key; the submission link is set by the worker and retains the public acoustic key, not the internal integer ID. The landmark primary key is the combination of hash, reference and offset. Its `WITHOUT ROWID` table stores that key once, and its hash-first order supports recognition lookups. The lookup keeps the small query table before the landmark table in the join order, avoiding a scan of the entire reference collection. Hashes are stored losslessly as ten bytes rather than twenty hexadecimal characters; upload documents and API reference IDs remain unchanged. Queue selection has an additional index on state, retry time and creation time.
 
-Recognition creates a connection-local temporary `query` table for the hash join; it is not a fifth persistent table and disappears when the connection closes. Coverage statistics are derived from submitted windows and reference duration rather than stored in another table. SQLite WAL/SHM files are database support files, not tables. Table count therefore says little about collection size: count references and landmark rows separately. There is no automatic pruning of processed submissions or references in this pilot.
+Recognition creates a connection-local temporary `query` table for the hash join; it is not persistent and disappears when the connection closes. Coverage statistics are derived from submitted windows and reference duration rather than stored in another table. SQLite WAL/SHM files are database support files, not tables. Table count therefore says little about collection size: count references and landmark rows separately. There is no automatic pruning of processed submissions or references in this pilot.
 
 ## Benchmark results and shipped optimizations
 
@@ -229,12 +235,12 @@ Four independent versions describe different contracts:
 
 | Version | Current value | When it changes |
 | --- | --- | --- |
-| Database schema (`PRAGMA user_version`, `DB_SCHEMA_VERSION`) | 3 | Stored layout or document encoding needs a migration |
+| Database schema (`PRAGMA user_version`, `DB_SCHEMA_VERSION`) | 4 | Stored layout or document encoding needs a migration |
 | HTTP API major version | `/api/v1` | An incompatible request/response contract requires a new API major version |
 | Fingerprint format (`format_id`) | v1 and v2 supported | Acoustic parameters or coverage semantics change |
 | Landmark encoding (`fingerprints_encoding`) | `sha1-80-offset-delta-v1` or legacy JSON | Lossless landmark representation changes |
 
-DB version 0 denotes the original unversioned databases, with or without the publication-readiness column. Migration 1 completes the publication gate. Migration 2 converts hashes to binary storage and assigns internal integer reference IDs. Public reference keys, submission IDs, decoded documents, metadata, offsets, cache entries and publication decisions are retained. This is a storage change, not a fingerprint algorithm or HTTP API change; producers need no update or reanalysis. Migration 3 compacts existing valid canonical submission documents using the shared codec. Invalid or noncanonical records are logged and retained unchanged; migration never invents replacement IDs. New installations create schema 3 directly.
+DB version 0 denotes the original unversioned databases, with or without the publication-readiness column. Migration 1 completes the publication gate. Migration 2 converts hashes to binary storage and assigns internal integer reference IDs. Public reference keys, submission IDs, decoded documents, metadata, offsets, cache entries and publication decisions are retained. This is a storage change, not a fingerprint algorithm or HTTP API change; producers need no update or reanalysis. Migration 3 compacts existing valid canonical submission documents using the shared codec. Invalid or noncanonical records are logged and retained unchanged; migration never invents replacement IDs. Migration 4 records verification versions and configuration transitions; new installations create schema 4 directly.
 
 Before upgrading an existing database, startup creates a consistent SQLite backup beside it named `<database>.pre-v<old-version>-<timestamp>.bak` and logs its path. The backup includes committed WAL data, is private to the file owner and is not automatically deleted. Allow space for this full backup, the replacement tables and the migration WAL. Large collections can take time to upgrade; do not start a second server process. All migration steps and version changes commit together. A failed migration rolls back and stops startup with an error instead of resetting the collection. Invalid hashes, orphaned landmarks, unknown layouts and newer unsupported schema versions are refused rather than discarded or guessed.
 
@@ -334,10 +340,7 @@ docker compose -f compose.gateway.yaml up --build -d
 uv run --no-sync python -m fingerprint_server.gateway configure
 ```
 
-Wait for APISIX to start before running `configure`; failures are reported and the command can be repeated. It updates the managed routes and role groups, preserving personal keys. Until routes are configured, the gateway has no public catch-all route to the backend. The gateway proxy is at `http://localhost:8097`; its Admin API is bound to loopback port
-9180. The etcd service has no host port. Keep Admin API access private and never give its
-key to a developer or browser. The loopback proxy needs an HTTPS front end before remote
-use; microphone access also requires HTTPS outside localhost.
+Wait for APISIX to start before running `configure`; failures are reported and the command can be repeated. It updates the managed routes and role groups, preserving personal keys. Until routes are configured, the gateway has no public catch-all route to the backend. The gateway proxy is at `http://localhost:8097`; its Admin API is bound to loopback port 9180. The etcd service has no host port. Keep Admin API access private and never give its key to a developer or browser. The loopback proxy needs an HTTPS front end before remote use; microphone access also requires HTTPS outside localhost.
 
 #### Issue, rotate and revoke personal keys
 
@@ -392,9 +395,13 @@ export FP_MUSICBRAINZ_CONTACT="operator@example.org"
 export FP_MUSICBRAINZ_BASE_URL="https://metadata.example.org/musicbrainz/ws/2"
 ```
 
-The worker appends `/isrc/{isrc}?fmt=json`. HTTP is supported for explicitly configured local instances; use HTTPS for remote endpoints. Embedded credentials, query strings and fragments in the base URL are rejected. Both Compose modes pass these settings through; recreate the service after changing them. Inside a container, `localhost` refers to that container, so use a hostname reachable from the backend. Existing cached ISRC results remain valid until their seven-day expiry when switching endpoints; changing the URL does not replace published reference metadata.
+The worker uses `/recording/{mbid}?inc=artists+isrcs+releases&fmt=json` and `/isrc/{isrc}?inc=artists+releases&fmt=json`. HTTP is supported for explicitly configured local instances; use HTTPS for remote endpoints. Embedded credentials, query strings and fragments in the base URL are rejected. Both Compose modes pass these settings through; recreate the service after changing them. Inside a container, `localhost` refers to that container, so use a hostname reachable from the backend. Cache keys include the API endpoint and response version, so older cache entries and results from a different endpoint are not reused.
 
-The worker uses supplied ISRCs only; it does not guess recordings from song titles. Lookups are paced at least 1.1 seconds apart and cached for seven days, including empty and ambiguous results. Only a unique recording is marked resolved; ambiguity remains explicit. Supplied metadata is preserved, with lookup results added separately. Conflicts with a supplied recording ID are marked explicitly, never silently replaced. Lookup failures retry up to three attempts; malformed responses fail the submission. Enrichment is disabled by default, so local testing does not contact external services.
+The worker validates supplied recording MBIDs and ISRCs, checking their relationship when both are supplied; it does not guess recordings from song titles. Redirects are withheld rather than assumed valid. Lookups are paced at least 1.1 seconds apart and cached for seven days, including empty and ambiguous results; outages are not cached. HTTP 429, 502 and 503 pause the whole worker and defer the current submission without consuming an attempt, using exponential backoff from 30 seconds up to 15 minutes or a longer `Retry-After` delay. Other HTTP and network failures retain the three-attempt retry limit. Only missing metadata is filled, and an album is filled only when the returned release list is complete and has one distinct title. Ambiguity, conflicts, malformed responses and missing fields remain pending with an explicit reason. MusicBrainz validates identifiers and metadata, not that submitted fingerprints match the recording or that the audio is authentic.
+
+The shared cooldown is held in memory and resets on restart, but the current submission's delayed retry remains in the queue. Even submissions that could use cached results wait for the cooldown before being claimed. Logs distinguish service-wide cooldowns from per-submission failures; submissions already marked failed by older versions are not automatically requeued.
+
+Enabling verification upgrades the database with a private pre-upgrade SQLite backup, withholds existing unverified references from recognition and statistics, and requeues eligible existing submissions once. References and landmarks are retained; successfully verified references become searchable again, while unresolved submissions remain pending. A reference with no usable identifier or submission cannot be automatically verified. Disabling verification restores the offline completeness gate; re-enabling retains successful verification and queues newly unverified references rather than reprocessing the entire collection. Verification is disabled by default.
 
 ## Validation and limitations
 

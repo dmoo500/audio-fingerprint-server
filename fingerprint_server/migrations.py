@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
 
-from music_assistant_fingerprint.codec import encode_document
+from audio_fingerprint.codec import encode_document
 
 from fingerprint_server.schemas import decode_submission, metadata_complete
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE submissions (
@@ -26,7 +27,8 @@ CREATE INDEX submissions_pending ON submissions(state, retry_at, created_at);
 CREATE TABLE reference_tracks (
     id INTEGER PRIMARY KEY, reference_key TEXT NOT NULL UNIQUE,
     metadata TEXT NOT NULL, created_at REAL NOT NULL,
-    publication_ready INTEGER NOT NULL DEFAULT 0
+    publication_ready INTEGER NOT NULL DEFAULT 0,
+    verification_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX references_ready ON reference_tracks(publication_ready,id);
 CREATE TABLE landmarks (
@@ -37,6 +39,7 @@ CREATE TABLE landmarks (
 CREATE TABLE enrichment_cache (
     isrc TEXT PRIMARY KEY, document TEXT NOT NULL, expires_at REAL NOT NULL
 );
+CREATE TABLE service_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 LEGACY_COLUMNS = {
@@ -67,9 +70,7 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
     empty = _validate_schema(db, version)
     if not empty and version < DB_SCHEMA_VERSION:
         backup_path = path.with_name(f"{path.name}.pre-v{version}-{time.time_ns()}.bak")
-        with backup_path.open("xb"):
-            pass
-        backup_path.chmod(0o600)
+        os.close(os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         try:
             with closing(sqlite3.connect(backup_path)) as backup:
                 db.backup(backup)
@@ -99,6 +100,13 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
             if version < 3:
                 _migrate_compact_documents(db)
                 db.execute("PRAGMA user_version=3")
+            if version < 4:
+                db.execute(
+                    "ALTER TABLE reference_tracks ADD COLUMN verification_version "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execute("CREATE TABLE service_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                db.execute("PRAGMA user_version=4")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
@@ -126,7 +134,10 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
     }
     if not tables and version == 0:
         return True
-    if tables != LEGACY_COLUMNS.keys():
+    expected_tables = set(LEGACY_COLUMNS)
+    if version >= 4:
+        expected_tables.add("service_state")
+    if tables != expected_tables:
         raise RuntimeError("Unrecognized fingerprint database tables; refusing to migrate")
     for table, legacy in LEGACY_COLUMNS.items():
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
@@ -136,10 +147,17 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
                 expected.add("publication_ready")
             if version >= 2:
                 expected.add("reference_key")
+            if version >= 4:
+                expected.add("verification_version")
         if columns != expected:
             raise RuntimeError(
                 f"Unrecognized fingerprint database columns in {table}; refusing to migrate"
             )
+    if version >= 4 and {row[1] for row in db.execute("PRAGMA table_info(service_state)")} != {
+        "key",
+        "value",
+    }:
+        raise RuntimeError("Unrecognized fingerprint database columns in service_state")
     reference_columns = {
         row[1]: row[2].upper() for row in db.execute("PRAGMA table_info(reference_tracks)")
     }

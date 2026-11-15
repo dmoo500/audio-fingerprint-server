@@ -8,7 +8,7 @@ from math import isfinite
 from typing import Annotated, Literal
 from uuid import UUID
 
-from music_assistant_fingerprint import (
+from audio_fingerprint import (
     FFT_SIZE,
     HOP_SIZE,
     MAX_DURATION,
@@ -17,7 +17,7 @@ from music_assistant_fingerprint import (
     WINDOW_COUNT,
     WINDOW_SECONDS,
 )
-from music_assistant_fingerprint.codec import decode_document
+from audio_fingerprint.codec import decode_document
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{20}$")]
