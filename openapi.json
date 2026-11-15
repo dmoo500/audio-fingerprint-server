@@ -1,12 +1,210 @@
 {
   "components": {
     "schemas": {
+      "AvailabilityItem": {
+        "additionalProperties": false,
+        "description": "Identity evidence for one recording.",
+        "properties": {
+          "album": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Album"
+          },
+          "artists": {
+            "items": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Artists",
+            "type": "array"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 1800,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration"
+          },
+          "format_id": {
+            "enum": [
+              "ma-dejavu-landmarks-v1",
+              "ma-dejavu-landmarks-v2"
+            ],
+            "title": "Format Id",
+            "type": "string"
+          },
+          "index": {
+            "maximum": 99,
+            "minimum": 0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "isrc": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z]{2}[A-Za-z0-9]{3}[0-9]{7}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Isrc"
+          },
+          "recording_mbid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recording Mbid"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          }
+        },
+        "required": [
+          "format_id",
+          "index"
+        ],
+        "title": "AvailabilityItem",
+        "type": "object"
+      },
+      "AvailabilityRequest": {
+        "additionalProperties": false,
+        "description": "Bounded ordered availability query.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AvailabilityItem"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "items"
+        ],
+        "title": "AvailabilityRequest",
+        "type": "object"
+      },
+      "AvailabilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AvailabilityResult"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "items"
+        ],
+        "title": "AvailabilityResponse",
+        "type": "object"
+      },
+      "AvailabilityResult": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "recording_mbid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recording Mbid"
+          },
+          "status": {
+            "enum": [
+              "full",
+              "partial",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "status"
+        ],
+        "title": "AvailabilityResult",
+        "type": "object"
+      },
       "Capabilities": {
         "properties": {
           "api_version": {
             "const": 1,
             "title": "Api Version",
             "type": "integer"
+          },
+          "availability_version": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Availability Version"
           },
           "fingerprint_encodings": {
             "items": {
@@ -648,6 +846,140 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/dejavu/availability": {
+      "post": {
+        "description": "Requires upload access. At most 100 identities and 128,000 request bytes.",
+        "operationId": "getAvailability",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvailabilityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailabilityResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 401; gateway errors may have a different body."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 403; gateway errors may have a different body."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 408; gateway errors may have a different body."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 413; gateway errors may have a different body."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 415; gateway errors may have a different body."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 422; gateway errors may have a different body."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 429; gateway errors may have a different body.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until retry, when provided.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 503; gateway errors may have a different body.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until retry, when provided.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApplicationKey": [],
+            "PersonalKey": []
+          }
+        ],
+        "summary": "Availability",
+        "tags": [
+          "upload"
+        ]
+      }
+    },
     "/api/v1/dejavu/capabilities": {
       "get": {
         "description": "Requires upload access. ",

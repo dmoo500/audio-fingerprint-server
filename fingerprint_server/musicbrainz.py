@@ -9,7 +9,9 @@ import logging
 import math
 import re
 import time
+import unicodedata
 from datetime import UTC
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from typing import Any
 from uuid import UUID
@@ -22,7 +24,47 @@ from fingerprint_server.settings import Settings
 from fingerprint_server.store import Store
 
 LOGGER = logging.getLogger(__name__)
-MUSICBRAINZ_CACHE_VERSION = 2
+MUSICBRAINZ_CACHE_VERSION = 3
+
+
+def _matches_text(left: str, right: str) -> bool:
+    """Compare names using a lightweight approximation of MA's loose comparison."""
+    left, right = left.strip().lower(), right.strip().lower()
+    if not left or not right or abs(len(left) - len(right)) > 4:
+        return False
+    left = left.replace(" & ", " and ")
+    right = right.replace(" & ", " and ")
+    normalized_left = "".join(
+        char for char in unicodedata.normalize("NFKD", left) if char.isalnum()
+    )
+    normalized_right = "".join(
+        char for char in unicodedata.normalize("NFKD", right) if char.isalnum()
+    )
+    if normalized_left == normalized_right:
+        return True
+    accuracy = 0.9 if len(left) + len(right) > 18 else 0.8
+    return SequenceMatcher(a=left, b=right).ratio() > accuracy
+
+
+def recording_matches(recording: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    """Match a reused ISRC against supplied title, artists and available duration."""
+    title = metadata.get("title")
+    artists = metadata.get("artists")
+    if not isinstance(title, str) or not isinstance(artists, list) or not artists:
+        return False
+    candidate_title = recording.get("title")
+    candidate_artists = recording.get("artist_names", recording.get("artists", []))
+    if not isinstance(candidate_title, str) or not _matches_text(title, candidate_title):
+        return False
+    if not any(
+        isinstance(artist, str) and isinstance(candidate, str) and _matches_text(artist, candidate)
+        for artist in artists
+        for candidate in candidate_artists
+    ):
+        return False
+    length = recording.get("length")
+    duration = metadata.get("duration")
+    return length is None or duration is None or abs(length - duration * 1000) <= 8000
 
 
 def _present(value: Any) -> bool:
@@ -133,13 +175,17 @@ class MusicBrainzService:
             elif not response["complete"] or not candidates:
                 raise VerificationPending("MusicBrainz ISRC ambiguous")
             elif len(candidates) > 1:
-                LOGGER.info(
-                    "MusicBrainz confirmed ISRC %s with %s candidate recordings; "
-                    "retaining supplied metadata without assigning a recording MBID",
-                    normalized,
-                    len(candidates),
+                recording = next(
+                    (item for item in candidates if recording_matches(item, metadata)), None
                 )
-                return dict(metadata)
+                if recording is None:
+                    LOGGER.info(
+                        "MusicBrainz confirmed ISRC %s with %s candidate recordings; "
+                        "retaining supplied metadata without assigning a recording MBID",
+                        normalized,
+                        len(candidates),
+                    )
+                    return dict(metadata)
             else:
                 recording = candidates[0]
         assert recording is not None
@@ -269,10 +315,16 @@ class MusicBrainzService:
             if not isinstance(title, str) or len(title) > 500:
                 raise ValueError("Invalid recording title")
             result["title"] = title
+        length = value.get("length")
+        if length is not None:
+            if type(length) is not int or length < 0:
+                raise ValueError("Invalid recording length")
+            result["length"] = length
         credits = value.get("artist-credit", [])
         if not isinstance(credits, list) or len(credits) > 30:
             raise ValueError("Invalid artists")
         artists = []
+        artist_names = []
         for credit in credits:
             if not isinstance(credit, dict):
                 raise ValueError("Invalid artist")
@@ -281,7 +333,24 @@ class MusicBrainzService:
                 raise ValueError("Invalid artist name")
             if name.strip():
                 artists.append(name)
+                artist_names.append(name)
+            artist = credit.get("artist") or {}
+            if not isinstance(artist, dict):
+                raise ValueError("Invalid artist")
+            canonical = artist.get("name")
+            if isinstance(canonical, str) and canonical.strip():
+                artist_names.append(canonical)
+            aliases = artist.get("aliases", [])
+            if not isinstance(aliases, list) or len(aliases) > 100:
+                raise ValueError("Invalid artist aliases")
+            for alias in aliases:
+                if not isinstance(alias, dict) or not isinstance(alias.get("name"), str):
+                    raise ValueError("Invalid artist alias")
+                if len(alias["name"]) > 500:
+                    raise ValueError("Invalid artist alias")
+                artist_names.append(alias["name"])
         result["artists"] = artists
+        result["artist_names"] = artist_names
         releases = value.get("releases", [])
         if not isinstance(releases, list) or len(releases) > 1000:
             raise ValueError("Invalid releases")

@@ -176,11 +176,20 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         for request in requests
         if "/routes/" in request.url.path
     }
-    assert set(routes) == {"upload", "status", "capabilities", "recognize", "statistics", "public"}
+    assert set(routes) == {
+        "upload",
+        "status",
+        "capabilities",
+        "availability",
+        "recognize",
+        "statistics",
+        "public",
+    }
     for name, scope, secret in [
         ("upload", "upload", UPLOAD),
         ("status", "upload", UPLOAD),
         ("capabilities", "upload", UPLOAD),
+        ("availability", "upload", UPLOAD),
         ("recognize", "read", READ),
         ("statistics", "read", READ),
     ]:

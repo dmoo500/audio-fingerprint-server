@@ -103,12 +103,22 @@ class Worker:
                         if not new_candidate.get("recording_mbid") and old.get("recording_mbid"):
                             new_candidate["recording_mbid"] = old["recording_mbid"]
                         new_verified = await self.musicbrainz.verify(new_candidate)
+                        if not old_verified.get("recording_mbid") or not new_verified.get(
+                            "recording_mbid"
+                        ):
+                            raise VerificationPending(
+                                "Retained ISRC recording identity remains ambiguous"
+                            )
                         if old_verified["recording_mbid"] != new_verified["recording_mbid"]:
                             raise UnresolvableVerification(
                                 "Conflicting retained recording identifiers"
                             )
+                        metadata["recording_mbid"] = old_verified["recording_mbid"]
                     for key in ("title", "artists", "album", "duration", "isrc", "recording_mbid"):
                         if not self._present(metadata.get(key)) and self._present(old.get(key)):
+                            metadata[key] = old[key]
+                    for key in ("title", "artists", "duration"):
+                        if self._present(old.get(key)):
                             metadata[key] = old[key]
                     metadata = await self.musicbrainz.verify(metadata)
                     for key in ("title", "artists", "album", "duration", "isrc", "recording_mbid"):

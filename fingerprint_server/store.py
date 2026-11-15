@@ -436,6 +436,28 @@ class Store:
                         reference_id,
                     ),
                 )
+                if recording_key:
+                    retained = db.execute(
+                        "SELECT metadata FROM reference_tracks WHERE reference_key=? "
+                        "AND publication_ready=1 AND recording_key IS NULL",
+                        (reference_id,),
+                    ).fetchone()
+                    if retained:
+                        existing = json.loads(retained["metadata"])
+                        identity_fields = ("title", "artists", "duration", "isrc")
+                        if (
+                            isinstance(existing, dict)
+                            and not existing.get("recording_mbid")
+                            and all(
+                                existing.get(key) == metadata.get(key) for key in identity_fields
+                            )
+                        ):
+                            existing["recording_mbid"] = metadata["recording_mbid"]
+                            db.execute(
+                                "UPDATE reference_tracks SET metadata=?,recording_key=? "
+                                "WHERE reference_key=? AND recording_key IS NULL",
+                                (json.dumps(existing), recording_key, reference_id),
+                            )
             db.execute(
                 "UPDATE submissions SET state='processed',reference_id=?,error=NULL,"
                 "background_kind=0,pending_check=0 WHERE id=?",
@@ -701,3 +723,93 @@ class Store:
             return contiguous and end == round(duration * SAMPLE_RATE)
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
+
+    def availability(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return coverage of published, verified recordings without upstream lookups."""
+        from fingerprint_server.musicbrainz import recording_matches
+
+        mbids = {UUID(item["recording_mbid"]).hex for item in items if item.get("recording_mbid")}
+        isrcs = {item["isrc"].upper() for item in items if item.get("isrc")}
+        if not mbids and not isrcs:
+            return [{"status": "unknown", "recording_mbid": None} for _ in items]
+        clauses = []
+        params: list[str] = []
+        if mbids:
+            clauses.append(f"t.recording_key IN ({','.join('?' for _ in mbids)})")
+            params.extend(sorted(mbids))
+        if isrcs:
+            clauses.append(
+                f"upper(json_extract(t.metadata,'$.isrc')) IN ({','.join('?' for _ in isrcs)})"
+            )
+            params.extend(sorted(isrcs))
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT t.recording_key,t.metadata FROM reference_tracks t "
+                "WHERE t.publication_ready=1 AND t.recording_key IS NOT NULL "
+                "AND t.verification_version=? AND ("
+                + " OR ".join(clauses)
+                + ") ORDER BY t.id LIMIT 10000",
+                [str(MUSICBRAINZ_VERIFICATION_VERSION), *params],
+            ).fetchall()
+        resolved: list[str | None] = []
+        for item in items:
+            key = UUID(item["recording_mbid"]).hex if item.get("recording_mbid") else None
+            isrc = item.get("isrc", "").upper() if item.get("isrc") else None
+            if not key and not isrc:
+                resolved.append(None)
+                continue
+            found = None
+            for row in rows:
+                metadata = json.loads(row["metadata"])
+                if key and row["recording_key"] != key:
+                    continue
+                if isrc and str(metadata.get("isrc") or "").upper() != isrc:
+                    continue
+                if not key:
+                    if not item.get("duration"):
+                        continue
+                    candidate = {
+                        **metadata,
+                        "length": metadata.get("duration", 0) * 1000,
+                    }
+                    if not recording_matches(candidate, item):
+                        continue
+                found = row["recording_key"]
+                break
+            resolved.append(found)
+        keys = sorted({key for key in resolved if key is not None})
+        coverage: dict[str, bool] = {key: False for key in keys}
+        if keys:
+            with self.connect() as db:
+                variants = db.execute(
+                    "WITH relevant AS (SELECT reference_key,recording_key,metadata "
+                    "FROM reference_tracks WHERE publication_ready=1 AND verification_version=? "
+                    f"AND recording_key IN ({','.join('?' for _ in keys)}) "
+                    "ORDER BY id LIMIT 10000),"
+                    "representatives AS (SELECT reference_id,min(id) AS id FROM submissions "
+                    "WHERE state='processed' AND reference_id IN "
+                    "(SELECT reference_key FROM relevant) GROUP BY reference_id) "
+                    "SELECT t.recording_key,t.metadata,"
+                    "CASE WHEN json_valid(s.document) THEN json_object("
+                    "'windows',json_extract(s.document,'$.windows'),"
+                    "'format_id',json_extract(s.document,'$.format_id')) END AS document "
+                    "FROM relevant t LEFT JOIN representatives r ON r.reference_id=t.reference_key "
+                    "LEFT JOIN submissions s ON s.id=r.id",
+                    [str(MUSICBRAINZ_VERIFICATION_VERSION), *keys],
+                )
+                for row in variants:
+                    document = row["document"]
+                    if (
+                        document
+                        and json.loads(document).get("format_id")
+                        in ("ma-dejavu-landmarks-v1", "ma-dejavu-landmarks-v2")
+                        and self._full_coverage(document, row["metadata"])
+                    ):
+                        coverage[row["recording_key"]] = True
+        return [
+            {
+                "status": "full" if key and coverage[key] else "partial" if key else "unknown",
+                "recording_mbid": str(UUID(key)) if key else None,
+            }
+            for key in resolved
+        ]

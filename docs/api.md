@@ -4,6 +4,12 @@
 
 ## API
 
+### Availability
+
+`POST /api/v1/dejavu/availability` requires upload credentials (and the application key in gateway mode). Send JSON `{"version":1,"items":[{"index":0,"format_id":"ma-dejavu-landmarks-v2","recording_mbid":"e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"}]}` with at most 100 items and 128,000 bytes. Items may also contain `isrc`, `title`, `artists`, `duration`, and `album`; an ISRC-only lookup needs title, artists and duration to select a matching stored recording.
+
+The ordered response is `{"version":1,"items":[{"index":0,"status":"full","recording_mbid":"e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"}]}`. Status is `full`, `partial`, or `unknown`; unknown has a null recording MBID. Only published verified references with compatible landmark formats can be full. A supplied MBID and ISRC must both match the stored identity; a missing or ambiguous identity is unknown. This is a point-in-time hint, not an upload acknowledgement. The capabilities endpoint advertises support as `availability_version: 1`; absence means the feature is unavailable.
+
 ### OpenAPI and generated clients
 
 The canonical [OpenAPI 3.1 specification](../openapi.json) describes the APISIX deployment, including concrete responses, both submission encodings, raw PCM bodies and the two required authentication headers. Use it with an OpenAPI 3.1-capable client generator (such as OpenAPI Generator); pin the specification to a release or commit when generating your client. Acoustic coverage and canonical hashing constraints still require client-side implementation; generated models alone cannot enforce the entire fingerprint contract. Statistics now add a compatible logical-recording count alongside the existing acoustic-reference count; the endpoint remains `/api/v1`.

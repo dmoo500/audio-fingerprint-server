@@ -6,6 +6,8 @@ import logging
 import sqlite3
 import stat
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,11 @@ import pytest
 from test_metadata_gate import document
 from test_server import settings
 
-from fingerprint_server.musicbrainz import EnrichmentError
+from fingerprint_server.musicbrainz import (
+    EnrichmentError,
+    MusicBrainzService,
+    VerificationPending,
+)
 from fingerprint_server.schemas import Submission
 from fingerprint_server.store import Store
 from fingerprint_server.worker import Worker
@@ -164,6 +170,7 @@ async def test_multiple_isrc_recordings_confirm_identifier_without_guessing_meta
     payload = document()
     payload["metadata"]["isrc"] = ISRC
     payload["metadata"].pop("recording_mbid", None)
+    payload["metadata"]["title"] = "Unrelated"
     if not complete_metadata:
         payload["metadata"].pop("album", None)
     supplied = dict(payload["metadata"])
@@ -193,6 +200,98 @@ async def test_multiple_isrc_recordings_confirm_identifier_without_guessing_meta
     else:
         assert "Incomplete metadata" in row["error"]
         assert references == []
+
+
+async def test_multiple_isrc_selects_first_matching_candidate(tmp_path: Path) -> None:
+    store = online_store(tmp_path)
+    wrong_title = {**recording(OTHER), "title": "Different"}
+    wrong_artist = {**recording(OTHER), "artist-credit": [{"name": "Someone else"}]}
+    wrong_duration = {**recording(OTHER), "length": 22000}
+    correct = {**recording(MBID), "length": 12000}
+    reply = {
+        "isrc": ISRC,
+        "recording-count": 5,
+        "recordings": [wrong_title, wrong_artist, wrong_duration, correct, recording(OTHER)],
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=reply))
+    ) as client:
+        worker = Worker(store, online_settings(tmp_path), client)
+        result = await worker.musicbrainz.verify(
+            {"isrc": ISRC, "title": "Title", "artists": ["Artist"], "duration": 12.0}
+        )
+    assert result["recording_mbid"] == MBID
+
+
+@pytest.mark.parametrize("length", [-1, 1.5, True, "12000"])
+def test_invalid_recording_length_rejected(length: object) -> None:
+    with pytest.raises(ValueError, match="length"):
+        MusicBrainzService.parse_recording({**recording(), "length": length})
+
+
+async def test_multiple_candidates_without_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = object.__new__(MusicBrainzService)
+    candidates = [
+        service.parse_recording({**recording(OTHER), "title": "Different"}),
+        service.parse_recording({**recording(OTHER), "length": 22000}),
+        service.parse_recording({**recording(MBID), "length": 12000}),
+        service.parse_recording(recording(OTHER)),
+    ]
+    response = {"status": "resolved", "recordings": candidates, "complete": True}
+
+    async def lookup(kind: str, identifier: str) -> dict[str, Any]:
+        assert kind == "isrc" and identifier == ISRC
+        return response
+
+    monkeypatch.setattr(service, "lookup", lookup)
+    metadata = {"isrc": ISRC, "title": "Title", "artists": ["Artist"], "duration": 12.0}
+    assert (await service.verify(metadata))["recording_mbid"] == MBID
+    no_match = {**metadata, "title": "Unrelated"}
+    assert await service.verify(no_match) == no_match
+    response["complete"] = False
+    with pytest.raises(VerificationPending):
+        await service.verify(metadata)
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_existing_reference_association_preserves_metadata(
+    monkeypatch: pytest.MonkeyPatch, conflict: bool
+) -> None:
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript(
+        "CREATE TABLE reference_tracks (id INTEGER PRIMARY KEY,reference_key TEXT UNIQUE,"
+        "metadata TEXT,created_at REAL,publication_ready INTEGER,verification_version INTEGER,"
+        "recording_key TEXT);"
+        "CREATE TABLE submissions (id TEXT,state TEXT,reference_id TEXT,error TEXT,"
+        "background_kind INTEGER,pending_check INTEGER);"
+        "CREATE TABLE landmarks (hash BLOB,reference_id INTEGER,offset INTEGER);"
+    )
+    metadata = document()["metadata"]
+    db.execute(
+        "INSERT INTO reference_tracks VALUES(1,'reference',?,0,1,1,NULL)",
+        (json.dumps(metadata),),
+    )
+    db.execute("INSERT INTO submissions VALUES('submission','processing',NULL,NULL,0,0)")
+    db.commit()
+    store = object.__new__(Store)
+    store.musicbrainz_enabled = True
+
+    @contextmanager
+    def connect() -> Iterator[sqlite3.Connection]:
+        with db:
+            yield db
+
+    monkeypatch.setattr(store, "connect", connect)
+    supplied = {**metadata, "recording_mbid": MBID}
+    if conflict:
+        supplied["title"] = "Different"
+    store.finish("submission", "reference", supplied, [], verified=True)
+    row = db.execute("SELECT metadata,recording_key FROM reference_tracks").fetchone()
+    expected = metadata if conflict else {**metadata, "recording_mbid": MBID}
+    assert json.loads(row["metadata"]) == expected
+    assert row["recording_key"] == (None if conflict else MBID.replace("-", ""))
+    db.close()
 
 
 async def test_multiple_isrc_recordings_still_check_supplied_mbid(tmp_path: Path) -> None:

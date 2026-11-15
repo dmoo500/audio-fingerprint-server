@@ -4,6 +4,8 @@
 
 ## Local setup
 
+After upgrading a gateway deployment, apply its normal gateway configuration to add the upload-protected availability route without replacing existing personal credentials. Older clients may ignore the additive capability; older servers remain usable by clients that treat absent availability support as optional.
+
 Clone using the technical directory name expected by the Docker build:
 
 ```sh

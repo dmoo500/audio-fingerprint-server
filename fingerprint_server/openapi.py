@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
-from fingerprint_server.schemas import Submission
+from fingerprint_server.schemas import AvailabilityRequest, AvailabilityResponse, Submission
 
 State = Literal["queued", "processing", "processed", "failed", "pending_metadata"]
 
@@ -49,6 +49,7 @@ class Capabilities(BaseModel):
     fingerprint_formats: list[str]
     fingerprint_encodings: list[str]
     max_document_bytes: int
+    availability_version: Literal[1] | None = None
 
 
 class ReferenceCounts(BaseModel):
@@ -135,6 +136,8 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
         Recognition,
         Error,
         Submission,
+        AvailabilityRequest,
+        AvailabilityResponse,
     ):
         register(schema_model)
     compact = copy.deepcopy(schemas["Submission"])
@@ -166,6 +169,7 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
         "/health": ("get", Health, "health", None),
         "/api/v1/dejavu/statistics": ("get", Statistics, "getStatistics", "read"),
         "/api/v1/dejavu/capabilities": ("get", Capabilities, "getCapabilities", "upload"),
+        "/api/v1/dejavu/availability": ("post", AvailabilityResponse, "getAvailability", "upload"),
         "/api/v1/dejavu/submissions": ("post", SubmissionReceipt, "submitFingerprints", "upload"),
         "/api/v1/dejavu/submissions/{submission_id}": (
             "get",
@@ -196,6 +200,12 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
             codes.append(503)
         if identifier == "getSubmission":
             codes.append(404)
+        if identifier == "getAvailability":
+            operation["requestBody"] = {
+                "required": True,
+                "content": {"application/json": {"schema": register(AvailabilityRequest)}},
+            }
+            operation["description"] += "At most 100 identities and 128,000 request bytes."
         if method == "post":
             codes.extend([408, 413, 415, 422])
         if identifier == "submitFingerprints":

@@ -27,7 +27,7 @@ from starlette.responses import Response
 
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.openapi import DocumentedAPI
-from fingerprint_server.schemas import Submission
+from fingerprint_server.schemas import AvailabilityRequest, Submission
 from fingerprint_server.settings import Settings
 from fingerprint_server.store import QueryTooBroadError, QueueFullError, Store
 from fingerprint_server.worker import Worker
@@ -104,6 +104,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
         "upload": deque(),
         "read": deque(),
         "statistics": deque(),
+        "availability": deque(),
     }
     query_slots = asyncio.Semaphore(2)
 
@@ -139,7 +140,9 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
     application = DocumentedAPI(title="Music Assistant Fingerprint Server", lifespan=lifespan)
     application.state.openapi_gateway = bool(configuration and configuration.gateway_enabled)
 
-    def authorize(request: Request, scope: Literal["read", "upload", "statistics"]) -> None:
+    def authorize(
+        request: Request, scope: Literal["read", "upload", "statistics", "availability"]
+    ) -> None:
         """Check scope-specific credentials before reading or parsing any request body."""
         settings: Settings = request.app.state.settings
         if settings.gateway_enabled:
@@ -151,7 +154,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
                 application_key.get_secret_value().encode(),
             ):
                 raise HTTPException(401, "A valid application key is required")
-        expected = settings.upload_key if scope == "upload" else settings.read_key
+        expected = settings.upload_key if scope in ("upload", "availability") else settings.read_key
         if not hmac.compare_digest(
             request.headers.get("X-API-Key", "").encode(), expected.get_secret_value().encode()
         ):
@@ -160,7 +163,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
         times = request_times[scope]
         while times and times[0] <= now - 60:
             times.popleft()
-        if len(times) >= (60 if scope == "upload" else 30):
+        if len(times) >= (60 if scope in ("upload", "availability") else 30):
             raise HTTPException(429, "Request rate limit reached", headers={"Retry-After": "60"})
         times.append(now)
         username = "-"
@@ -214,7 +217,24 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
             "fingerprint_formats": ["ma-dejavu-landmarks-v1", "ma-dejavu-landmarks-v2"],
             "fingerprint_encodings": ["json", ENCODING_ID],
             "max_document_bytes": MAX_DOCUMENT_BYTES,
+            "availability_version": 1,
         }
+
+    @application.post("/api/v1/dejavu/availability")
+    async def availability(request: Request) -> dict[str, Any]:
+        authorize(request, "availability")
+        if request.headers.get("content-type", "").split(";")[0] != "application/json":
+            raise HTTPException(415, "Send application/json")
+        raw = await bounded_body(request, 128_000)
+        try:
+            query = AvailabilityRequest.model_validate_json(raw)
+        except (ValidationError, ValueError) as err:
+            raise HTTPException(422, "Invalid availability request") from err
+        items = [item.model_dump() for item in query.items]
+        results = await run_sync(request.app.state.store.availability, items)
+        for item, result in zip(items, results, strict=True):
+            result["index"] = item["index"]
+        return {"version": 1, "items": results}
 
     @application.post("/api/v1/dejavu/submissions")
     async def submit(request: Request) -> JSONResponse:

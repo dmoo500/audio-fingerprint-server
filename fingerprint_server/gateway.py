@@ -77,6 +77,7 @@ def configure(client: httpx.Client, settings: Settings) -> None:
         ("upload", "/api/v1/dejavu/submissions", "POST", "upload", 60),
         ("status", "/api/v1/dejavu/submissions/*", "GET", "upload", 60),
         ("capabilities", "/api/v1/dejavu/capabilities", "GET", "upload", 60),
+        ("availability", "/api/v1/dejavu/availability", "POST", "upload", 60),
         ("recognize", "/api/v1/dejavu/recognize", "POST", "read", 30),
         ("statistics", "/api/v1/dejavu/statistics", "GET", "read", 30),
     ]

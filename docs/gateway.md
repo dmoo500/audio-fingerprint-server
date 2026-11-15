@@ -8,8 +8,10 @@
 
 | Key | Access |
 | --- | --- |
-| `FP_UPLOAD_KEY` | Submit references and read submission status |
+| `FP_UPLOAD_KEY` | Submit references, check availability and read submission status |
 | `FP_READ_KEY` | Recognize PCM and read collection statistics |
+
+Availability uses the upload role and both gateway credentials, with its own per-consumer rate limit so preflight requests do not consume the submission route's allowance. Re-run the existing gateway configuration process after upgrading to install the new route; existing personal credentials are preserved.
 
 In this default mode there are no individual accounts, per-contributor credentials, expiry dates or individual revocation. Rotation requires changing the configured secret and restarting the service; all clients using that secret must be updated. Request budgets are shared per scope within the process, not assigned to individual users. The browser keeps its read key only in the current page, but anyone holding that key has its full permissions. There is no public self-service key issuance.
 

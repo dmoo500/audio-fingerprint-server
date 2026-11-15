@@ -87,6 +87,31 @@ class Metadata(StrictModel):
         return value
 
 
+class AvailabilityItem(Metadata):
+    """Identity evidence for one recording."""
+
+    format_id: Literal["ma-dejavu-landmarks-v1", "ma-dejavu-landmarks-v2"]
+    index: int = Field(ge=0, le=99)
+
+
+class AvailabilityRequest(StrictModel):
+    """Bounded ordered availability query."""
+
+    version: Literal[1]
+    items: list[AvailabilityItem] = Field(min_length=1, max_length=100)
+
+
+class AvailabilityResult(StrictModel):
+    index: int
+    status: Literal["full", "partial", "unknown"]
+    recording_mbid: str | None = None
+
+
+class AvailabilityResponse(StrictModel):
+    version: Literal[1]
+    items: list[AvailabilityResult]
+
+
 class Window(StrictModel):
     """Sample coverage relative to the beginning of the reference track."""
 
