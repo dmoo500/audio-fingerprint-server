@@ -26,6 +26,23 @@ xychart-beta
 
 The deployed snapshot contained 274 references. It is a historical snapshot, not the current database size or a projection per song. An earlier upper-limit synthetic baseline with 36 MB JSON and one million landmarks occupied about 238.3 MiB; it was not a before/after measurement of the deployed collection. Schema 3 subsequently compacted stored submission documents; no isolated schema 3 space-saving percentage was measured. Transactional upgrades, pre-upgrade backups including WAL data, and rejection of unsupported layouts are shipped safeguards, not speed or size improvements. None of these upgrades resets the collection.
 
+#### Deployed storage snapshot
+
+A read-only measurement using schema 7 found:
+
+| Measurement | Result |
+| --- | ---: |
+| Occupied SQLite pages, including indexes and metadata | **1,418.54 MiB (1.385 GiB)** |
+| Stored acoustic references, including unpublished references | 575 |
+| Published acoustic references | 460 |
+| Distinct verified recording identities among published references | 426 |
+| Published references without a verified recording identity | 32 |
+| Stored landmarks | 38,637,618 |
+
+The occupied-page figure excludes reusable free pages, but includes all database tables and indexes, not just published fingerprints. It is measured as `(page_count - freelist_count) * page_size` using SQLite's read-only `PRAGMA` queries.
+
+This is a real deployment example, not a per-song storage guarantee. Track duration, landmark density, multiple acoustic variants of the same recording, pending submissions and cached metadata all affect storage. Published references without verified identities cannot safely be deduplicated into logical recordings, so the reference count must not be interpreted as a count of unique songs.
+
 ### Library extraction and document encoding
 
 The shipped library 0.3.0 preserves the landmark algorithm while reducing Python scalar-conversion overhead and adding the lossless `sha1-80-offset-delta-v1` codec. The server accepts both compact and legacy documents with the same canonical identity. Earlier shipped extraction changes process FFTs in 64-frame batches with the peak-filter halo and avoid retaining a full-window spectrogram. Streaming reference analysis keeps a bounded rolling PCM window. These memory bounds preserve exact hashes and offsets; no measured peak-memory reduction is reported here.
