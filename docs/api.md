@@ -10,6 +10,64 @@
 
 The ordered response is `{"version":1,"items":[{"index":0,"status":"full","recording_mbid":"e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"}]}`. Status is `full`, `partial`, or `unknown`; unknown has a null recording MBID. Only published verified references with compatible landmark formats can be full. A supplied MBID and ISRC must both match the stored identity; a missing or ambiguous identity is unknown. This is a point-in-time hint, not an upload acknowledgement. The capabilities endpoint advertises support as `availability_version: 1`; absence means the feature is unavailable.
 
+### Client-side landmark recognition
+
+Clients such as a future recognize plugin can extract a short capture locally
+and send only landmarks to `POST /api/v1/dejavu/recognize/landmarks`. This does
+not upload a reference, publish anything or retain audio/query landmarks.
+No `Idempotency-Key` or track metadata is needed. The plugin itself is not
+implemented by this endpoint.
+
+Normalize the capture to mono 44,100 Hz and extract with the compatible
+`audio_fingerprint.fingerprint(samples)` algorithm, using `start_sample=0`.
+Do not take absolute offsets from an existing full-track analysis: offsets
+must be relative to the beginning of this capture. `sample_count` is the
+normalized capture's actual sample count, between 132,300 and 661,500 inclusive
+(3–15 seconds).
+
+```json
+{
+  "version": 1,
+  "format_id": "ma-dejavu-landmarks-v2",
+  "sample_rate": 44100,
+  "offset_unit": "fft_hops",
+  "sample_count": 220500,
+  "fingerprints": [
+    ["0123456789abcdef0123", 0],
+    ["abcdef0123456789abcd", 12]
+  ]
+}
+```
+
+The pairs above illustrate the wire shape, not a recognisable recording.
+Each pair contains a lowercase 80-bit hex hash and an integer anchor offset
+in 2,048-sample hops. Pairs must be distinct; offsets must be nonnegative and
+no larger than `(sample_count - 4096) // 2048`. Legacy
+`ma-dejavu-landmarks-v1` hashes are also supported because the extractor is
+compatible. This query accepts JSON pairs only, not compact reference-document
+encoding or reference windows. Unknown fields and mismatched formats are rejected.
+
+Use the read key in direct mode, or a read/both personal key **and** the
+application key through APISIX. The server validates credentials before
+reading the body. Both recognition endpoints together have a backend-wide
+30-request rolling-minute budget and two recognition slots, shared across
+PostgreSQL API replicas. Gateway route quotas also apply.
+
+The response is exactly the PCM recognition response:
+`{"status":"matched","match":{...}}`, `{"status":"no_match","match":null}`
+or `{"status":"ambiguous","match":null}`. A matched result includes metadata,
+reference ID, offset in seconds, matched/query landmark counts, fraction and
+matched span; these scores are not calibrated probabilities. An empty landmark
+list returns `no_match` with reason `No acoustic landmarks`. It is never a
+successful result when matching fails: excessive candidate expansion returns
+503, invalid capture/query fields return 422, oversized requests 413 and
+exhausted rate/concurrency limits 429.
+
+Upload-authenticated capabilities advertise `recognition_landmarks_version: 1`.
+Read-only clients can use the published OpenAPI contract; they do not gain access
+to the upload-only capabilities endpoint. Reapply gateway `configure` after
+upgrading to install the new route without replacing existing consumers.
+
 ### OpenAPI and generated clients
 
 The canonical [OpenAPI 3.1 specification](../openapi.json) describes the APISIX deployment, including concrete responses, both submission encodings, raw PCM bodies and the two required authentication headers. Use it with an OpenAPI 3.1-capable client generator (such as OpenAPI Generator); pin the specification to a release or commit when generating your client. Acoustic coverage and canonical hashing constraints still require client-side implementation; generated models alone cannot enforce the entire fingerprint contract. Statistics now add a compatible logical-recording count alongside the existing acoustic-reference count; the endpoint remains `/api/v1`.
@@ -45,6 +103,10 @@ All mutation/status calls require the upload key; recognition requires the read 
   `application/octet-stream`, little-endian float32 PCM, 3 to 15 seconds,
   8 to 192 kHz, one or two channels. No audio file/container decoding.
   Returns `matched`, `no_match` or `ambiguous`; `match` is null unless matched.
+- `POST /api/v1/dejavu/recognize/landmarks`: read-authenticated JSON query with
+  precomputed capture-relative landmarks, at most 10,000 pairs and 512,000 bytes.
+  Uses the same recognition result, thresholds, backend request budget and
+  concurrency slots as PCM; see [client-side extraction](#client-side-landmark-recognition).
 - `GET /health`: 503 if the ingestion worker has stopped.
 - `GET /api/v1/dejavu/statistics`: read-key authenticated counts of logical recordings,
   acoustic references (including retained variants), uploads by queue state including

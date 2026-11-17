@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from audio_fingerprint import FORMAT_ID, SAMPLE_RATE, fingerprint
 from pydantic import SecretStr
 from test_server import audio, canonical, document
 
@@ -87,7 +88,11 @@ def deployment(tmp_path: Path) -> Iterator[tuple[httpx.Client, httpx.Client, str
                 trust_env=False,
             ) as admin,
             httpx.Client(
-                base_url=f"http://127.0.0.1:{public_port}", timeout=30, trust_env=False
+                base_url=f"http://127.0.0.1:{public_port}",
+                timeout=30,
+                trust_env=False,
+                # Exercise route/personal budgets without exhausting the 5/s pre-auth IP guard.
+                event_hooks={"request": [lambda _: time.sleep(0.25)]},
             ) as public,
         ):
             deadline = time.monotonic() + 90
@@ -214,6 +219,20 @@ def test_real_gateway_tokens_permissions_revocation_and_pcm(
     )
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "matched"
+    pcm_result = response.json()
+    response = public.post(
+        "/api/v1/dejavu/recognize/landmarks",
+        json={
+            "version": 1,
+            "format_id": FORMAT_ID,
+            "sample_rate": SAMPLE_RATE,
+            "offset_unit": "fft_hops",
+            "sample_count": 5 * SAMPLE_RATE,
+            "fingerprints": fingerprint(samples[: 5 * SAMPLE_RATE]),
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200 and response.json() == pcm_result
     admin.delete("consumers/both").raise_for_status()
     wait_for_status(public, stats, headers, 401)
     reader_headers = {"X-API-Key": reader, "X-Application-Key": application}
@@ -228,3 +247,7 @@ def test_real_gateway_tokens_permissions_revocation_and_pcm(
     other = secrets.token_urlsafe(32)
     provision(admin, "other-reader", "read", other)
     wait_for_status(public, stats, {"X-API-Key": other, "X-Application-Key": application}, 200)
+    with httpx.Client(base_url=public.base_url, timeout=30, trust_env=False) as burst:
+        statuses = [burst.get("/health").status_code for _ in range(20)]
+    assert 429 in statuses
+    assert set(statuses) <= {200, 429}

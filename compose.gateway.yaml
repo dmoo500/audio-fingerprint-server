@@ -6,6 +6,8 @@ services:
     environment:
       FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set a private internal upload key}
       FP_READ_KEY: ${FP_READ_KEY:?Set a private internal read key}
+      FP_DATABASE_BACKEND: ${FP_DATABASE_BACKEND:-sqlite}
+      FP_POSTGRES_SCHEMA: ${FP_POSTGRES_SCHEMA:-fingerprints}
       FP_GATEWAY_ENABLED: "true"
       FP_APPLICATION_KEY: ${FP_APPLICATION_KEY:?Set a separate fingerprint application token}
       FP_MUSICBRAINZ_ENABLED: ${FP_MUSICBRAINZ_ENABLED:-false}

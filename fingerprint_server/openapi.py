@@ -13,7 +13,12 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
-from fingerprint_server.schemas import AvailabilityRequest, AvailabilityResponse, Submission
+from fingerprint_server.schemas import (
+    AvailabilityRequest,
+    AvailabilityResponse,
+    LandmarkQuery,
+    Submission,
+)
 
 State = Literal["queued", "processing", "processed", "failed", "pending_metadata"]
 
@@ -50,6 +55,7 @@ class Capabilities(BaseModel):
     fingerprint_encodings: list[str]
     max_document_bytes: int
     availability_version: Literal[1] | None = None
+    recognition_landmarks_version: Literal[1] | None = None
 
 
 class ReferenceCounts(BaseModel):
@@ -138,6 +144,7 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
         Submission,
         AvailabilityRequest,
         AvailabilityResponse,
+        LandmarkQuery,
     ):
         register(schema_model)
     compact = copy.deepcopy(schemas["Submission"])
@@ -178,6 +185,7 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
             "upload",
         ),
         "/api/v1/dejavu/recognize": ("post", Recognition, "recognizePcm", "read"),
+        "/api/v1/dejavu/recognize/landmarks": ("post", Recognition, "recognizeLandmarks", "read"),
     }
     schema["paths"] = {path: schema["paths"][path] for path in operations}
     for path, (method, model, identifier, scope) in operations.items():
@@ -206,6 +214,18 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
                 "content": {"application/json": {"schema": register(AvailabilityRequest)}},
             }
             operation["description"] += "At most 100 identities and 128,000 request bytes."
+        if identifier == "recognizeLandmarks":
+            operation["requestBody"] = {
+                "required": True,
+                "content": {"application/json": {"schema": register(LandmarkQuery)}},
+            }
+            operation["description"] += (
+                "Transient precomputed landmarks for a 3–15 second capture normalized to "
+                "44,100 Hz mono. Offsets are relative to the capture, in 2,048-sample hops. "
+                "At most 10,000 distinct pairs and 512,000 request bytes. "
+                "Shares the PCM endpoint's backend request budget, concurrency slots and "
+                "acceptance rules. Does not store or publish submitted landmarks."
+            )
         if method == "post":
             codes.extend([408, 413, 415, 422])
         if identifier == "submitFingerprints":

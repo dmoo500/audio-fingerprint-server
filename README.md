@@ -8,7 +8,7 @@ The old analysis server is not modified. It accepts the MA `dejavu_analysis` pro
 
 ## Getting started
 
-1. Follow [local setup or Docker deployment](docs/deployment.md#local-setup). Run one backend process against each database.
+1. Follow [local setup or Docker deployment](docs/deployment.md#local-setup). SQLite uses one combined process; optional PostgreSQL permits separate API/worker roles and [opt-in API replicas behind APISIX](docs/replicas.md), always with one ingestion worker.
 2. Enable fingerprint sharing in the compatible MA analysis integration before analyzing tracks; old private analyses are not automatically uploaded.
 3. Open the server's microphone page, enter the read key and capture a known indexed track. Microphone recognition does not add unknown songs to the collection.
 

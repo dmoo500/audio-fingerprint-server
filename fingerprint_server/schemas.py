@@ -69,6 +69,27 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
 
+class LandmarkQuery(StrictModel):
+    """Transient client-extracted landmarks relative to one normalized capture."""
+
+    version: Literal[1]
+    format_id: Literal["ma-dejavu-landmarks-v1", "ma-dejavu-landmarks-v2"]
+    sample_rate: Literal[44100]
+    offset_unit: Literal["fft_hops"]
+    sample_count: int = Field(ge=3 * SAMPLE_RATE, le=15 * SAMPLE_RATE)
+    fingerprints: list[tuple[Digest, Offset]] = Field(max_length=10000)
+
+    @model_validator(mode="after")
+    def validate_capture(self) -> "LandmarkQuery":
+        """Require distinct pairs whose anchor offsets belong to the capture."""
+        if len(set(self.fingerprints)) != len(self.fingerprints):
+            raise ValueError("Duplicate fingerprint/offset pairs")
+        maximum = (self.sample_count - FFT_SIZE) // HOP_SIZE
+        if any(offset > maximum for _, offset in self.fingerprints):
+            raise ValueError("Fingerprint offset is outside capture coverage")
+        return self
+
+
 class Metadata(StrictModel):
     """Allowlisted supplied music metadata."""
 

@@ -223,6 +223,19 @@
           "max_document_bytes": {
             "title": "Max Document Bytes",
             "type": "integer"
+          },
+          "recognition_landmarks_version": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recognition Landmarks Version"
           }
         },
         "required": [
@@ -332,6 +345,72 @@
           "status"
         ],
         "title": "Health",
+        "type": "object"
+      },
+      "LandmarkQuery": {
+        "additionalProperties": false,
+        "description": "Transient client-extracted landmarks relative to one normalized capture.",
+        "properties": {
+          "fingerprints": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "pattern": "^[0-9a-f]{20}$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 38759,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 10000,
+            "title": "Fingerprints",
+            "type": "array"
+          },
+          "format_id": {
+            "enum": [
+              "ma-dejavu-landmarks-v1",
+              "ma-dejavu-landmarks-v2"
+            ],
+            "title": "Format Id",
+            "type": "string"
+          },
+          "offset_unit": {
+            "const": "fft_hops",
+            "title": "Offset Unit",
+            "type": "string"
+          },
+          "sample_count": {
+            "maximum": 661500,
+            "minimum": 132300,
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "sample_rate": {
+            "const": 44100,
+            "title": "Sample Rate",
+            "type": "integer"
+          },
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "format_id",
+          "sample_rate",
+          "offset_unit",
+          "sample_count",
+          "fingerprints"
+        ],
+        "title": "LandmarkQuery",
         "type": "object"
       },
       "Match": {
@@ -1226,6 +1305,140 @@
           }
         ],
         "summary": "Recognize",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/api/v1/dejavu/recognize/landmarks": {
+      "post": {
+        "description": "Requires read access. Transient precomputed landmarks for a 3\u201315 second capture normalized to 44,100 Hz mono. Offsets are relative to the capture, in 2,048-sample hops. At most 10,000 distinct pairs and 512,000 request bytes. Shares the PCM endpoint's backend request budget, concurrency slots and acceptance rules. Does not store or publish submitted landmarks.",
+        "operationId": "recognizeLandmarks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LandmarkQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Recognition"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 401; gateway errors may have a different body."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 403; gateway errors may have a different body."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 408; gateway errors may have a different body."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 413; gateway errors may have a different body."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 415; gateway errors may have a different body."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 422; gateway errors may have a different body."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 429; gateway errors may have a different body.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until retry, when provided.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 503; gateway errors may have a different body.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until retry, when provided.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApplicationKey": [],
+            "PersonalKey": []
+          }
+        ],
+        "summary": "Recognize Landmarks",
         "tags": [
           "read"
         ]

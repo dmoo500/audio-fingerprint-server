@@ -4,7 +4,7 @@ COPY music-assistant-fingerprint-server/pyproject.toml ./
 COPY music-assistant-fingerprint-server/fingerprint_server ./fingerprint_server
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir '.[postgres]'
 RUN useradd --uid 10001 --create-home fingerprint && mkdir /data && chown fingerprint /data
 USER fingerprint
 ENV FP_DATABASE=/data/fingerprints.db

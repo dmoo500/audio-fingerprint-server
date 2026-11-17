@@ -9,6 +9,8 @@ All shell commands assume the repository root, not this directory. Links are rel
 - [Local setup](deployment.md#local-setup) and [Docker](deployment.md#docker)
 - [Logging and gateway admission protection](deployment.md#gateway-admission-protection)
 - [Database versions, backup and recovery](deployment.md#database-upgrades-and-version-policy)
+- [Moving between SQLite and PostgreSQL, including rollback](database-migration.md)
+- [Two API replicas, APISIX balancing and shared limits](replicas.md)
 - [APISIX setup and personal credentials](gateway.md#optional-apisix-mode-application-token-and-personal-token)
 - [Credential storage, rotation and rollback](gateway.md#storage-rotation-and-rollback)
 - [MusicBrainz configuration and cooldowns](metadata.md#optional-metadata-enrichment)
@@ -23,7 +25,8 @@ All shell commands assume the repository root, not this directory. Links are rel
 
 ## Evaluate and develop
 
-- [Storage benchmarks](benchmarks.md#database-storage)
-- [Extraction and codec benchmarks](benchmarks.md#library-extraction-and-document-encoding)
-- [Short-capture recognition results](benchmarks.md#short-capture-recognition)
+- [Benchmark overview](benchmarks.md) and [historical SQLite growth](benchmarks/sqlite-storage.md)
+- [PostgreSQL storage and query layouts](benchmarks/postgresql-layout.md)
+- [Full-collection migration, runtime and restore checks](benchmarks/postgresql-runtime.md)
+- [Extraction, codec and short-capture recognition results](benchmarks/audio.md)
 - [Validation commands and known limitations](development.md#validation-and-limitations)

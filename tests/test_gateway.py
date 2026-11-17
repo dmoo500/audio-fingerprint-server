@@ -13,7 +13,7 @@ from test_server import READ, UPLOAD, audio, canonical, document, settings
 
 from fingerprint_server.app import create_app
 from fingerprint_server.async_utils import run_sync
-from fingerprint_server.gateway import configure, provision
+from fingerprint_server.gateway import configure, main, provision
 from fingerprint_server.schemas import Submission
 
 APPLICATION = "test-fingerprint-application-key-with-24-characters"
@@ -41,6 +41,7 @@ def test_gateway_configuration_fails_closed(tmp_path: Path, options: dict[str, o
         ("POST", "/api/v1/dejavu/submissions", UPLOAD),
         ("GET", "/api/v1/dejavu/submissions/unknown", UPLOAD),
         ("POST", "/api/v1/dejavu/recognize?sample_rate=44100", READ),
+        ("POST", "/api/v1/dejavu/recognize/landmarks", READ),
         ("GET", "/api/v1/dejavu/statistics", READ),
     ],
 )
@@ -169,8 +170,23 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         transport=httpx.MockTransport(capture), base_url="http://localhost/apisix/admin/"
     ) as client:
         configure(
-            client, settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION))
+            client,
+            settings(
+                tmp_path,
+                gateway_enabled=True,
+                application_key=SecretStr(APPLICATION),
+                gateway_backends=("api-1:8097", "api-2:8097"),
+            ),
         )
+    upstream = next(
+        json.loads(request.content) for request in requests if "/upstreams/" in request.url.path
+    )
+    assert upstream["nodes"] == {"api-1:8097": 1, "api-2:8097": 1}
+    assert upstream["type"] == "roundrobin" and upstream["retries"] == 0
+    active = upstream["checks"]["active"]
+    assert active["http_path"] == "/health"
+    assert active["healthy"]["successes"] == 2
+    assert active["unhealthy"]["http_failures"] == 2
     routes = {
         request.url.path.rsplit("/", 1)[1]: json.loads(request.content)
         for request in requests
@@ -182,6 +198,7 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         "capabilities",
         "availability",
         "recognize",
+        "recognize-landmarks",
         "statistics",
         "public",
     }
@@ -191,6 +208,7 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         ("capabilities", "upload", UPLOAD),
         ("availability", "upload", UPLOAD),
         ("recognize", "read", READ),
+        ("recognize-landmarks", "read", READ),
         ("statistics", "read", READ),
     ]:
         plugins = routes[name]["plugins"]
@@ -262,3 +280,12 @@ def test_admission_configuration_failure_is_reported(tmp_path: Path) -> None:
                 client,
                 settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION)),
             )
+
+
+@pytest.mark.parametrize("port", [0, 65536])
+def test_invalid_admin_port_is_rejected(port: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject invalid loopback ports before attempting Admin API communication."""
+    monkeypatch.setattr("sys.argv", ["gateway", "--admin-port", str(port), "configure"])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2

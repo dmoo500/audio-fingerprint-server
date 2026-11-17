@@ -28,7 +28,7 @@ from fingerprint_server.schemas import (
     metadata_complete,
 )
 from fingerprint_server.settings import Settings
-from fingerprint_server.store import Store
+from fingerprint_server.storage import Storage
 
 LOGGER = logging.getLogger(__name__)
 PUBLICATION_LOGGER = logging.getLogger("uvicorn.error.fingerprint.worker")
@@ -37,7 +37,7 @@ PUBLICATION_LOGGER = logging.getLogger("uvicorn.error.fingerprint.worker")
 class Worker:
     """Validate durable submissions and atomically publish reference landmarks."""
 
-    def __init__(self, store: Store, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(self, store: Storage, settings: Settings, client: httpx.AsyncClient) -> None:
         self.store = store
         self.settings = settings
         self.client = client
@@ -67,7 +67,10 @@ class Worker:
                     self.manual_pending_pass = False
                     continue
                 try:
-                    await asyncio.wait_for(self.wakeup.wait(), timeout=30)
+                    await asyncio.wait_for(
+                        self.wakeup.wait(),
+                        timeout=1 if self.settings.service_role == "worker" else 30,
+                    )
                 except TimeoutError:
                     pass
                 continue

@@ -1,6 +1,8 @@
 """Environment configuration with separate read and contribution credentials."""
 
+import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,11 +11,17 @@ MUSICBRAINZ_CACHE_TTL_DAYS = 7
 
 
 class Settings(BaseSettings):
-    """Settings for the local, single-process fingerprint service."""
+    """Settings for SQLite or explicitly selected PostgreSQL service roles."""
 
     model_config = SettingsConfigDict(env_prefix="FP_", env_file=None)
 
     database: Path = Path("data/fingerprints.db")
+    database_backend: Literal["sqlite", "postgres"] = "sqlite"
+    postgres_dsn: SecretStr | None = None
+    postgres_schema: str = Field(default="fingerprints", pattern=r"^[a-z][a-z0-9_]{0,62}$")
+    service_role: Literal["all", "api", "worker"] = "all"
+    api_replicas_enabled: bool = False
+    gateway_backends: tuple[str, ...] = ("fingerprints:8097",)
     upload_key: SecretStr = Field(min_length=24)
     read_key: SecretStr = Field(min_length=24)
     gateway_enabled: bool = False
@@ -31,6 +39,19 @@ class Settings(BaseSettings):
     )
     minimum_matches: int = Field(default=30, ge=10)
     minimum_fraction: float = Field(default=0.02, gt=0, le=1)
+
+    @field_validator("gateway_backends")
+    @classmethod
+    def validate_gateway_backends(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Accept explicit host/port nodes without credentials or URL components."""
+        if not value or len(set(value)) != len(value):
+            raise ValueError("Gateway needs at least one unique backend")
+        for node in value:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]{1,5}", node):
+                raise ValueError("Gateway backends must be DNS/IPv4 host:port entries")
+            if not 1 <= int(node.rsplit(":", 1)[1]) <= 65535:
+                raise ValueError("Gateway backend port must be between 1 and 65535")
+        return value
 
     @field_validator("musicbrainz_base_url")
     @classmethod
@@ -60,4 +81,14 @@ class Settings(BaseSettings):
             raise ValueError("The application key must differ from the internal scope keys")
         if self.musicbrainz_enabled and not self.musicbrainz_contact.strip():
             raise ValueError("MusicBrainz lookups require FP_MUSICBRAINZ_CONTACT")
+        if self.database_backend == "sqlite" and (
+            self.postgres_dsn is not None or self.service_role != "all"
+        ):
+            raise ValueError(
+                "PostgreSQL credentials and split roles require FP_DATABASE_BACKEND=postgres"
+            )
+        if self.api_replicas_enabled and (
+            self.database_backend != "postgres" or self.service_role != "api"
+        ):
+            raise ValueError("API replicas require PostgreSQL and a separate API role")
         return self

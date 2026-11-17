@@ -21,7 +21,7 @@ import httpx
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.schemas import ISRC_PATTERN
 from fingerprint_server.settings import Settings
-from fingerprint_server.store import Store
+from fingerprint_server.storage import Storage
 
 LOGGER = logging.getLogger(__name__)
 MUSICBRAINZ_CACHE_VERSION = 3
@@ -122,7 +122,7 @@ def _retry_after(value: str | None) -> float:
 class MusicBrainzService:
     """Verify recording identifiers with bounded, cached and globally paced requests."""
 
-    def __init__(self, store: Store, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(self, store: Storage, settings: Settings, client: httpx.AsyncClient) -> None:
         self.store = store
         self.settings = settings
         self.client = client

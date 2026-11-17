@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_published_schema_matches_generated_contract() -> None:
     schema = build_schema(create_app())
     assert json.loads((ROOT / "openapi.json").read_text()) == schema
-    assert len(schema["paths"]) == 7
+    assert len(schema["paths"]) == 8
     assert schema["paths"]["/health"]["get"]["security"] == []
     for path, methods in schema["paths"].items():
         if path != "/health":
@@ -44,6 +44,11 @@ def test_wire_body_and_response_variants() -> None:
         "format": "binary",
     }
     assert len(pcm["responses"]["422"]["content"]["application/json"]["schema"]["oneOf"]) == 2
+    landmarks = operations["/api/v1/dejavu/recognize/landmarks"]["post"]
+    assert landmarks["operationId"] == "recognizeLandmarks"
+    assert landmarks["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/LandmarkQuery"
+    }
     assert "reason" not in schema["components"]["schemas"]["Recognition"]["required"]
     assert "match" in schema["components"]["schemas"]["Recognition"]["required"]
 

@@ -69,8 +69,24 @@ def configure(client: httpx.Client, settings: Settings) -> None:
         "upstreams/fingerprints",
         json={
             "type": "roundrobin",
-            "nodes": {"fingerprints:8097": 1},
+            "nodes": dict.fromkeys(settings.gateway_backends, 1),
             "timeout": {"connect": 5, "send": 30, "read": 60},
+            "retries": 0,
+            "checks": {
+                "active": {
+                    "type": "http",
+                    "http_path": "/health",
+                    "timeout": 2,
+                    "healthy": {"interval": 2, "successes": 2, "http_statuses": [200]},
+                    "unhealthy": {
+                        "interval": 1,
+                        "http_failures": 2,
+                        "tcp_failures": 2,
+                        "timeouts": 2,
+                        "http_statuses": [500, 502, 503, 504],
+                    },
+                },
+            },
         },
     ).raise_for_status()
     routes = [
@@ -79,6 +95,7 @@ def configure(client: httpx.Client, settings: Settings) -> None:
         ("capabilities", "/api/v1/dejavu/capabilities", "GET", "upload", 60),
         ("availability", "/api/v1/dejavu/availability", "POST", "upload", 60),
         ("recognize", "/api/v1/dejavu/recognize", "POST", "read", 30),
+        ("recognize-landmarks", "/api/v1/dejavu/recognize/landmarks", "POST", "read", 30),
         ("statistics", "/api/v1/dejavu/statistics", "GET", "read", 30),
     ]
     for name, uri, method, scope, count in routes:
@@ -156,6 +173,7 @@ def provision(client: httpx.Client, username: str, role: str, key: str) -> None:
 def main() -> None:
     """Configure routes, issue personal keys or revoke a consumer through the local Admin API."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--admin-port", type=int, default=9180, help="Loopback Admin API port")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("configure")
     create = commands.add_parser("issue")
@@ -164,12 +182,14 @@ def main() -> None:
     revoke = commands.add_parser("revoke")
     revoke.add_argument("username")
     args = parser.parse_args()
+    if not 1 <= args.admin_port <= 65535:
+        parser.error("--admin-port must be between 1 and 65535")
     admin_key = os.environ.get("FP_GATEWAY_ADMIN_KEY", "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{24,}", admin_key):
         parser.error("FP_GATEWAY_ADMIN_KEY must contain at least 24 URL-safe characters")
     try:
         with httpx.Client(
-            base_url="http://127.0.0.1:9180/apisix/admin/",
+            base_url=f"http://127.0.0.1:{args.admin_port}/apisix/admin/",
             headers={"X-API-KEY": admin_key},
             timeout=15,
             trust_env=False,

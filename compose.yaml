@@ -8,6 +8,8 @@ services:
     environment:
       FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set a private contribution key}
       FP_READ_KEY: ${FP_READ_KEY:?Set a separate recognition key}
+      FP_DATABASE_BACKEND: ${FP_DATABASE_BACKEND:-sqlite}
+      FP_POSTGRES_SCHEMA: ${FP_POSTGRES_SCHEMA:-fingerprints}
       FP_MUSICBRAINZ_ENABLED: ${FP_MUSICBRAINZ_ENABLED:-false}
       FP_HOUSEKEEPING_ENABLED: ${FP_HOUSEKEEPING_ENABLED:-true}
       FP_BACKGROUND_RECHECK_QUEUE_WINDOW: ${FP_BACKGROUND_RECHECK_QUEUE_WINDOW:-2}

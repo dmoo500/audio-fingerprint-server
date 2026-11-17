@@ -1,0 +1,95 @@
+x-fingerprint: &fingerprint
+  build:
+    context: ..
+    dockerfile: music-assistant-fingerprint-server/Dockerfile
+  image: ${FP_REPLICA_IMAGE:-fingerprint-replicas:local}
+  environment: &environment
+    FP_DATABASE_BACKEND: postgres
+    FP_POSTGRES_SCHEMA: fingerprints
+    PGHOST: postgres
+    PGDATABASE: fingerprints
+    PGUSER: fingerprints
+    PGPASSWORD: ${FP_POSTGRES_PASSWORD:?Set a private PostgreSQL password}
+    FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set a private internal upload key}
+    FP_READ_KEY: ${FP_READ_KEY:?Set a private internal read key}
+    FP_GATEWAY_ENABLED: "true"
+    FP_APPLICATION_KEY: ${FP_APPLICATION_KEY:?Set a separate application token}
+    FP_MUSICBRAINZ_ENABLED: ${FP_MUSICBRAINZ_ENABLED:-false}
+    FP_MUSICBRAINZ_CONTACT: ${FP_MUSICBRAINZ_CONTACT:-}
+    FP_MUSICBRAINZ_BASE_URL: ${FP_MUSICBRAINZ_BASE_URL:-https://musicbrainz.org/ws/2}
+    FP_HOUSEKEEPING_ENABLED: ${FP_HOUSEKEEPING_ENABLED:-true}
+    FP_PENDING_MAX_RECHECKS: ${FP_PENDING_MAX_RECHECKS:-3}
+    FP_PENDING_RECHECK_DAYS: ${FP_PENDING_RECHECK_DAYS:-7}
+    FP_BACKGROUND_RECHECK_QUEUE_WINDOW: ${FP_BACKGROUND_RECHECK_QUEUE_WINDOW:-2}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks: [backend, outbound]
+  restart: unless-stopped
+
+services:
+  api-1:
+    <<: *fingerprint
+    environment:
+      <<: *environment
+      FP_SERVICE_ROLE: api
+      FP_API_REPLICAS_ENABLED: "true"
+  api-2:
+    <<: *fingerprint
+    environment:
+      <<: *environment
+      FP_SERVICE_ROLE: api
+      FP_API_REPLICAS_ENABLED: "true"
+  worker:
+    <<: *fingerprint
+    environment:
+      <<: *environment
+      FP_SERVICE_ROLE: worker
+    command: ["python", "-m", "fingerprint_server.worker_runtime"]
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: fingerprints
+      POSTGRES_USER: fingerprints
+      POSTGRES_PASSWORD: ${FP_POSTGRES_PASSWORD:?Set a private PostgreSQL password}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fingerprints -d fingerprints"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  gateway:
+    image: apache/apisix:3.20.0-debian
+    environment:
+      FP_GATEWAY_ADMIN_KEY: ${FP_GATEWAY_ADMIN_KEY:?Set a private gateway administration key}
+    volumes:
+      - ./gateway/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    ports:
+      - "127.0.0.1:${FP_REPLICA_PORT:-18097}:9080"
+      - "127.0.0.1:${FP_REPLICA_ADMIN_PORT:-19180}:9180"
+    networks: [backend, administration, outbound]
+    depends_on: [api-1, api-2, etcd]
+    restart: unless-stopped
+  etcd:
+    image: quay.io/coreos/etcd:v3.6.5
+    command:
+      - /usr/local/bin/etcd
+      - --name=gateway
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    volumes: [gateway-credentials:/etcd-data]
+    networks: [administration]
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true
+  administration:
+    internal: true
+  outbound:
+volumes:
+  postgres-data:
+  gateway-credentials:
