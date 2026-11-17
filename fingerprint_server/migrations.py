@@ -17,7 +17,7 @@ from fingerprint_server.schemas import decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 7
+DB_SCHEMA_VERSION = 8
 MUSICBRAINZ_VERIFICATION_VERSION = 1
 
 SCHEMA = """
@@ -47,6 +47,7 @@ CREATE TABLE landmarks (
     reference_id INTEGER NOT NULL REFERENCES reference_tracks(id),
     offset INTEGER NOT NULL, PRIMARY KEY(hash, reference_id, offset)
 ) WITHOUT ROWID;
+CREATE INDEX landmarks_reference ON landmarks(reference_id);
 CREATE TABLE enrichment_cache (
     isrc TEXT PRIMARY KEY, document TEXT NOT NULL, expires_at REAL NOT NULL
 );
@@ -127,6 +128,11 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
             if version < 7:
                 _migrate_logical_recordings(db)
                 db.execute("PRAGMA user_version=7")
+            if version < 8:
+                db.execute(
+                    "CREATE INDEX IF NOT EXISTS landmarks_reference ON landmarks(reference_id)"
+                )
+                db.execute("PRAGMA user_version=8")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:

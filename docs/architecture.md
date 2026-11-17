@@ -33,7 +33,8 @@ flowchart TD
     C --> D{"MusicBrainz enabled?"}
     D -->|Yes| E["Verify recording MBID and/or ISRC with paced cached lookups"]
     E -->|Unresolved| M["Durable pending_metadata: not published; scheduled bounded rechecks"]
-    E -->|Missing or conflicting identifiers| O["Housekeeping enabled: delete submission only and log reason"]
+    E -->|Missing identifiers| P["Housekeeping enabled: delete submission and unused unpublished reference"]
+    E -->|Conflicting identifiers| O["Housekeeping enabled: delete submission only and log reason"]
     M -->|Housekeeping enabled and deadline reached| A
     M -->|Three unresolved rechecks by default| O
     E -->|Verified| F["Fill only missing unambiguous metadata"]

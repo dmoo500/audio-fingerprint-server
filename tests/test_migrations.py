@@ -35,6 +35,45 @@ def test_fresh_database_is_current_and_compact(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.bak")) == []
 
 
+def test_schema_seven_upgrade_creates_reference_index_and_backup(tmp_path: Path) -> None:
+    store = Store(tmp_path / "legacy.db")
+    store.initialize()
+    with store.connect() as db:
+        db.execute("DROP INDEX landmarks_reference")
+        db.execute("PRAGMA user_version=7")
+    before = snapshot(store.path)
+    store.initialize()
+    with store.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+        plan = db.execute(
+            "EXPLAIN QUERY PLAN DELETE FROM landmarks WHERE reference_id=?", (1,)
+        ).fetchone()
+        assert "landmarks_reference" in plan[3]
+    assert snapshot(store.path) == before
+    backups = list(tmp_path.glob("*.pre-v7-*.bak"))
+    assert len(backups) == 1
+    assert snapshot(backups[0]) == before
+    store.initialize()
+    assert list(tmp_path.glob("*.bak")) == backups
+
+
+def test_schema_seven_index_failure_rolls_back(tmp_path: Path) -> None:
+    store = Store(tmp_path / "legacy.db")
+    store.initialize()
+    with store.connect() as db:
+        db.execute("DROP INDEX landmarks_reference")
+        db.execute("CREATE VIEW landmarks_reference AS SELECT 1")
+        db.execute("PRAGMA user_version=7")
+    before = snapshot(store.path)
+    with pytest.raises(sqlite3.OperationalError, match="landmarks_reference"):
+        store.initialize()
+    with store.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert snapshot(store.path) == before
+    backup = next(tmp_path.glob("*.pre-v7-*.bak"))
+    assert snapshot(backup) == before
+
+
 @pytest.mark.parametrize(("version", "existing_gate"), [(0, False), (0, True), (1, True)])
 def test_legacy_upgrade_preserves_content_and_external_keys(
     tmp_path: Path, version: int, existing_gate: bool

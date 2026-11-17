@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import math
 from typing import Any
@@ -16,12 +14,19 @@ from pydantic import ValidationError
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.musicbrainz import (
     EnrichmentError,
+    MissingIdentifierVerification,
     MusicBrainzService,
     MusicBrainzUnavailable,
     UnresolvableVerification,
     VerificationPending,
 )
-from fingerprint_server.schemas import Metadata, Submission, decode_submission, metadata_complete
+from fingerprint_server.schemas import (
+    Metadata,
+    Submission,
+    acoustic_reference_id,
+    decode_submission,
+    metadata_complete,
+)
 from fingerprint_server.settings import Settings
 from fingerprint_server.store import Store
 
@@ -68,12 +73,18 @@ class Worker:
                 continue
             if pending_ids is not None:
                 pending_ids.remove(row["id"])
+            elif row["pending_recheck"]:
+                LOGGER.info(
+                    "Housekeeping checking submission %s; completed_rechecks=%s",
+                    row["id"],
+                    row["pending_rechecks"],
+                )
             self.musicbrainz.lookup_call = "-"
             try:
                 submission = await run_sync(decode_submission, row["document"])
                 metadata = submission.metadata.model_dump(exclude_none=True)
                 if self.settings.musicbrainz_enabled:
-                    reference_id = row["reference_id"] or self.reference_id(submission)
+                    reference_id = row["reference_id"] or acoustic_reference_id(submission)
                     try:
                         old = await run_sync(self.store.reference_metadata, reference_id)
                     except ValueError as err:
@@ -180,14 +191,25 @@ class Worker:
                     and self.settings.musicbrainz_enabled
                     and self.settings.housekeeping_enabled
                 ):
-                    if await run_sync(self.store.delete_submission, row["id"]):
+                    if isinstance(err, MissingIdentifierVerification):
+                        deleted, reference_deleted, landmarks_deleted = await run_sync(
+                            self.store.delete_missing_identifier_submission, row["id"]
+                        )
+                    else:
+                        deleted = await run_sync(self.store.delete_submission, row["id"])
+                        reference_deleted = False
+                        landmarks_deleted = 0
+                    if deleted:
                         LOGGER.warning(
                             "Submission %s deleted as unresolvable: %s; "
-                            "completed_rechecks=%s; api_call=%s; references retained",
+                            "completed_rechecks=%s; api_call=%s; reference %s; "
+                            "landmarks_deleted=%s; housekeeping=true",
                             row["id"],
                             err,
                             row["pending_rechecks"],
                             self.musicbrainz.lookup_call,
+                            "deleted with landmarks" if reference_deleted else "retained",
+                            landmarks_deleted,
                         )
                 else:
                     await run_sync(self.store.pending_metadata, row["id"], str(err))
@@ -256,23 +278,11 @@ class Worker:
         """Deduplicate exact acoustic references without overwriting conflicting metadata."""
         self.store.finish(
             submission_id,
-            reference_id or self.reference_id(submission),
+            reference_id or acoustic_reference_id(submission),
             metadata,
             submission.fingerprints,
             verified=self.settings.musicbrainz_enabled,
         )
-
-    @staticmethod
-    def reference_id(submission: Submission) -> str:
-        """Return the unchanged acoustic identity of a submission."""
-        identity = {
-            "format_id": submission.format_id,
-            "windows": [window.model_dump() for window in submission.windows],
-            "fingerprints": sorted(submission.fingerprints),
-        }
-        return hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
 
     @staticmethod
     def _present(value: Any) -> bool:
@@ -295,7 +305,7 @@ class Worker:
             if deleted:
                 LOGGER.warning(
                     "Submission %s deleted after %s unresolved completed MusicBrainz checks; "
-                    "reason=%s; api_call=%s; references and landmarks retained",
+                    "reason=%s; api_call=%s; references and landmarks retained; housekeeping=true",
                     row["id"],
                     self.settings.pending_max_rechecks,
                     reason,

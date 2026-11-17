@@ -25,10 +25,165 @@ from test_musicbrainz_validation import (
 import fingerprint_server.migrations as migrations
 import fingerprint_server.store as storage
 from fingerprint_server.musicbrainz import MusicBrainzService, VerificationPending
+from fingerprint_server.schemas import acoustic_reference_id, decode_submission
 from fingerprint_server.store import Store
 from fingerprint_server.worker import Worker
 
 WEEK = 7 * 86400
+
+
+def legacy_without_identifiers(store: Store) -> str:
+    payload = document()
+    reference_key = acoustic_reference_id(decode_submission(json.dumps(payload)))
+    store.submit("legacy", json.dumps(payload), 100)
+    store.finish("legacy", reference_key, payload["metadata"], [("0" * 20, 0)], verified=True)
+    payload["metadata"] = {"duration": 12.0}
+    with store.connect() as db:
+        db.execute(
+            "UPDATE submissions SET document=?,state='pending_metadata',pending_due_at=0 "
+            "WHERE id='legacy'",
+            (json.dumps(payload),),
+        )
+        db.execute(
+            "UPDATE reference_tracks SET metadata=?,publication_ready=0 WHERE reference_key=?",
+            (json.dumps(payload["metadata"]), reference_key),
+        )
+    return reference_key
+
+
+async def test_due_missing_identifier_deletes_unused_reference_and_can_rebuild(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    config = online_settings(tmp_path)
+    store = Store(config.database, True)
+    store.initialize()
+    reference_key = legacy_without_identifiers(store)
+    with store.connect() as db:
+        db.execute(
+            "UPDATE submissions SET pending_due_at=? WHERE id='legacy'", (time.time() + WEEK,)
+        )
+    assert store.claim() is None
+    with store.connect() as db:
+        db.execute("UPDATE submissions SET pending_due_at=0 WHERE id='legacy'")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
+        task = asyncio.create_task(Worker(store, config, client).run())
+        try:
+            async with asyncio.timeout(5):
+                while store.get_submission("legacy") is not None:
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reference_tracks").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0] == 0
+    assert "Housekeeping checking submission legacy" in caplog.text
+    assert "reference deleted with landmarks; landmarks_deleted=1" in caplog.text
+    payload = document()
+    store.submit("corrected", json.dumps(payload), 100)
+    store.finish("corrected", reference_key, payload["metadata"], [("0" * 20, 0)], verified=True)
+    assert store.match([("0" * 20, 0)])
+
+
+@pytest.mark.parametrize("dependency", ["linked", "unlinked", "published", "invalid"])
+def test_missing_identifier_preserves_references_with_dependencies(
+    tmp_path: Path, dependency: str
+) -> None:
+    store = Store(tmp_path / "test.db", True)
+    store.initialize()
+    reference_key = legacy_without_identifiers(store)
+    if dependency == "published":
+        with store.connect() as db:
+            db.execute("UPDATE reference_tracks SET publication_ready=1")
+    else:
+        payload = document()
+        store.submit("other", json.dumps(payload), 100)
+        if dependency == "linked":
+            with store.connect() as db:
+                db.execute(
+                    "UPDATE submissions SET reference_id=? WHERE id='other'", (reference_key,)
+                )
+        elif dependency == "invalid":
+            with store.connect() as db:
+                db.execute("UPDATE submissions SET document='not-json' WHERE id='other'")
+    assert store.delete_missing_identifier_submission("legacy") == (True, False, 0)
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reference_tracks").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0] == 1
+
+
+def test_missing_identifier_cleanup_rolls_back_on_error(tmp_path: Path) -> None:
+    store = Store(tmp_path / "test.db", True)
+    store.initialize()
+    legacy_without_identifiers(store)
+    with store.connect() as db:
+        db.execute(
+            "CREATE TRIGGER reject_reference_deletion BEFORE DELETE ON reference_tracks "
+            "BEGIN SELECT RAISE(ABORT,'simulated failure'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="simulated failure"):
+        store.delete_missing_identifier_submission("legacy")
+    assert store.get_submission("legacy") is not None
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reference_tracks").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0] == 1
+
+
+def test_unrelated_unlinked_submission_does_not_prevent_cleanup(tmp_path: Path) -> None:
+    store = Store(tmp_path / "test.db", True)
+    store.initialize()
+    legacy_without_identifiers(store)
+    other = document()
+    other["fingerprints"] = [["1" * 20, 0]]
+    store.submit("other", json.dumps(other), 100)
+    assert store.delete_missing_identifier_submission("legacy") == (True, True, 1)
+    assert store.get_submission("other") is not None
+
+
+async def test_manual_check_retains_linked_unresolvable_reference(tmp_path: Path) -> None:
+    config = online_settings(tmp_path)
+    store = Store(config.database, True)
+    store.initialize()
+    legacy_without_identifiers(store)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
+        task = asyncio.create_task(Worker(store, config, client).run(["legacy"]))
+        try:
+            async with asyncio.timeout(5):
+                while lifecycle_row(store, "legacy")["error"] is None:
+                    await asyncio.sleep(0.01)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert lifecycle_row(store, "legacy")["state"] == "pending_metadata"
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0] == 1
+
+
+def test_concurrent_database_change_defers_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = Store(tmp_path / "test.db", True)
+    store.initialize()
+    legacy_without_identifiers(store)
+    other = document()
+    other["fingerprints"] = [["1" * 20, 0]]
+    store.submit("other", json.dumps(other), 100)
+    original_decode = storage.decode_submission
+
+    def decode_with_concurrent_write(raw: str) -> object:
+        with store.connect() as db:
+            db.execute("UPDATE submissions SET attempts=attempts+1 WHERE id='other'")
+        return original_decode(raw)
+
+    monkeypatch.setattr(storage, "decode_submission", decode_with_concurrent_write)
+    assert store.delete_missing_identifier_submission("legacy") == (False, False, 0)
+    assert lifecycle_row(store, "legacy")["state"] == "pending_metadata"
+    assert lifecycle_row(store, "legacy")["pending_due_at"] > time.time()
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0] == 1
 
 
 def pending(store: Store, identifier: str = "pending") -> None:
@@ -315,7 +470,12 @@ async def test_failed_delete_does_not_log_success(
             db.execute("DELETE FROM submissions WHERE id=?", (identifier,))
             raise sqlite3.OperationalError("simulated commit failure")
 
-    monkeypatch.setattr(store, "delete_submission", fail_delete)
+    def fail_missing_identifier_delete(identifier: str) -> tuple[bool, bool, int]:
+        return fail_delete(identifier), False, 0
+
+    monkeypatch.setattr(
+        store, "delete_missing_identifier_submission", fail_missing_identifier_delete
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
         with pytest.raises(sqlite3.OperationalError, match="simulated commit failure"):
             await asyncio.wait_for(Worker(store, config, client).run(), 5)

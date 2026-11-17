@@ -87,6 +87,10 @@ class UnresolvableVerification(EnrichmentError):
     """The supplied identifiers are absent or definitively conflict with MusicBrainz."""
 
 
+class MissingIdentifierVerification(UnresolvableVerification):
+    """Neither a recording identifier nor an ISRC is available."""
+
+
 class MusicBrainzUnavailable(Exception):
     """A MusicBrainz response requiring a service-wide cooldown."""
 
@@ -142,7 +146,7 @@ class MusicBrainzService:
         mbid = metadata.get("recording_mbid")
         isrc = metadata.get("isrc")
         if not mbid and not isrc:
-            raise UnresolvableVerification("MusicBrainz identifier unavailable")
+            raise MissingIdentifierVerification("MusicBrainz identifier unavailable")
         recording: dict[str, Any] | None = None
         if mbid:
             try:

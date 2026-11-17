@@ -1,5 +1,6 @@
 """Strict versioned reference documents; no audio URLs or arbitrary metadata fields."""
 
+import hashlib
 import json
 import re
 from bisect import bisect_right
@@ -178,3 +179,15 @@ def decode_submission(raw: str | bytes) -> Submission:
     return Submission.model_validate_json(
         json.dumps(decoded, sort_keys=True, separators=(",", ":"), allow_nan=False)
     )
+
+
+def acoustic_reference_id(submission: Submission) -> str:
+    """Return the acoustic identity of a submission."""
+    identity = {
+        "format_id": submission.format_id,
+        "windows": [window.model_dump() for window in submission.windows],
+        "fingerprints": sorted(submission.fingerprints),
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()

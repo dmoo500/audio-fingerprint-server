@@ -253,7 +253,7 @@ def test_schema_six_upgrade_groups_only_currently_verified_mbid_without_data_los
 
     store.initialize()
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert [
             tuple(row)
             for row in db.execute(
