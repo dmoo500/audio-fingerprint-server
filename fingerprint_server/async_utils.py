@@ -10,7 +10,10 @@ async def run_sync[**P, R](function: Callable[P, R], *args: P.args, **kwargs: P.
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        try:
-            await task
-        finally:
-            raise
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
+        raise

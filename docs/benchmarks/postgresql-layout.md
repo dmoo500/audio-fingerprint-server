@@ -98,6 +98,56 @@ measurement; other statistics and query shapes were not exhaustively tested.
 The 32-bit reference layout retained an index-only scan and hash join for the
 sample. Do not select any production layout from this single experiment alone.
 
+## Lossless posting-list experiment
+
+On 2026-11-17, `scripts/postgres_postings_experiment.py` compared the current
+one-row-per-landmark representation with two array layouts in a disposable
+PostgreSQL 17 container limited to two CPUs and 4 GiB RAM. It reads an offline
+SQLite backup, never the active PostgreSQL database.
+
+The largest run included every publication-ready reference in that backup:
+730 references and 50,845,688 landmarks. This is **not the whole stored catalogue**:
+unpublished references were excluded. All 930 submission documents were tested
+separately for compression.
+
+| Landmark layout, including lookup indexes | Size | Change |
+| --- | ---: | ---: |
+| Current rows with 64-bit reference IDs | 5.533 GiB | baseline |
+| One row per hash/reference, array of offsets | 5.737 GiB | +3.7% |
+| One row per hash, paired reference-ID/offset arrays | 1.695 GiB | -69.4% |
+
+Every layout decoded to the same sorted landmark SHA-256:
+`32095ea81c338aa19557d6185fcb8077df9d51ca5be5504295addd5d58bd0c59`.
+Ten queries of up to 400 landmarks returned identical candidate multisets.
+Removing one reference also left identical decoded landmark collections.
+
+The single-pass query medians were 130.99 ms, 1,934.80 ms and 16.89 ms
+respectively. These are exploratory timings, not a recognition latency or
+throughput guarantee: query order was fixed, caches were not controlled, and
+the queries omit the production publication join. There were no microphone,
+concurrent update, restart, or complete recognition-pipeline tests.
+
+The hash-grouped layout retains all 80 hash bits, 64-bit reference IDs and
+32-bit offsets. Its indexes are a hash primary key and a GIN reference-ID
+lookup. Unlike the baseline, the arrays do not enforce individual landmark
+uniqueness or per-element foreign keys. A production design must address
+these invariants, bounded large postings, concurrent ingestion and deletions,
+and forward/reverse migration before adoption. No live schema was changed.
+
+Changing submission text compression from `pglz` to `lz4` reduced these
+930 documents and their index from 961,445,888 to 960,741,376 bytes, only
+0.07%. It is not a useful size optimization for this sample.
+
+```sh
+uv run --no-sync python scripts/postgres_postings_experiment.py \
+  /path/to/offline-backup.db --references 1000 --report /tmp/postings-result.json
+```
+
+The reference limit selects publication-ready references in ID order, not a
+random sample. It also caps the separately selected submission documents.
+The disposable container is removed on normal completion, and the report
+records exact sizes, equality checks and analyzed query plans.
+
 ```sh
 uv run --no-sync --with 'psycopg[binary]>=3.2,<4' \
   python scripts/postgres_layout_experiment.py /path/to/offline-backup.db

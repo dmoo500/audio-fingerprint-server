@@ -158,7 +158,8 @@ async def test_capture_not_aligned_to_reference_fft_hops(client: httpx.AsyncClie
     assert response.json()["status"] == "matched", response.text
 
 
-async def test_cancellation_keeps_sync_work_bounded() -> None:
+@pytest.mark.parametrize("fails", [False, True])
+async def test_cancellation_keeps_sync_work_bounded(fails: bool) -> None:
     """Cancellation waits for the CPU worker before releasing concurrency capacity."""
     started = threading.Event()
     release = threading.Event()
@@ -166,15 +167,29 @@ async def test_cancellation_keeps_sync_work_bounded() -> None:
     def block() -> None:
         started.set()
         release.wait(timeout=2)
+        if fails:
+            raise ValueError("Worker failed")
 
-    task = asyncio.create_task(run_sync(block))
-    await asyncio.to_thread(started.wait, 2)
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    capacity = asyncio.Semaphore(1)
+
+    async def bounded() -> None:
+        async with capacity:
+            await run_sync(block)
+
+    task = asyncio.create_task(bounded())
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert capacity.locked()
+    finally:
+        release.set()
+        with pytest.raises(ValueError if fails else asyncio.CancelledError):
+            await task
+    assert not capacity.locked()
 
 
 async def test_unindexed_and_silent_capture(client: httpx.AsyncClient) -> None:

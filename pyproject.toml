@@ -14,7 +14,7 @@ dependencies = [
     "uvicorn>=0.32,<1",
     "httpx>=0.28,<1",
     "pydantic-settings>=2.6,<3",
-    "audio-fingerprint @ git+https://github.com/dmoo500/audio-fingerprint.git@e04a9442fee7c7eb1d77eb621c5c3e0c3ce2fead",
+    "audio-fingerprint @ git+https://github.com/dmoo500/audio-fingerprint.git@4f8b5d7b98554d14e8cc66a64c49305dbce408c2",
 ]
 
 [project.optional-dependencies]
