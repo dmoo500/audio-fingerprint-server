@@ -41,7 +41,55 @@ APISIX; SQLite installations can continue using the existing API and CLI.
 MusicBrainz cooldown is worker-local and is not reported by this service.
 No data is submitted back to MusicBrainz.
 
-### Application-key registry upgrade
+## A quick look
+
+These screenshots use synthetic example records and key names, not a live
+installation's private data. Creation screenshots show clearly labelled,
+non-functional example credentials only.
+
+### Overview
+
+The overview brings together worker availability, database size and processing
+counts. The green **?** at the top right indicates fresh live data; hover or
+click it for connection details.
+
+![Admin overview with worker availability, database size and submission counts](images/admin-overview.png)
+
+### Search and sort
+
+Searching for `ACDC` also finds `AC/DC`. The result count confirms that the
+filter has finished; column headings control sorting. Wider tables scroll
+horizontally without leaving the page.
+
+![Submissions table filtered by ACDC, showing three matching example recordings](images/admin-search.png)
+
+### Personal API keys
+
+Issue personal keys with read, upload or combined permissions. Revocation
+requires explicit confirmation; existing secret values are never displayed.
+
+![Personal API key creation form and example read and upload identities](images/admin-personal-keys.png)
+
+After creation, save the personal key before leaving or dismissing the page:
+its value will not appear in the list again.
+
+![One-time personal API key display with an explicitly invalid example credential](images/admin-personal-key-created.png)
+
+### Application keys
+
+Applications have separate revocable keys, in addition to the personal key
+that grants permissions. The legacy environment token is identified but not
+revealed, and revoked application identities remain visible.
+
+![Application key management with active and revoked example identities](images/admin-applications.png)
+
+The application token is also shown only once. Clients send this value in
+`X-Application-Key`, alongside their personal key in `X-API-Key`. The visible
+example below is deliberately not a valid token.
+
+![One-time application token display with an explicitly invalid example credential](images/admin-application-token-created.png)
+
+## Application-key registry upgrade
 
 Deploy the new API code to **all replicas before issuing registry keys**.
 Gateway-enabled PostgreSQL service startup creates the independent version-1
