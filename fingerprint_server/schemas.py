@@ -27,6 +27,32 @@ Text = Annotated[str, Field(max_length=500)]
 ISRC_PATTERN = r"^[A-Za-z]{2}[A-Za-z0-9]{3}[0-9]{7}$"
 
 
+def metadata_searchable(metadata: object) -> bool:
+    """Whether metadata supplies the title, complete artist credits and duration for search."""
+    if not isinstance(metadata, Mapping):
+        return False
+    title, artists, duration = (
+        metadata.get("title"),
+        metadata.get("artists"),
+        metadata.get("duration"),
+    )
+    if (
+        not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(artists, list)
+        or not artists
+        or not all(isinstance(artist, str) and artist.strip() for artist in artists)
+        or isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or duration <= 0
+    ):
+        return False
+    try:
+        return isfinite(duration)
+    except OverflowError:
+        return False
+
+
 def metadata_complete(metadata: object) -> bool:
     """Whether supplied metadata is sufficient to publish a searchable reference."""
     if not isinstance(metadata, Mapping):

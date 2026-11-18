@@ -32,7 +32,18 @@ measurements predate the schema 8 reference index and do not represent PostgreSQ
 The chart uses a separate vertical scale for each measurement; line slopes across
 different scales are not directly comparable.
 
-![Database growth: occupied space, published references, and stored landmarks](../database-growth.svg)
+![SQLite DB Growth: occupied space, stored references, and stored landmarks](../sqlite-db-growth.svg)
+
+The chart now also includes the schema 8 pre-PostgreSQL backup (3,299.09 MiB,
+845 stored references, 57,373,098 landmarks) and the verified SQLite return
+export from the isolated compact-runtime rehearsal (3,336.75 MiB file size, 846 references,
+57,377,988 landmarks). The returned file includes synthetic test changes; it is
+**not a fresh export of the currently growing live PostgreSQL database**.
+The return point is a newly created file whose occupied pages were not separately
+measured; its size uses a hollow marker and dashed segment, not a claim that file
+size equals occupied pages. The early schema 7 points predate a secondary index, so the change in size is
+not solely collection growth. The chart uses **all stored references**, including
+unpublished ones; the earlier version of this diagram displayed published counts.
 
 Occupied space rose from 1,418.54 to 2,111.26 MiB; published references from 460 to 715;
 and stored landmarks from 38,637,618 to 56,424,148. Stored acoustic references, including
@@ -43,3 +54,10 @@ a verified identity.
 The occupied-page figure excludes reusable free pages, but includes all database tables and indexes, not just published fingerprints. It is measured as `(page_count - freelist_count) * page_size` using SQLite's read-only `PRAGMA` queries.
 
 This is a real deployment example, not a per-song storage guarantee. Track duration, landmark density, multiple acoustic variants of the same recording, pending submissions and cached metadata all affect storage. Published references without verified identities cannot safely be deduplicated into logical recordings, so the reference count must not be interpreted as a count of unique songs.
+
+Snapshot values and provenance for both database charts live in
+[`database-growth.json`](../database-growth.json). Add measured points there and
+run `python scripts/render_database_growth.py` to regenerate
+`sqlite-db-growth.svg` and `psql-db-growth.svg`. Keep occupied SQLite pages
+separate from physical file size; see the [PostgreSQL chart](postgresql-runtime.md#database-growth)
+for its different size definition.

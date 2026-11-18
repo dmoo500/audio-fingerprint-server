@@ -9,7 +9,7 @@ from audio_fingerprint import FORMAT_ID, HOP_SIZE, SAMPLE_RATE, fingerprint
 from test_server import READ, UPLOAD, audio, document, recognize, settings, submit
 
 from fingerprint_server.app import MAX_LANDMARK_QUERY_BYTES, create_app
-from fingerprint_server.store import QueryTooBroadError
+from fingerprint_server.database.sqlite import QueryTooBroadError
 
 PATH = "/api/v1/dejavu/recognize/landmarks"
 HEADERS = {"X-API-Key": READ, "Content-Type": "application/json"}

@@ -19,8 +19,8 @@ from audio_fingerprint import (
 from pydantic import ValidationError
 from test_server import UPLOAD, audio, recognize, submit
 
+from fingerprint_server.database.sqlite import QueueFullError, Store
 from fingerprint_server.schemas import Submission
-from fingerprint_server.store import QueueFullError, Store
 
 client = test_server.client
 

@@ -13,8 +13,8 @@ import pytest
 from test_server import READ, UPLOAD, canonical, settings
 
 from fingerprint_server.app import create_app
+from fingerprint_server.database.sqlite import QueueFullError, Store
 from fingerprint_server.schemas import Submission, metadata_complete
-from fingerprint_server.store import QueueFullError, Store
 from fingerprint_server.worker import Worker
 
 LEGACY_SCHEMA = """

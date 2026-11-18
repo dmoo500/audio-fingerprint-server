@@ -1,14 +1,14 @@
-"""Explicit storage selection without a silent fallback between databases."""
+"""SQLite/PostgreSQL storage selection without silent backend fallback."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fingerprint_server.database.sqlite import Store
 from fingerprint_server.settings import Settings
-from fingerprint_server.store import Store
 
 if TYPE_CHECKING:
-    from fingerprint_server.postgres_store import PostgresStore
+    from fingerprint_server.database.postgres import PostgresStore
 
 type Storage = Store | PostgresStore
 
@@ -17,7 +17,7 @@ def create_store(settings: Settings) -> Storage:
     """Create the configured backend without opening or migrating storage."""
     if settings.database_backend == "postgres":
         try:
-            from fingerprint_server.postgres_store import PostgresStore
+            from fingerprint_server.database.postgres import PostgresStore
         except ModuleNotFoundError as err:
             if err.name != "psycopg":
                 raise

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from test_metadata_gate import document
 
-from fingerprint_server.store import Store
+from fingerprint_server.database.sqlite import Store
 
 
 def test_snapshot_and_sample_preserve_original(tmp_path: Path) -> None:

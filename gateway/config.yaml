@@ -25,7 +25,7 @@ nginx_config:
   http:
     enable_access_log: true
     access_log: /dev/stdout
-    access_log_format: '{"timestamp":$msec,"level":"INFO","method":"$request_method","path":"$uri","status":$status,"upstream":"$upstream_addr"}'
+    access_log_format: '{"timestamp":$msec,"level":"INFO","method":"$request_method","path":"$uri","status":$status,"duration_seconds":$request_time,"upstream_seconds":"$upstream_response_time","upstream":"$upstream_addr"}'
     access_log_format_escape: json
     client_max_body_size: 36m
     client_header_timeout: 10s

@@ -1,0 +1,65 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="container-xl" id="admin-live" data-events-url="{{ url_for('admin:events') }}">
+  <h1>Fingerprint administration</h1>
+  <p class="text-secondary">Operational data, unresolved submissions and personal API keys.</p>
+  <p id="live-status" role="status">
+    {% if live_failed %}Live data check failed; displayed values may be outdated.
+    {% else %}Connecting to live updates...{% endif %}
+  </p>
+  {% if message %}<div class="alert alert-success" role="status">{{ message }}</div>{% endif %}
+  <div class="row row-cards mb-4">
+    <div class="col-md-3"><div class="card card-body">
+      <div class="subheader">Ingestion worker</div>
+      <div class="h2" data-live-value="worker">{{ "Available" if overview.worker_available else "Unavailable" }}</div>
+    </div></div>
+    <div class="col-md-3"><div class="card card-body">
+      <div class="subheader">PostgreSQL database</div>
+      <div class="h2" data-live-value="database">{{ "%.2f"|format(overview.database_bytes / 1073741824) }} GiB</div>
+      <span class="text-secondary">Includes indexes and TOAST; excludes WAL</span>
+    </div></div>
+    <div class="col-md-3"><div class="card card-body">
+      <div class="subheader">Acoustic references</div>
+      <div class="h2" data-live-value="published">{{ overview.references.published }} published</div>
+      <span class="text-secondary" data-live-value="stored">{{ overview.references.stored }} stored</span>
+    </div></div>
+    <div class="col-md-3"><div class="card card-body">
+      <div class="subheader">PostgreSQL layout</div>
+      <div class="h2" data-live-value="format">Version {{ overview.format_version }}</div>
+      <span class="text-secondary">Admin does not migrate the database</span>
+    </div></div>
+  </div>
+  <div class="card mb-4">
+    <div class="card-header"><h2 class="card-title">Submission lifecycle</h2></div>
+    <div class="table-responsive"><table class="table table-vcenter">
+      <thead><tr><th>State</th><th>Count</th></tr></thead>
+      <tbody>{% for state, count in overview.submissions.items() %}
+        <tr><td>{{ state }}</td><td data-live-value="{{ state }}">{{ count }}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </div>
+  <div class="card card-body mb-4">
+    <h2>Unresolved ISRC submissions</h2>
+    <p>The dedicated table shows every retained submission with an ISRC that has not been
+      processed successfully, including waiting and failed entries. It does not claim that
+      MusicBrainz has independently verified an ISRC-to-recording association.
+      Historical processed submissions do not record how their identifiers were resolved.</p>
+    <p><a class="btn btn-primary" href="{{ url_for('admin:list', identity='unresolved') }}">
+      Browse unresolved ISRC submissions</a></p>
+  </div>
+  <div class="card card-body">
+    <h2>Request a pending metadata review</h2>
+    <p>Ask the worker to review retained pending entries, using the existing MusicBrainz
+      pacing, batching and cooldown. This pass does not delete unresolved entries or
+      increase their completed-check count. It does not retry failed entries.</p>
+    <form method="post"><button type="submit" class="btn btn-outline-primary">
+      Request non-destructive pending review</button></form>
+    <p class="text-secondary mt-3 mb-0">Counts update automatically while this page is open.
+      MusicBrainz cooldown is worker-local and is not reported by this page.</p>
+  </div>
+</div>
+{% endblock %}
+{% block script %}
+{{ super() }}
+{% include "admin_live.html" %}
+{% endblock %}

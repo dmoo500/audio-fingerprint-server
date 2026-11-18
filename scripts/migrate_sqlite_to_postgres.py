@@ -16,8 +16,8 @@ from urllib.parse import quote
 import psycopg
 from psycopg import sql
 
-from fingerprint_server.migrations import _validate_schema
-from fingerprint_server.postgres_schema import (
+from fingerprint_server.database.migrations import _validate_schema
+from fingerprint_server.database.postgres_schema import (
     SQLITE_SCHEMA_VERSION,
     TABLES,
     create_tables,

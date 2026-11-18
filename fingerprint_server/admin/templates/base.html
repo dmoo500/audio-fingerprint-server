@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% block head_meta %}{% endblock %}
+  {% block title %}<title>{{ title or app_title }}</title>{% endblock %}
+  <link rel="stylesheet" href="{{ url_for(__name__ ~ ':statics', path='css/tabler.min-1.1.0.css') }}">
+  <link rel="stylesheet" href="{{ url_for(__name__ ~ ':statics', path='css/fontawesome.min.css') }}">
+  <style>
+    :root { --tblr-font-sans-serif: system-ui, sans-serif; }
+    .navbar-logo { width: auto; height: 2rem; }
+  </style>
+  {% block head_css %}{% endblock %}
+</head>
+<body>
+  {% block body %}{% endblock %}
+  {% block modal %}{% endblock %}
+  <script src="{{ url_for(__name__ ~ ':statics', path='js/vendor/jquery.min.js') }}"></script>
+  <script src="{{ url_for(__name__ ~ ':statics', path='js/vendor/js.cookie.min.js') }}"></script>
+  <script src="{{ url_for(__name__ ~ ':statics', path='js/vendor/tabler.min-1.1.0.js') }}"></script>
+  {% block script %}{% endblock %}
+</body>
+</html>

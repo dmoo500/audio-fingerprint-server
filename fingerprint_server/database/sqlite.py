@@ -14,7 +14,15 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from fingerprint_server.migrations import (
+from fingerprint_server.database.logic import (
+    coverage_statistics,
+    full_coverage,
+    has_identifier,
+    initial_submission_state,
+    rank_matches,
+    resolve_availability,
+)
+from fingerprint_server.database.migrations import (
     MUSICBRAINZ_VERIFICATION_VERSION,
     initialize_database,
 )
@@ -24,14 +32,6 @@ from fingerprint_server.schemas import (
     metadata_complete,
 )
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
-from fingerprint_server.storage_logic import (
-    coverage_statistics,
-    full_coverage,
-    has_identifier,
-    initial_submission_state,
-    rank_matches,
-    resolve_availability,
-)
 
 MATCH_QUERY = """
     SELECT t.reference_key AS reference_id,t.recording_key,
@@ -309,6 +309,24 @@ class Store:
             result["attempts"] += 1
             result["pending_recheck"] = bool(row["pending_recheck"])
             return result
+
+    def preview_metadata(self, pending_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        """Read a bounded batch of eligible metadata without claiming or changing work."""
+        with self.connect() as db:
+            if pending_ids is not None:
+                placeholders = ",".join("?" for _ in pending_ids)
+                rows = db.execute(
+                    "SELECT id,document FROM submissions WHERE state='pending_metadata' "
+                    f"AND id IN ({placeholders}) ORDER BY created_at LIMIT 19",
+                    pending_ids,
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id,document FROM submissions WHERE state='queued' AND retry_at<=? "
+                    "ORDER BY enqueued_at,rowid LIMIT 19",
+                    (time.time(),),
+                ).fetchall()
+            return [dict(row) for row in rows]
 
     def request_pending_recheck(self) -> None:
         """Request one non-destructive pending pass by the running ingestion worker."""

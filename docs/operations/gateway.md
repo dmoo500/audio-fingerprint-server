@@ -1,6 +1,6 @@
 # Credentials and APISIX gateway
 
-[Home](../README.md) · [Documentation](README.md)
+[Home](../../README.md) · [Documentation](../README.md)
 
 ## API keys and future administration
 
@@ -17,7 +17,7 @@ In this default mode there are no individual accounts, per-contributor credentia
 
 ### Optional APISIX mode: application token AND personal token
 
-This deployment uses [Apache APISIX](https://apisix.apache.org/) for administratively issued personal keys. It is opt-in; the existing local setup and `compose.yaml` remain unchanged. There is no self-service developer portal, user login or automatic expiry. The application token is a separate fingerprint-service credential, **never** a login token from a local MA instance and not an officially issued Music Assistant credential. This pilot supports one configured application token.
+This deployment uses [Apache APISIX](https://apisix.apache.org/) for administratively issued personal keys. It is opt-in; the existing local setup and `compose.yaml` remain unchanged. There is no self-service developer portal, user login or automatic expiry. The application token is a separate fingerprint-service credential, **never** a login token from a local MA instance and not an officially issued Music Assistant credential. PostgreSQL deployments also support separate revocable application keys through the [administrator registry](admin.md#application-key-registry-upgrade); the configured environment token remains valid for existing clients. SQLite retains the single configured application token.
 
 ```mermaid
 flowchart TD
@@ -77,7 +77,7 @@ Each consumer has route-specific budgets: 60 submissions/minute, 60 status reads
 
 Back up both the fingerprint collection and the etcd credential/configuration store using their respective supported backup mechanisms. The etcd volume contains personal keys and internal upstream secrets; treat it as sensitive.
 
-Gateway Docker logs show method, path and response status. Backend logs record successful authentication with the verified consumer ID, scope and the application's stable `fingerprint` label. This pilot has one configured application token, not a multi-application registry. Public and rejected requests do not establish an application identity; legacy shared-key mode has no individual user/application IDs. No API keys, key fingerprints, credential headers, query strings or request bodies are included in the audit format. Do not put credentials in URLs.
+Gateway Docker logs show method, path and response status. Backend logs record successful authentication with the verified consumer ID, scope and either the environment token's stable `fingerprint` label or a registry key's opaque `app-<id>` identity. Public and rejected requests do not establish an application identity; legacy shared-key mode has no individual user/application IDs. No API keys, key fingerprints, credential headers, query strings or request bodies are included in the audit format. Do not put credentials in URLs.
 
 Use the logged consumer ID with `gateway revoke <consumer-id>` to block that user; other users are unaffected. Blocking the single application requires rotating its configured token and recreating the backend. Protect and rotate logs too: consumer IDs are operational identifiers, not anonymous data.
 

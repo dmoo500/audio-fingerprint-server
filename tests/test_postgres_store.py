@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -26,10 +27,10 @@ from test_server import READ, UPLOAD, audio, canonical, recognize, settings, sub
 from test_server import document as acoustic_document
 
 from fingerprint_server.app import create_app
+from fingerprint_server.database import create_store
+from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError, Store
 from fingerprint_server.runtime import runtime
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission
-from fingerprint_server.storage import create_store
-from fingerprint_server.store import QueryTooBroadError, QueueFullError, Store
 
 
 @pytest.fixture
@@ -37,13 +38,54 @@ def configuration(tmp_path: Path, postgres: object):
     return settings(tmp_path, database_backend="postgres", postgres_schema=f"test_{uuid4().hex}")
 
 
-@pytest.fixture
-def store(configuration):
-    from fingerprint_server.postgres_store import PostgresStore
+@pytest.fixture(params=[1, 2])
+def store(configuration, request, monkeypatch):
+    from fingerprint_server.database.postgres import PostgresStore
 
     result = PostgresStore(configuration)
     result.initialize()
+    if request.param == 2:
+        import psycopg
+
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        monkeypatch.syspath_prepend(str(scripts))
+        migrate = runpy.run_path(str(scripts / "migrate_postgres_layout.py"))["migrate"]
+        with psycopg.connect("") as db:
+            migrate(db, configuration.postgres_schema, 2)
+        result.initialize()
     return result
+
+
+def test_shared_hash_publication_and_reference_removal(store) -> None:
+    payload = document()
+    pairs = [("0" * 20, 0), ("0" * 20, 1024), ("f" * 20, 30000)]
+    for index in range(4):
+        store.submit(f"shared-{index}", json.dumps(payload), 10)
+
+    def publish_shared(index: int) -> None:
+        store.finish(f"shared-{index}", f"reference-{index}", payload["metadata"], pairs)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(publish_shared, range(4)))
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) AS count FROM landmarks").fetchone()["count"] == 12
+    for index in range(4):
+        assert store.get_submission(f"shared-{index}")["state"] == "processed"
+    from fingerprint_server.database.postgres_postings import delete
+
+    with store.connect(write=True) as db:
+        reference = db.execute(
+            "SELECT id FROM reference_tracks WHERE reference_key='reference-1'"
+        ).fetchone()["id"]
+        if store._format_version == 2:
+            assert delete(db, reference) == 3
+        else:
+            assert (
+                db.execute("DELETE FROM landmarks WHERE reference_id=%s", (reference,)).rowcount
+                == 3
+            )
+        db.execute("DELETE FROM reference_tracks WHERE id=%s", (reference,))
+        assert db.execute("SELECT count(*) AS count FROM landmarks").fetchone()["count"] == 9
 
 
 def test_backend_configuration(tmp_path: Path) -> None:
@@ -76,8 +118,8 @@ class NoPostgres(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoPostgres())
 from fingerprint_server.app import create_app
 from fingerprint_server.settings import Settings
-from fingerprint_server.storage import create_store
-from fingerprint_server.store import Store
+from fingerprint_server.database import create_store
+from fingerprint_server.database.sqlite import Store
 settings = Settings(upload_key="test-upload-key-at-least-24-characters",
                     read_key="test-reading-key-at-least-24-characters")
 assert isinstance(create_store(settings), Store)
@@ -316,7 +358,7 @@ def test_retries_cache_manual_pass_and_deadline(store) -> None:
 
 
 def test_worker_ownership_recovery_and_fencing(store, configuration) -> None:
-    from fingerprint_server.postgres_store import PostgresStore
+    from fingerprint_server.database.postgres import PostgresStore
 
     other = PostgresStore(configuration)
     store.submit("first", json.dumps(document()), 10)
@@ -343,7 +385,7 @@ def test_worker_ownership_recovery_and_fencing(store, configuration) -> None:
 def test_imported_schema_runtime_preserves_data(
     source: Path, postgres: object, migration: dict, tmp_path: Path
 ) -> None:
-    from fingerprint_server.postgres_store import PostgresStore
+    from fingerprint_server.database.postgres import PostgresStore
 
     schema = f"import_{uuid4().hex}"
     with sqlite3.connect(source) as sqlite:

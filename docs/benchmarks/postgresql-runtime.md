@@ -2,6 +2,26 @@
 
 [Home](../../README.md) · [Documentation](../README.md) · [Benchmark overview](../benchmarks.md)
 
+## Database growth
+
+![Psql DB Growth: whole database size, stored references, and landmarks](../psql-db-growth.svg)
+
+The first two points are format-1 imports during isolated migration rehearsals
+(838 and 845 references), not observations of one continuously running database.
+The third is a read-only measurement of the live format-1 service on
+2026-11-17 at 20:42 UTC: 8,305,890,995 bytes (7,921.11 MiB), 907 stored references
+and 61,511,086 landmarks. The service remained active during measurement;
+physical relation sizes are not transaction-snapshotted.
+
+PostgreSQL size includes every table, index, TOAST value and database catalog,
+but excludes WAL (1 GiB at the live measurement), dumps and temporary space.
+Each series has its own vertical scale. This is measured storage, not a linear
+growth forecast or a direct comparison with SQLite occupied pages.
+Update measured points and provenance in [`database-growth.json`](../database-growth.json),
+then run `python scripts/render_database_growth.py` to regenerate both charts.
+The [SQLite chart](sqlite-storage.md#deployed-sqlite-storage-snapshots) includes
+the separately verified SQLite return export.
+
 ## Offline migration
 
 An experimental SQLite-to-PostgreSQL importer is available for a **schema 8**
@@ -29,7 +49,7 @@ WAL and backups. The tool does not delete the source or import into an existing
 schema. Schema 7 backups must first be upgraded to schema 8 **on a separate copy**
 using the existing SQLite migration; retain the unmodified backup. The importer
 creates PostgreSQL format 1, shared with the optional
-[runtime backend](../deployment.md#optional-postgresql-backend). It does not change
+[runtime backend](../operations/deployment.md#optional-postgresql-backend). It does not change
 the running server's configuration or enable PostgreSQL automatically.
 
 The importer was tested against an isolated copy of the schema 7 backup after
@@ -63,11 +83,11 @@ recognition, concurrent queue admission, safe housekeeping, split API/worker
 roles and ownership-connection failure. The following full-collection rehearsal
 also exercises the actual runtime; neither test establishes sustained parallel
 load capacity. These original measurements predate reverse migration; the
-[current migration guide](../database-migration.md) also documents the verified
+[current migration guide](../operations/database-migration.md) also documents the verified
 PostgreSQL-to-SQLite exporter.
 
 At the time of this full-collection rehearsal, the runtime deliberately
-rejected multiple APIs. A subsequent [two-API trial](../replicas.md) added opt-in
+rejected multiple APIs. A subsequent [two-API trial](../operations/replicas.md) added opt-in
 shared API membership, shared request budgets and two database-wide recognition
 slots behind APISIX. The full-collection measurements below still describe one
 API and one worker, not multi-API throughput. A single ingestion owner preserves
@@ -172,5 +192,5 @@ single-worker switch, not certifying multi-pod capacity or an unattended live cu
 A destination, disk/backup budget, final quiescent import and explicit rollback
 decision are still required. Restoring PostgreSQL has been tested; migrating new
 PostgreSQL writes back into SQLite was not part of this original measurement.
-The subsequent [reverse migration rehearsal](../database-migration.md#reproducible-checks)
+The subsequent [reverse migration rehearsal](../operations/database-migration.md#reproducible-checks)
 uses a new SQLite file and explicitly includes post-import changes.

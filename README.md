@@ -8,23 +8,24 @@ The old analysis server is not modified. It accepts the MA `dejavu_analysis` pro
 
 ## Getting started
 
-1. Follow [local setup or Docker deployment](docs/deployment.md#local-setup). SQLite uses one combined process; optional PostgreSQL permits separate API/worker roles and [opt-in API replicas behind APISIX](docs/replicas.md), always with one ingestion worker.
+1. Follow [local setup or Docker deployment](docs/operations/deployment.md#local-setup). SQLite uses one combined process; optional PostgreSQL permits separate API/worker roles and [opt-in API replicas behind APISIX](docs/operations/replicas.md), always with one ingestion worker.
 2. Enable fingerprint sharing in the compatible MA analysis integration before analyzing tracks; old private analyses are not automatically uploaded.
 3. Open the server's microphone page, enter the read key and capture a known indexed track. Microphone recognition does not add unknown songs to the collection.
 
-This is an experimental service. Recognition quality depends on indexed coverage and capture conditions; it is not guaranteed. Before exposing it remotely, read the [gateway and credentials guide](docs/gateway.md) and [admission-protection limits](docs/deployment.md#gateway-admission-protection). Back up existing installations and read the [database upgrade policy](docs/deployment.md#database-upgrades-and-version-policy) before upgrading.
+This is an experimental service. Recognition quality depends on indexed coverage and capture conditions; it is not guaranteed. Before exposing it remotely, read the [gateway and credentials guide](docs/operations/gateway.md) and [admission-protection limits](docs/operations/deployment.md#gateway-admission-protection). Back up existing installations and read the [database upgrade policy](docs/operations/deployment.md#database-upgrades-and-version-policy) before upgrading.
 
 ## Documentation
 
 | Topic | Contents |
 | --- | --- |
 | [Architecture and data flow](docs/architecture.md) | Contribution, queue processing and microphone recognition diagrams; database tables |
-| [Setup and deployment](docs/deployment.md) | Local installation, Docker, logging, DoS admission controls, backups and migrations |
+| [Setup and deployment](docs/operations/deployment.md) | Local installation, Docker, logging, DoS admission controls, backups and migrations |
+| [Administrator website](docs/operations/admin.md) | Browse submissions and references, unresolved ISRCs, retry/delete actions and personal keys |
 | [HTTP API](docs/api.md) | Endpoints, [OpenAPI specification](openapi.json), generated clients, credentials and limits |
-| [Credentials and APISIX gateway](docs/gateway.md) | Personal keys, application tokens, gateway setup, rotation and rollback |
+| [Credentials and APISIX gateway](docs/operations/gateway.md) | Personal keys, application tokens, gateway setup, rotation and rollback |
 | [MusicBrainz and pending metadata](docs/metadata.md) | Verification, cooldowns, housekeeping, shared FIFO queue and manual rechecks |
 | [Benchmarks](docs/benchmarks.md) | Storage and codec measurements, charts and short-capture experiments |
-| [Validation and limitations](docs/development.md) | Test commands, integration checks and recognition limitations |
+| [Development and validation](docs/development.md) | Source layout, Pre-Commit/secret safeguards, tests and recognition limitations |
 
 See the [documentation index](docs/README.md) for task-oriented links. Commands in the documentation run from the repository root unless stated otherwise.
 

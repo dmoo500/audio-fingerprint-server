@@ -9,8 +9,8 @@ from contextlib import ExitStack, asynccontextmanager
 import httpx
 
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database import Storage, create_store
 from fingerprint_server.settings import Settings
-from fingerprint_server.storage import Storage, create_store
 from fingerprint_server.worker import Worker
 
 
@@ -29,7 +29,7 @@ async def runtime(
     worker: Worker | None = None
     try:
         if settings.database_backend == "postgres":
-            from fingerprint_server.postgres_store import PostgresStore
+            from fingerprint_server.database.postgres import PostgresStore
 
             assert isinstance(store, PostgresStore)
             postgres_store = store

@@ -12,8 +12,8 @@ from test_postgres_migration import migration as migration
 from test_postgres_migration import postgres as postgres
 from test_postgres_migration import source as source
 
-from fingerprint_server.migrations import DB_SCHEMA_VERSION
-from fingerprint_server.store import Store
+from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
+from fingerprint_server.database.sqlite import Store
 
 
 @pytest.fixture

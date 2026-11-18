@@ -6,6 +6,13 @@ build/
 .ruff_cache/
 .mypy_cache/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
 data/
 dist/
 .DS_Store

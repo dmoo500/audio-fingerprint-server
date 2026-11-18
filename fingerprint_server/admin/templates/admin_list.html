@@ -1,0 +1,27 @@
+{% extends "list.html" %}
+{% block content %}
+<div id="admin-live" class="container-fluid mb-3"
+     data-events-url="{{ url_for('admin:events') }}"
+     data-dataset="{{ model.identity }}" data-revision="{{ admin_live_revision(model.identity) }}">
+  <span id="live-status" role="status">Connecting to live updates...</span>
+  <button id="live-reload" type="button" class="btn btn-outline-primary ms-3" disabled>
+    Table is up to date
+  </button>
+  <span class="text-secondary ms-2">Updates never replace your current rows automatically.</span>
+  <div id="table-query-status" class="mt-2" role="status" aria-live="polite">
+    Loading table...
+  </div>
+  <p class="text-secondary mt-2 mb-0">
+    Search filters all matching records, not just this page, after a short pause.
+    It ignores case, spaces and punctuation (ACDC also matches AC/DC).
+    Advanced filters keep their literal matching rules.
+    Click a column heading to sort ascending or descending; Shift-click adds another sort column.
+  </p>
+</div>
+{{ super() }}
+{% endblock %}
+{% block script %}
+{{ super() }}
+{% include "admin_table.html" %}
+{% include "admin_live.html" %}
+{% endblock %}

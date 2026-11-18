@@ -27,15 +27,16 @@ import httpx
 import numpy as np
 import psycopg
 from audio_fingerprint import HOP_SIZE, SAMPLE_RATE, fingerprint
+from migrate_postgres_layout import migrate as migrate_layout
 from migrate_postgres_to_sqlite import export_sqlite
 from migrate_sqlite_to_postgres import create_snapshot, migrate
 from postgres_benchmark import docker, samples
 from psycopg import sql
 
-from fingerprint_server.postgres_store import PostgresStore
+from fingerprint_server.database.postgres import PostgresStore
+from fingerprint_server.database.sqlite import QueryTooBroadError, Store
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission
 from fingerprint_server.settings import Settings
-from fingerprint_server.store import QueryTooBroadError, Store
 
 LOGGER = logging.getLogger(__name__)
 SCHEMA = "runtime_trial"
@@ -230,6 +231,7 @@ def compare_runtime(
 def exercise_processes(env: dict[str, str], directory: Path, queries: list) -> dict:
     """Exercise real loopback HTTP, subprocess workers, restart and housekeeping."""
     store = PostgresStore(settings(env))
+    store.initialize()
     # Freeze imported work only AFTER validating the untouched import. This prevents
     # catalogue reprocessing; the worker exercises isolated synthetic fixtures instead.
     with store.connect(write=True) as db:
@@ -400,7 +402,9 @@ def exercise_processes(env: dict[str, str], directory: Path, queries: list) -> d
     }
 
 
-def run_trial(source: Path, report: Path, count: int, repetitions: int) -> None:
+def run_trial(
+    source: Path, report: Path, count: int, repetitions: int, compact: bool = False
+) -> None:
     """Import, exercise, dump and restore a disposable PostgreSQL collection."""
     report.parent.mkdir(parents=True, exist_ok=True)
     name = f"fingerprint-runtime-trial-{uuid.uuid4().hex[:12]}"
@@ -496,6 +500,14 @@ def run_trial(source: Path, report: Path, count: int, repetitions: int) -> None:
                 result["postgres_wal_bytes"] = int(
                     db.execute("SELECT sum(size) FROM pg_ls_waldir()").fetchone()[0]
                 )
+                if compact:
+                    started = time.perf_counter()
+                    result["compact_migration"] = migrate_layout(db, SCHEMA, 2)
+                    result["compact_migration"]["seconds"] = time.perf_counter() - started
+                    result["compact_migration"]["bytes"] = db.execute(
+                        "SELECT pg_total_relation_size('landmark_postings')"
+                    ).fetchone()[0]
+                    db.execute("VACUUM (ANALYZE)")
                 store = PostgresStore(settings(env))
                 store.initialize()
                 LOGGER.info("Comparing actual runtime output against SQLite")
@@ -605,9 +617,10 @@ if __name__ == "__main__":
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--compact", action="store_true", help="Rehearse postings format 2")
     args = parser.parse_args()
     require(
         args.samples >= 4 and args.repetitions >= 1, "Need at least four samples and one repetition"
     )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    run_trial(args.source, args.report, args.samples, args.repetitions)
+    run_trial(args.source, args.report, args.samples, args.repetitions, args.compact)

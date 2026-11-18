@@ -6,13 +6,14 @@ All shell commands assume the repository root, not this directory. Links are rel
 
 ## Install and operate
 
-- [Local setup](deployment.md#local-setup) and [Docker](deployment.md#docker)
-- [Logging and gateway admission protection](deployment.md#gateway-admission-protection)
-- [Database versions, backup and recovery](deployment.md#database-upgrades-and-version-policy)
-- [Moving between SQLite and PostgreSQL, including rollback](database-migration.md)
-- [Two API replicas, APISIX balancing and shared limits](replicas.md)
-- [APISIX setup and personal credentials](gateway.md#optional-apisix-mode-application-token-and-personal-token)
-- [Credential storage, rotation and rollback](gateway.md#storage-rotation-and-rollback)
+- [Local setup](operations/deployment.md#local-setup) and [Docker](operations/deployment.md#docker)
+- [Logging and gateway admission protection](operations/deployment.md#gateway-admission-protection)
+- [Database versions, backup and recovery](operations/deployment.md#database-upgrades-and-version-policy)
+- [Moving between SQLite and PostgreSQL, including rollback](operations/database-migration.md)
+- [Two API replicas, APISIX balancing and shared limits](operations/replicas.md)
+- [APISIX setup and personal credentials](operations/gateway.md#optional-apisix-mode-application-token-and-personal-token)
+- [Credential storage, rotation and rollback](operations/gateway.md#storage-rotation-and-rollback)
+- [Administrator website: tables, unresolved ISRCs and personal API keys](operations/admin.md)
 - [MusicBrainz configuration and cooldowns](metadata.md#optional-metadata-enrichment)
 - [Pending housekeeping, queue window and manual checks](metadata.md#pending-metadata-housekeeping)
 

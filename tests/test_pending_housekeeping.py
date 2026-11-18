@@ -22,11 +22,11 @@ from test_musicbrainz_validation import (
     recording,
 )
 
-import fingerprint_server.migrations as migrations
-import fingerprint_server.store as storage
+import fingerprint_server.database.migrations as migrations
+import fingerprint_server.database.sqlite as storage
+from fingerprint_server.database.sqlite import Store
 from fingerprint_server.musicbrainz import MusicBrainzService, VerificationPending
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission
-from fingerprint_server.store import Store
 from fingerprint_server.worker import Worker
 
 WEEK = 7 * 86400

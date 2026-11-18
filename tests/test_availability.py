@@ -11,9 +11,9 @@ from pydantic import SecretStr
 from test_server import READ, UPLOAD, settings
 
 from fingerprint_server.app import create_app
+from fingerprint_server.database.sqlite import Store
 from fingerprint_server.musicbrainz import MusicBrainzService
 from fingerprint_server.schemas import AvailabilityResponse
-from fingerprint_server.store import Store
 
 MBID = "e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"
 OTHER = "a61ad03c-8df0-44bf-b999-25d9997d2a24"

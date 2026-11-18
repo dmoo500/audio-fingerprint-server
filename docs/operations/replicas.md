@@ -1,6 +1,6 @@
 # Two API replicas behind APISIX
 
-[Home](../README.md) · [Documentation](README.md) · [Deployment](deployment.md)
+[Home](../../README.md) · [Documentation](../README.md) · [Deployment](deployment.md)
 
 This opt-in PostgreSQL deployment runs two API containers and **one** ingestion
 worker. APISIX authenticates clients and balances requests across the APIs. It
@@ -105,7 +105,7 @@ FP_TEST_POSTGRES=1 uv run --no-sync pytest -q tests/test_replicas.py
 FP_RUN_REPLICA_TESTS=1 uv run --no-sync pytest -q tests/test_replicas_integration.py
 ```
 
-The separate [full-collection rehearsal](benchmarks/postgresql-runtime.md#full-collection-runtime-and-restore-rehearsal)
+The separate [full-collection rehearsal](../benchmarks/postgresql-runtime.md#full-collection-runtime-and-restore-rehearsal)
 validated 56.9 million landmarks with one API and one worker. The two-API test
 does **not** establish full-collection concurrent throughput. One gateway,
 PostgreSQL and the single worker remain failure domains. Worker loss makes

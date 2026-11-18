@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 from test_metadata_gate import LEGACY_SCHEMA, legacy_store, metadata
 
-from fingerprint_server.migrations import DB_SCHEMA_VERSION, _migrate_binary_landmarks
-from fingerprint_server.store import MATCH_QUERY, QueryTooBroadError, Store
+from fingerprint_server.database.migrations import DB_SCHEMA_VERSION, _migrate_binary_landmarks
+from fingerprint_server.database.sqlite import MATCH_QUERY, QueryTooBroadError, Store
 
 
 def snapshot(path: Path) -> list[tuple[str, list[tuple[object, ...]]]]:
@@ -149,7 +149,7 @@ def test_failed_migration_rolls_back_without_reset(tmp_path: Path, failure: str)
 
         with (
             patch(
-                "fingerprint_server.migrations._migrate_binary_landmarks",
+                "fingerprint_server.database.migrations._migrate_binary_landmarks",
                 side_effect=fail_after_rebuild,
             ),
             pytest.raises(RuntimeError, match="interrupted"),
@@ -234,7 +234,7 @@ def test_failed_migration_can_be_retried_from_original_data(tmp_path: Path) -> N
     store = legacy_store(tmp_path / "retry.db", json.dumps(metadata()))
     with (
         patch(
-            "fingerprint_server.migrations._migrate_binary_landmarks",
+            "fingerprint_server.database.migrations._migrate_binary_landmarks",
             side_effect=RuntimeError("interrupted"),
         ),
         pytest.raises(RuntimeError, match="interrupted"),

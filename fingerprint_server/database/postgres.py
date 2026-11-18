@@ -15,11 +15,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import ValidationError
 
-from fingerprint_server.migrations import MUSICBRAINZ_VERIFICATION_VERSION
-from fingerprint_server.postgres_schema import FORMAT_VERSION, TABLES, create_tables, finish_schema
-from fingerprint_server.schemas import acoustic_reference_id, decode_submission, metadata_complete
-from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS, Settings
-from fingerprint_server.storage_logic import (
+from fingerprint_server.database import application_keys, postgres_postings
+from fingerprint_server.database.logic import (
     coverage_statistics,
     full_coverage,
     has_identifier,
@@ -27,7 +24,16 @@ from fingerprint_server.storage_logic import (
     rank_matches,
     resolve_availability,
 )
-from fingerprint_server.store import QueryTooBroadError, QueueFullError
+from fingerprint_server.database.migrations import MUSICBRAINZ_VERIFICATION_VERSION
+from fingerprint_server.database.postgres_schema import (
+    FORMAT_VERSION,
+    TABLES,
+    create_tables,
+    finish_schema,
+)
+from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError
+from fingerprint_server.schemas import acoustic_reference_id, decode_submission, metadata_complete
+from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS, Settings
 
 LOGGER = logging.getLogger(__name__)
 type Connection = psycopg.Connection[dict[str, Any]]
@@ -45,6 +51,7 @@ class PostgresStore:
         self.pending_recheck_days = settings.pending_recheck_days
         self.background_recheck_queue_window = settings.background_recheck_queue_window
         self._worker_token: str | None = None
+        self._format_version = FORMAT_VERSION
 
     @contextmanager
     def connect(self, *, write: bool = False) -> Iterator[Connection]:
@@ -84,12 +91,24 @@ class PostgresStore:
                     "Created PostgreSQL schema %s at version %s", self.schema, FORMAT_VERSION
                 )
             version = db.execute("SELECT format_version FROM migration_info").fetchall()
-            if len(version) != 1 or version[0]["format_version"] != FORMAT_VERSION:
+            if len(version) != 1 or version[0]["format_version"] not in (
+                FORMAT_VERSION,
+                postgres_postings.POSTINGS_VERSION,
+            ):
                 raise ValueError(
                     f"Unsupported PostgreSQL schema version; expected {FORMAT_VERSION}"
                 )
+            self._format_version = version[0]["format_version"]
             expected = {name: set(spec["columns"]) for name, spec in TABLES.items()}
             expected["landmarks"] = {"hash", "reference_id", "offset"}
+            if self._format_version == postgres_postings.POSTINGS_VERSION:
+                expected["landmark_postings"] = {
+                    "hash",
+                    "reference_block",
+                    "offset_block",
+                    "reference_ids",
+                    "offsets",
+                }
             for name, columns in expected.items():
                 actual = db.execute(
                     "SELECT column_name FROM information_schema.columns "
@@ -98,6 +117,8 @@ class PostgresStore:
                 ).fetchall()
                 if {row["column_name"] for row in actual} != columns:
                     raise ValueError(f"Unexpected PostgreSQL table layout: {name}")
+            if self.settings.gateway_enabled:
+                application_keys.initialize(db)
 
     @contextmanager
     def owner(self, role: str) -> Iterator[Connection]:
@@ -310,6 +331,21 @@ class PostgresStore:
             row["pending_recheck"] = bool(row["pending_recheck"])
             return row
 
+    def preview_metadata(self, pending_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        """Read a bounded batch of eligible metadata without claiming or changing work."""
+        with self.connect() as db:
+            if pending_ids is not None:
+                return db.execute(
+                    "SELECT id,document FROM submissions WHERE state='pending_metadata' "
+                    "AND id=ANY(%s) ORDER BY created_at LIMIT 19",
+                    (pending_ids,),
+                ).fetchall()
+            return db.execute(
+                "SELECT id,document FROM submissions WHERE state='queued' AND retry_at<=%s "
+                "ORDER BY enqueued_at,queue_order LIMIT 19",
+                (time.time(),),
+            ).fetchall()
+
     def request_pending_recheck(self) -> None:
         """Persist a non-destructive operator request."""
         with self.connect(write=True) as db:
@@ -363,11 +399,14 @@ class PostgresStore:
                 ),
             ).fetchone()
             if inserted:
-                with db.cursor().copy(
-                    'COPY landmarks(hash,reference_id,"offset") FROM STDIN'
-                ) as cp:
-                    for digest, offset in fingerprints:
-                        cp.write_row((bytes.fromhex(digest), inserted["id"], offset))
+                if self._format_version == postgres_postings.POSTINGS_VERSION:
+                    postgres_postings.insert(db, inserted["id"], fingerprints)
+                else:
+                    with db.cursor().copy(
+                        'COPY landmarks(hash,reference_id,"offset") FROM STDIN'
+                    ) as cp:
+                        for digest, offset in fingerprints:
+                            cp.write_row((bytes.fromhex(digest), inserted["id"], offset))
             else:
                 db.execute(
                     "UPDATE reference_tracks SET metadata=%s,publication_ready=1,"
@@ -485,9 +524,12 @@ class PostgresStore:
                     safe &= isinstance(metadata, dict) and not has_identifier(metadata)
             landmarks = 0
             if safe and reference is not None:
-                landmarks = db.execute(
-                    "DELETE FROM landmarks WHERE reference_id=%s", (reference["id"],)
-                ).rowcount
+                if self._format_version == postgres_postings.POSTINGS_VERSION:
+                    landmarks = postgres_postings.delete(db, reference["id"])
+                else:
+                    landmarks = db.execute(
+                        "DELETE FROM landmarks WHERE reference_id=%s", (reference["id"],)
+                    ).rowcount
                 db.execute("DELETE FROM reference_tracks WHERE id=%s", (reference["id"],))
             deleted = db.execute("DELETE FROM submissions WHERE id=%s", (submission_id,)).rowcount
             return deleted > 0, safe, landmarks

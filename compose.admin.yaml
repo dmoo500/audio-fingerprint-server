@@ -1,0 +1,40 @@
+# Optional separate administrator; never route this through public APISIX consumer routes.
+services:
+  admin:
+    build:
+      context: ..
+      dockerfile: music-assistant-fingerprint-server/Dockerfile
+      args:
+        FP_INSTALL_EXTRAS: postgres,admin
+    command:
+      - uvicorn
+      - fingerprint_server.admin:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8099"
+      - --workers
+      - "1"
+      - --log-config
+      - fingerprint_server/logging.json
+    environment:
+      FP_DATABASE_BACKEND: postgres
+      FP_POSTGRES_DSN: ${FP_ADMIN_POSTGRES_DSN:?Set the admin PostgreSQL DSN}
+      FP_POSTGRES_SCHEMA: ${FP_POSTGRES_SCHEMA:-fingerprints}
+      FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set internal upload key}
+      FP_READ_KEY: ${FP_READ_KEY:?Set internal read key}
+      FP_APPLICATION_KEY: ${FP_APPLICATION_KEY:?Set application key}
+      FP_GATEWAY_ENABLED: "true"
+      FP_ADMIN_KEY: ${FP_ADMIN_KEY:?Set a separate admin login key}
+      FP_ADMIN_COOKIE_SECURE: ${FP_ADMIN_COOKIE_SECURE:-false}
+      FP_GATEWAY_ADMIN_KEY: ${FP_GATEWAY_ADMIN_KEY:?Set gateway administration key}
+      FP_GATEWAY_ADMIN_URL: http://gateway:9180/apisix/admin/
+      FP_QUEUE_LIMIT: ${FP_QUEUE_LIMIT:-1000}
+      FP_QUEUE_BYTES_LIMIT: ${FP_QUEUE_BYTES_LIMIT:-256000000}
+    ports:
+      - "127.0.0.1:8099:8099"
+    networks:
+      - backend
+      - administration
+      - outbound
+    restart: unless-stopped

@@ -17,14 +17,21 @@ import psycopg
 from migrate_sqlite_to_postgres import COPY_HEADER, COPY_TRAILER, LANDMARK_ROW, validate_source
 from psycopg import sql
 
-from fingerprint_server.migrations import SCHEMA
-from fingerprint_server.postgres_schema import FORMAT_VERSION, SQLITE_SCHEMA_VERSION, TABLES
+from fingerprint_server.database.migrations import SCHEMA
+from fingerprint_server.database.postgres_postings import POSTINGS_VERSION
+from fingerprint_server.database.postgres_schema import (
+    FORMAT_VERSION,
+    SQLITE_SCHEMA_VERSION,
+    TABLES,
+)
 
 LOGGER = logging.getLogger(__name__)
 
 
 @contextmanager
-def offline_snapshot(db: psycopg.Connection, schema: str) -> Iterator[None]:
+def offline_snapshot(
+    db: psycopg.Connection, schema: str, *, read_only: bool = True
+) -> Iterator[None]:
     """Reject running service roles and hold their locks over a read-only snapshot."""
     if not schema or len(schema.encode()) > 63 or "\x00" in schema:
         raise ValueError("Schema name must contain 1–63 UTF-8 bytes and no NUL")
@@ -43,7 +50,9 @@ def offline_snapshot(db: psycopg.Connection, schema: str) -> Iterator[None]:
                 raise RuntimeError(f"Stop all PostgreSQL API/worker processes first: {role} active")
             acquired.append(key)
         with db.transaction():
-            db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            if read_only:
+                db.execute("SET TRANSACTION READ ONLY")
             db.execute(
                 sql.SQL("SET LOCAL search_path TO {}, pg_catalog").format(sql.Identifier(schema))
             )
@@ -61,11 +70,22 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> None:
     versions = db.execute(
         "SELECT format_version,sqlite_schema_version FROM migration_info"
     ).fetchall()
-    if versions != [(FORMAT_VERSION, SQLITE_SCHEMA_VERSION)]:
+    if versions not in (
+        [(FORMAT_VERSION, SQLITE_SCHEMA_VERSION)],
+        [(POSTINGS_VERSION, SQLITE_SCHEMA_VERSION)],
+    ):
         raise ValueError(f"Unsupported PostgreSQL format/provenance: {versions}")
     expected = {name: set(spec["columns"]) for name, spec in TABLES.items()}
     expected["landmarks"] = {"hash", "reference_id", "offset"}
     expected["migration_info"] = {"format_version", "sqlite_schema_version"}
+    if versions[0][0] == POSTINGS_VERSION:
+        expected["landmark_postings"] = {
+            "hash",
+            "reference_block",
+            "offset_block",
+            "reference_ids",
+            "offsets",
+        }
     actual: dict[str, set[str]] = {}
     for table, column in db.execute(
         "SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=%s",

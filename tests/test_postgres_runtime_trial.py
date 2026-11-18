@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from fingerprint_server.store import Store
+from fingerprint_server.database.sqlite import Store
 
 
 def test_isolated_runtime_and_restore(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

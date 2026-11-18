@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from test_metadata_gate import document
 
-from fingerprint_server.store import Store
+from fingerprint_server.database.sqlite import Store
 
 
 @pytest.fixture

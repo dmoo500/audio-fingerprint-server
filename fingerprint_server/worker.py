@@ -12,6 +12,7 @@ import httpx
 from pydantic import ValidationError
 
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database import Storage
 from fingerprint_server.musicbrainz import (
     EnrichmentError,
     MissingIdentifierVerification,
@@ -28,7 +29,6 @@ from fingerprint_server.schemas import (
     metadata_complete,
 )
 from fingerprint_server.settings import Settings
-from fingerprint_server.storage import Storage
 
 LOGGER = logging.getLogger(__name__)
 PUBLICATION_LOGGER = logging.getLogger("uvicorn.error.fingerprint.worker")
@@ -87,6 +87,9 @@ class Worker:
                 submission = await run_sync(decode_submission, row["document"])
                 metadata = submission.metadata.model_dump(exclude_none=True)
                 if self.settings.musicbrainz_enabled:
+                    if row["id"] not in self.musicbrainz.batch_submissions:
+                        upcoming = await run_sync(self.store.preview_metadata, pending_ids)
+                        await self.musicbrainz.prefetch([row, *upcoming])
                     reference_id = row["reference_id"] or acoustic_reference_id(submission)
                     try:
                         old = await run_sync(self.store.reference_metadata, reference_id)

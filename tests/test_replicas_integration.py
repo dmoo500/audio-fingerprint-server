@@ -213,7 +213,7 @@ def test_balancing_limits_ingestion_failover_and_rejoin(deployment, record_prope
 import sys
 from contextlib import ExitStack
 from fingerprint_server.settings import Settings
-from fingerprint_server.postgres_store import PostgresStore
+from fingerprint_server.database.postgres import PostgresStore
 store = PostgresStore(Settings())
 with ExitStack() as stack:
     assert stack.enter_context(store.recognition_slot())

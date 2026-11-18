@@ -24,13 +24,14 @@ from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from fingerprint_server.access_log import AccessLogMiddleware
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database import Storage
+from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError
 from fingerprint_server.openapi import DocumentedAPI
 from fingerprint_server.runtime import runtime
 from fingerprint_server.schemas import AvailabilityRequest, LandmarkQuery, Submission
 from fingerprint_server.settings import Settings
-from fingerprint_server.storage import Storage
-from fingerprint_server.store import QueryTooBroadError, QueueFullError
 
 LOGGER = logging.getLogger(__name__)
 AUDIT_LOGGER = logging.getLogger("uvicorn.error.fingerprint.auth")
@@ -143,14 +144,33 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
     ) -> None:
         """Check scope-specific credentials before reading or parsing any request body."""
         settings: Settings = request.app.state.settings
+        application_identity = "-"
         if settings.gateway_enabled:
             application_key = settings.application_key
             if application_key is None:
                 raise HTTPException(503, "Application authentication is not configured")
-            if not hmac.compare_digest(
-                request.headers.get("X-Application-Key", "").encode(),
+            supplied = request.headers.get("X-Application-Key", "")
+            if hmac.compare_digest(
+                supplied.encode(),
                 application_key.get_secret_value().encode(),
             ):
+                application_identity = "fingerprint"
+            elif settings.database_backend == "postgres":
+                import psycopg
+
+                from fingerprint_server.database.application_keys import ApplicationKeys
+
+                try:
+                    identity = await run_sync(
+                        ApplicationKeys(request.app.state.store).authenticate, supplied
+                    )
+                except psycopg.Error as err:
+                    AUDIT_LOGGER.error(
+                        "Application credential verification unavailable: %s", type(err).__name__
+                    )
+                    raise HTTPException(503, "Application authentication unavailable") from err
+                application_identity = identity or "-"
+            if application_identity == "-":
                 raise HTTPException(401, "A valid application key is required")
         expected = settings.upload_key if scope in ("upload", "availability") else settings.read_key
         if not hmac.compare_digest(
@@ -180,7 +200,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
         AUDIT_LOGGER.info(
             "authenticated user=%s application=%s scope=%s method=%s route=%s",
             username,
-            "fingerprint" if settings.gateway_enabled else "-",
+            application_identity,
             scope,
             request.method,
             request.scope["route"].path,
@@ -369,6 +389,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 
+    application.add_middleware(AccessLogMiddleware)
     return application
 
 

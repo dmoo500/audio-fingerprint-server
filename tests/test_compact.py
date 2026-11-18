@@ -14,8 +14,8 @@ from test_server import UPLOAD, canonical
 
 import fingerprint_server.app as app_module
 from fingerprint_server.app import parse_submission
+from fingerprint_server.database.sqlite import Store
 from fingerprint_server.schemas import decode_submission
-from fingerprint_server.store import Store
 
 client = test_server.client
 

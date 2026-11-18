@@ -15,7 +15,7 @@ dataset, environment, dates and limitations.
 | [PostgreSQL storage and layouts](benchmarks/postgresql-layout.md) | Storage comparison, index/heap overhead and alternative hash/ID layouts |
 | [PostgreSQL migration and runtime](benchmarks/postgresql-runtime.md) | Verified full import, recognition parity, worker restart, dump and restore |
 | [Extraction, encoding and recognition](benchmarks/audio.md) | Codec savings, extraction timings and short synthetic captures |
-| [Two-API functional trial](replicas.md#tested-and-not-tested) | Real APISIX distribution, API exclusion/rejoin and shared limits on synthetic data |
+| [Two-API functional trial](operations/replicas.md#tested-and-not-tested) | Real APISIX distribution, API exclusion/rejoin and shared limits on synthetic data |
 
 ### Latest full-collection comparison
 

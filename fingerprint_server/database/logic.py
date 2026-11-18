@@ -11,7 +11,7 @@ from uuid import UUID
 
 from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 
-from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete
+from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete, metadata_searchable
 
 
 def has_identifier(metadata: object) -> bool:
@@ -45,7 +45,9 @@ def initial_submission_state(
         and not metadata_complete(payload["metadata"])
     )
     if pending and musicbrainz_enabled and isinstance(payload["metadata"], dict):
-        pending = not has_identifier(payload["metadata"])
+        pending = not (
+            has_identifier(payload["metadata"]) or metadata_searchable(payload["metadata"])
+        )
     if pending and musicbrainz_enabled and housekeeping_enabled:
         pending = False
     error = (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -135,6 +136,31 @@ def deployment(tmp_path: Path) -> Iterator[tuple[httpx.Client, httpx.Client, str
             ).stdout
             assert not json.loads(bindings), "Backend must not publish host ports"
             yield public, admin, env["FP_APPLICATION_KEY"], env["FP_READ_KEY"]
+            logs = subprocess.run(
+                [*command, "logs", "--no-log-prefix", "gateway", "fingerprints"],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            ).stdout
+            gateway_entries = [
+                json.loads(line) for line in logs.splitlines() if line.startswith('{"timestamp":')
+            ]
+            assert gateway_entries
+            assert all(
+                isinstance(entry["duration_seconds"], (int, float))
+                and entry["duration_seconds"] >= 0
+                and "upstream_seconds" in entry
+                for entry in gateway_entries
+            )
+            backend_timing = re.search(
+                r'"POST /api/v1/dejavu/submissions HTTP/1.1" 202 '
+                r"duration_ms=([0-9.]+) complete=true",
+                logs,
+            )
+            assert backend_timing is not None
+            assert float(backend_timing[1]) > 0
     finally:
         subprocess.run(
             [*command, "down", "--volumes", "--remove-orphans", "--rmi", "local"],

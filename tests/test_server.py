@@ -19,8 +19,8 @@ from pydantic import SecretStr, ValidationError
 
 from fingerprint_server.app import MAX_DOCUMENT_BYTES, create_app
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database.sqlite import QueueFullError, Store
 from fingerprint_server.settings import Settings
-from fingerprint_server.store import QueueFullError, Store
 from fingerprint_server.worker import Worker
 
 UPLOAD = "test-upload-key-with-at-least-24-characters"

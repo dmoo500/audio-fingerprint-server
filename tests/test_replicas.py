@@ -51,7 +51,7 @@ def test_shared_rate_limit_serializes_competing_instances(store) -> None:
 
 
 def test_shared_slots_release_on_exception(store, configuration) -> None:
-    from fingerprint_server.postgres_store import PostgresStore
+    from fingerprint_server.database.postgres import PostgresStore
 
     other = PostgresStore(configuration)
     with store.recognition_slot() as first, other.recognition_slot() as second:
@@ -81,7 +81,7 @@ def test_lost_slot_connection_never_returns_success(store) -> None:
 
 
 async def test_two_apis_share_rate_budget_and_recognition_slots(configuration) -> None:
-    from fingerprint_server.postgres_store import PostgresStore
+    from fingerprint_server.database.postgres import PostgresStore
 
     replica = configuration.model_copy(update={"service_role": "api", "api_replicas_enabled": True})
     first, second = create_app(replica), create_app(replica)
@@ -125,7 +125,7 @@ async def test_two_apis_share_rate_budget_and_recognition_slots(configuration) -
 
 
 async def test_multiple_api_owners_exclude_non_replica_process(store, configuration) -> None:
-    from fingerprint_server.postgres_store import PostgresStore
+    from fingerprint_server.database.postgres import PostgresStore
 
     replica = PostgresStore(
         configuration.model_copy(update={"api_replicas_enabled": True, "service_role": "api"})

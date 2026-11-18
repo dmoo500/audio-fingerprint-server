@@ -16,13 +16,13 @@ import pytest
 from test_metadata_gate import document
 from test_server import settings
 
+from fingerprint_server.database.sqlite import Store
 from fingerprint_server.musicbrainz import (
     EnrichmentError,
     MusicBrainzService,
     VerificationPending,
 )
 from fingerprint_server.schemas import Submission
-from fingerprint_server.store import Store
 from fingerprint_server.worker import Worker
 
 MBID = "00000000-0000-4000-8000-000000000001"
@@ -231,6 +231,8 @@ def test_invalid_recording_length_rejected(length: object) -> None:
 
 async def test_multiple_candidates_without_io(monkeypatch: pytest.MonkeyPatch) -> None:
     service = object.__new__(MusicBrainzService)
+    service.batch_isrcs = {}
+    service.batch_candidates = {}
     candidates = [
         service.parse_recording({**recording(OTHER), "title": "Different"}),
         service.parse_recording({**recording(OTHER), "length": 22000}),

@@ -11,9 +11,9 @@ from pydantic import ValidationError
 from test_metadata_gate import document
 from test_musicbrainz_validation import online_settings
 
-import fingerprint_server.store as storage
-from fingerprint_server.migrations import DB_SCHEMA_VERSION
-from fingerprint_server.store import Store
+import fingerprint_server.database.sqlite as storage
+from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
+from fingerprint_server.database.sqlite import Store
 
 
 def fill_pending(store: Store, count: int = 6) -> None:

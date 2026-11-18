@@ -1,6 +1,6 @@
 # Setup and deployment
 
-[Home](../README.md) · [Documentation](README.md)
+[Home](../../README.md) · [Documentation](../README.md)
 
 ## Local setup
 
@@ -29,6 +29,19 @@ Enable sharing in MA **before** analyzing reference tracks. Old private analyses
 ### Gateway admission protection
 
 The Docker backend uses the packaged `fingerprint_server/logging.json` configuration for consistent console output: Unix epoch seconds with millisecond precision, severity, logger name and message. For example: `1794764000.125 INFO: [fingerprint_server.worker] ...`. Native development runs can opt in with `uvicorn fingerprint_server.app:app --log-config fingerprint_server/logging.json`. Gateway access logs are JSON with numeric Unix `timestamp`, `level`, method, path and status; Nginx/APISIX native diagnostic logs retain their own format.
+
+Backend access lines include elapsed application time, for example
+`"POST /api/v1/dejavu/submissions HTTP/1.1" 202 duration_ms=42.31 complete=true`.
+The monotonic timer includes request-body handling and sending the response
+through the application, not gateway/network transit or subsequent asynchronous
+worker processing. `complete=false` indicates an interrupted response or failure;
+when no response status was sent, the log reports 500. Query strings and
+credentials are omitted. Gateway JSON access logs additionally report
+`duration_seconds` (whole gateway request) and `upstream_seconds` (backend
+response time, or `"-"` when no backend was contacted). These are seconds,
+unlike the backend's `duration_ms`. Restart the gateway after changing its
+log format. Packaged logging suppresses Uvicorn's duplicate,
+untimed access lines; the duration lines also work in native development runs.
 
 The optional APISIX deployment applies an IP-based global rule before route authentication: five requests per second with burst capacity ten, and at most eight concurrent in-flight requests per direct peer IP, with excess requests rejected using HTTP 429. Existing per-consumer route quotas still apply. The shared IP budget also covers public routes and invalid credentials; clients behind the same NAT share it. These controls are local to the gateway instance, not a distributed quota.
 
@@ -116,14 +129,14 @@ By default PostgreSQL session locks reject a second API process, and they always
 
 Only the ingestion owner recovers interrupted jobs and applies verification-mode transitions; API startup never resets active claims. Queue admission and other mutations serialize through a transaction lock, preserving shared count/UTF-8 byte budgets and atomic publication/cleanup. Reads use short-lived connections and consistent snapshots. Lookup statements have a 60-second timeout and lock waits a 15-second timeout; long imports use the separate offline tool. PostgreSQL request-rate budgets and the two recognition slots are database-wide; adding API replicas does not multiply those limits. This stage is not a high-availability deployment or a parallel-load capacity claim.
 
-Import SQLite with the [offline migration tool](benchmarks/postgresql-runtime.md#offline-migration), not by merely changing `FP_DATABASE_BACKEND`. Its PostgreSQL format 1 is the runtime's format 1; select its destination schema explicitly. After import, run PostgreSQL `VACUUM (ANALYZE)` on the target tables using the target schema's search path before measuring recognition performance. A production switch still needs a separately approved final snapshot, recognition comparison and rollback/reconciliation plan. Do not resume writes on both copies.
+Import SQLite with the [offline migration tool](../benchmarks/postgresql-runtime.md#offline-migration), not by merely changing `FP_DATABASE_BACKEND`. Its PostgreSQL format 1 is the runtime's format 1; select its destination schema explicitly. After import, run PostgreSQL `VACUUM (ANALYZE)` on the target tables using the target schema's search path before measuring recognition performance. A production switch still needs a separately approved final snapshot, recognition comparison and rollback/reconciliation plan. Do not resume writes on both copies.
 
 The [database migration guide](database-migration.md) covers both directions.
 The reverse exporter produces a new, checked SQLite schema 8 file containing
 the current PostgreSQL collection, including later changes, while all
 PostgreSQL API/worker roles are stopped. It never merges or overwrites databases.
 
-An isolated [full-collection runtime and restore rehearsal](benchmarks.md#full-collection-runtime-and-restore-rehearsal) has passed on the local setup. It validated import, sampled recognition parity, real API/worker subprocesses, worker recovery, synthetic housekeeping and complete dump/restore content checks without switching the live installation. PostgreSQL still used about 2.22 times the occupied SQLite space, before WAL and backups. Repeat the rehearsal on the intended destination before treating those local timings as deployment expectations.
+An isolated [full-collection runtime and restore rehearsal](../benchmarks.md#full-collection-runtime-and-restore-rehearsal) has passed on the local setup. It validated import, sampled recognition parity, real API/worker subprocesses, worker recovery, synthetic housekeeping and complete dump/restore content checks without switching the live installation. PostgreSQL still used about 2.22 times the occupied SQLite space, before WAL and backups. Repeat the rehearsal on the intended destination before treating those local timings as deployment expectations.
 
 ### Database upgrades and version policy
 

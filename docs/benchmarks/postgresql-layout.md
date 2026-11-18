@@ -148,6 +148,31 @@ random sample. It also caps the separately selected submission documents.
 The disposable container is removed on normal completion, and the report
 records exact sizes, equality checks and analyzed query plans.
 
+### Bounded runtime prototype: storage regression
+
+A subsequent full runtime rehearsal used every stored reference, including
+unpublished references: 845 references and 57,373,098 landmarks. The prototype
+partitioned each hash into reference-ID blocks of 32 and offset blocks of
+1,024 to bound individual arrays, and added array/integrity checks and triggers.
+
+| Landmark layout, including indexes | Bytes | GiB |
+| --- | ---: | ---: |
+| Current format 1 | 6,704,136,192 | 6.244 |
+| Bounded format-2 prototype | 8,410,185,728 | 7.833 |
+
+This is **25.4% larger**, not a space saving. Fixed block boundaries fragment
+the lists and invalidate any extrapolation from the unbounded experiment.
+The prototype was not deployed to the running database.
+
+The rehearsal did pass full canonical landmark checksum verification, 50
+recognition-outcome comparisons (46 ranked results, four explicit candidate-limit
+errors), 100 availability comparisons, HTTP ingestion/PCM recognition, worker
+restart and orphan cleanup. Exporting the changed collection to SQLite and
+restoring a PostgreSQL dump also passed content and recognition checks.
+These correctness checks do not compensate for the failed storage goal.
+Further layout work must demonstrate a size reduction with bounded postings
+before a local cutover is justified.
+
 ```sh
 uv run --no-sync --with 'psycopg[binary]>=3.2,<4' \
   python scripts/postgres_layout_experiment.py /path/to/offline-backup.db
