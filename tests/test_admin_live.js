@@ -10,8 +10,11 @@ const script = readFileSync(
 
 function browser(dataset) {
   const elements = new Map();
-  for (const id of ["admin-live", "live-status", "worker", "database", "processed"]) {
-    elements.set(id, { dataset: {}, textContent: "", handlers: {} });
+  for (const id of ["admin-live", "live-status", "live-status-icon", "worker", "database", "processed"]) {
+    elements.set(id, {
+      dataset: {}, textContent: "", handlers: {},
+      setAttribute(name, value) { this[name] = value; },
+    });
   }
   elements.get("admin-live").dataset = { dataset, revision: "initial", eventsUrl: "/admin/events" };
   if (dataset) elements.set("live-reload", {
@@ -20,6 +23,7 @@ function browser(dataset) {
   });
   const events = {};
   const handlers = {};
+  let source;
   let closed = false;
   let watchdog;
   let deselected = false;
@@ -51,7 +55,7 @@ function browser(dataset) {
     },
     window: { addEventListener() {} },
     EventSource: class {
-      constructor(url) { assert.equal(url, "/admin/events"); }
+      constructor(url) { assert.equal(url, "/admin/events"); source = this; }
       addEventListener(name, callback) { events[name] = callback; }
       close() { closed = true; }
     },
@@ -72,6 +76,7 @@ function browser(dataset) {
   }
   return {
     elements, events, snapshot, watchdog, handlers,
+    connectionError: () => source.onerror(),
     closed: () => closed, deselected: () => deselected, reloaded: () => reloaded,
   };
 }
@@ -82,14 +87,32 @@ test("dashboard updates only fresh values and exposes outages and session expiry
   assert.equal(page.elements.get("processed").textContent, 9);
   assert.equal(page.elements.get("database").textContent, "1.00 GiB");
   assert.match(page.elements.get("live-status").textContent, /connected/);
+  assert.equal(page.elements.get("live-status-icon").dataset.state, "connected");
   page.events.unavailable();
   assert.match(page.elements.get("live-status").textContent, /failed/);
+  assert.equal(page.elements.get("live-status-icon").dataset.state, "error");
   page.snapshot(undefined, 30000);
   assert.match(page.elements.get("live-status").textContent, /outdated/);
   page.events["session-expired"]();
   assert.equal(page.closed(), true);
   page.watchdog();
   assert.match(page.elements.get("live-status").textContent, /Session ended/);
+});
+
+test("reconnecting is yellow and fresh data restores green with accessible details", () => {
+  const page = browser();
+  page.watchdog();
+  assert.equal(page.elements.get("live-status").textContent, "");
+  page.connectionError();
+  const icon = page.elements.get("live-status-icon");
+  assert.equal(icon.dataset.state, "connecting");
+  assert.match(icon["aria-label"], /Reconnecting/);
+  page.snapshot();
+  assert.equal(icon.dataset.state, "connected");
+  page.events["session-expired"]();
+  page.connectionError();
+  assert.equal(icon.dataset.state, "error");
+  assert.match(icon["aria-label"], /Session ended/);
 });
 
 test("table updates enable refresh without touching selection or reloading rows", () => {

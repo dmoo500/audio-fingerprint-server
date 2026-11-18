@@ -1,12 +1,9 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="container-xl" id="admin-live" data-events-url="{{ url_for('admin:events') }}">
+  {% include "admin_live_status.html" %}
   <h1>Fingerprint administration</h1>
   <p class="text-secondary">Operational data, unresolved submissions and personal API keys.</p>
-  <p id="live-status" role="status">
-    {% if live_failed %}Live data check failed; displayed values may be outdated.
-    {% else %}Connecting to live updates...{% endif %}
-  </p>
   {% if message %}<div class="alert alert-success" role="status">{{ message }}</div>{% endif %}
   <div class="row row-cards mb-4">
     <div class="col-md-3"><div class="card card-body">

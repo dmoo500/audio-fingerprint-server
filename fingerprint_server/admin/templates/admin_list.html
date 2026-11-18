@@ -3,8 +3,8 @@
 <div id="admin-live" class="container-fluid mb-3"
      data-events-url="{{ url_for('admin:events') }}"
      data-dataset="{{ model.identity }}" data-revision="{{ admin_live_revision(model.identity) }}">
-  <span id="live-status" role="status">Connecting to live updates...</span>
-  <button id="live-reload" type="button" class="btn btn-outline-primary ms-3" disabled>
+  {% include "admin_live_status.html" %}
+  <button id="live-reload" type="button" class="btn btn-outline-primary" disabled>
     Table is up to date
   </button>
   <span class="text-secondary ms-2">Updates never replace your current rows automatically.</span>

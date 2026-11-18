@@ -92,6 +92,12 @@ the database every five seconds while browsers are connected, regardless of
 how many tabs are open. Slow clients receive the latest snapshot rather than
 an ever-growing event queue. Connection and database failures are shown
 explicitly; displayed numbers must not be treated as fresh during an outage.
+On the overview and database table pages, a small **?** indicator at the top
+right shows green for fresh data, yellow while connecting/reconnecting, and
+red for failed checks, stale data or an ended session. Hover, keyboard focus
+or click reveals the explanation and last successful check time. Click pins
+the explanation open; click again to unpin it. Key-management pages do not
+open a live database stream and therefore have no connection indicator.
 
 Submission, unresolved-ISRC and reference tables keep their rows, filters,
 sorting, selection and scroll position when changes arrive. A **Newer data

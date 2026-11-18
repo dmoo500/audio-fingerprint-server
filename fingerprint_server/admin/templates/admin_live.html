@@ -3,19 +3,21 @@ $(function () {
   const root = document.getElementById("admin-live");
   if (!root) return;
   const status = document.getElementById("live-status");
+  const icon = document.getElementById("live-status-icon");
   const button = document.getElementById("live-reload");
   const dataset = root.dataset.dataset;
   let latestRevision = root.dataset.revision;
   let loadedRevision = latestRevision;
   let requestRevision = latestRevision;
-  let lastSnapshot = 0;
+  let lastSnapshot = Date.now();
   let expired = false;
   let tableFailed = false;
   const source = new EventSource(root.dataset.eventsUrl);
 
-  function showStatus(message, failed) {
+  function showStatus(message, state) {
     status.textContent = message;
-    status.className = failed ? "text-danger" : "text-secondary";
+    icon.dataset.state = state;
+    icon.setAttribute("aria-label", message);
   }
   function updateButton() {
     if (!button) return;
@@ -36,12 +38,12 @@ $(function () {
     const snapshot = JSON.parse(event.data);
     lastSnapshot = Date.parse(snapshot.updated_at);
     if (Date.now() - lastSnapshot > 20000) {
-      showStatus("Waiting for fresh data; displayed values may be outdated.", true);
+      showStatus("Waiting for fresh data; displayed values may be outdated.", "error");
       return;
     }
-    showStatus("Live updates connected - checked " + new Date(lastSnapshot).toLocaleTimeString(), false);
+    showStatus("Live updates connected - checked " + new Date(lastSnapshot).toLocaleTimeString(), "connected");
     if (tableFailed) {
-      showStatus("Table refresh failed. Your previous rows may be outdated; retry refresh.", true);
+      showStatus("Table refresh failed. Your previous rows may be outdated; retry refresh.", "error");
     }
     if (dataset) {
       latestRevision = snapshot.revisions[dataset];
@@ -59,19 +61,21 @@ $(function () {
     }
   });
   source.addEventListener("unavailable", function () {
-    showStatus("Live data check failed; displayed values may be outdated. Retrying...", true);
+    showStatus("Live data check failed; displayed values may be outdated. Retrying...", "error");
   });
   source.addEventListener("session-expired", function () {
     expired = true;
     source.close();
-    showStatus("Session ended. Sign in again to receive live updates.", true);
+    showStatus("Session ended. Sign in again to receive live updates.", "error");
   });
   source.onerror = function () {
-    showStatus("Live connection interrupted; displayed values may be outdated. Reconnecting...", true);
+    if (!expired) {
+      showStatus("Live connection interrupted; displayed values may be outdated. Reconnecting...", "connecting");
+    }
   };
   const watchdog = setInterval(function () {
     if (!expired && Date.now() - lastSnapshot > 20000) {
-      showStatus("No fresh live data; displayed values may be outdated. Reconnecting...", true);
+      showStatus("No fresh live data; displayed values may be outdated. Reconnecting...", "error");
     }
   }, 5000);
   window.addEventListener("pagehide", function () {
@@ -98,7 +102,7 @@ $(function () {
   $(document).on("ajaxError.adminLive", function (_event, _xhr, settings) {
     if (settings.url.split("?")[0] === model.apiUrl.split("?")[0]) {
       tableFailed = true;
-      showStatus("Table refresh failed. Your previous rows may be outdated; retry refresh.", true);
+      showStatus("Table refresh failed. Your previous rows may be outdated; retry refresh.", "error");
       updateButton();
     }
   });
