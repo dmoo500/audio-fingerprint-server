@@ -8,7 +8,7 @@ const script = readFileSync(
   join(__dirname, "../fingerprint_server/admin/templates/admin_live.html"), "utf8"
 ).replace("<script>", "").replace("</script>", "");
 
-function browser(dataset) {
+function browser(dataset, counts) {
   const elements = new Map();
   for (const id of ["admin-live", "live-status", "live-status-icon", "worker", "database", "processed"]) {
     elements.set(id, {
@@ -17,6 +17,13 @@ function browser(dataset) {
     });
   }
   elements.get("admin-live").dataset = { dataset, revision: "initial", eventsUrl: "/admin/events" };
+  if (counts) {
+    elements.set("submission-chart", {
+      dataset: { counts: JSON.stringify(counts) }, style: {},
+      setAttribute(name, value) { this[name] = value; },
+    });
+    elements.set("submission-chart-total", { textContent: "" });
+  }
   if (dataset) elements.set("live-reload", {
     disabled: true, textContent: "", handlers: {},
     addEventListener(event, handler) { this.handlers[event] = handler; },
@@ -80,6 +87,25 @@ function browser(dataset) {
     closed: () => closed, deselected: () => deselected, reloaded: () => reloaded,
   };
 }
+
+test("submission donut renders all statuses, handles empty data and follows fresh snapshots", () => {
+  const page = browser(undefined, {
+    processed: 70, pending_metadata: 20, failed: 5, queued: 3, processing: 2,
+  });
+  const chart = page.elements.get("submission-chart");
+  assert.equal(page.elements.get("submission-chart-total").textContent, "100");
+  assert.match(chart.style.background, /#2f9e44 0% 70%/);
+  assert.match(chart.style.background, /#ae3ec9 98% 100%/);
+  assert.match(chart["aria-label"], /pending_metadata: 20/);
+  page.snapshot();
+  assert.equal(page.elements.get("submission-chart-total").textContent, "9");
+  assert.equal(chart.style.background, "conic-gradient(#2f9e44 0% 100%)");
+  page.snapshot(undefined, 30000);
+  assert.equal(page.elements.get("submission-chart-total").textContent, "9");
+  const empty = browser(undefined, { processed: 0 });
+  assert.equal(empty.elements.get("submission-chart")["aria-label"], "No submissions yet");
+  assert.equal(empty.elements.get("submission-chart").style.background, "#868e96");
+});
 
 test("dashboard updates only fresh values and exposes outages and session expiry", () => {
   const page = browser();

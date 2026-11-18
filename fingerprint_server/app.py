@@ -12,22 +12,23 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import ExitStack, asynccontextmanager
-from pathlib import Path
 from typing import Any, Literal
 
 import soxr
 from audio_fingerprint import MAX_DOCUMENT_BYTES, SAMPLE_RATE, decode_pcm, fingerprint
 from audio_fingerprint.codec import ENCODING_ID, decode_document
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 from fingerprint_server.access_log import AccessLogMiddleware
+from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage
 from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError
+from fingerprint_server.http_utils import bounded_body
 from fingerprint_server.openapi import DocumentedAPI
 from fingerprint_server.runtime import runtime
 from fingerprint_server.schemas import AvailabilityRequest, LandmarkQuery, Submission
@@ -37,27 +38,12 @@ LOGGER = logging.getLogger(__name__)
 AUDIT_LOGGER = logging.getLogger("uvicorn.error.fingerprint.auth")
 MAX_PCM_BYTES = 15 * 192000 * 2 * 4
 MAX_LANDMARK_QUERY_BYTES = 512_000
-STATIC = Path(__file__).with_name("static")
 
 
 def report_worker_exit(task: asyncio.Task[None]) -> None:
     """Report unexpected worker termination immediately, not only on health checks."""
     if not task.cancelled() and (error := task.exception()) is not None:
         LOGGER.error("Ingestion worker failed", exc_info=(type(error), error, error.__traceback__))
-
-
-async def bounded_body(request: Request, limit: int) -> bytes:
-    """Enforce byte limits even for streamed requests without Content-Length."""
-    body = bytearray()
-    try:
-        async with asyncio.timeout(30):
-            async for chunk in request.stream():
-                if len(body) + len(chunk) > limit:
-                    raise HTTPException(413, "Request exceeds the size limit")
-                body.extend(chunk)
-    except TimeoutError as err:
-        raise HTTPException(408, "Request body timed out") from err
-    return bytes(body)
 
 
 def parse_submission(raw: bytes, key: str) -> tuple[str, str]:
@@ -92,9 +78,21 @@ def extract_query(raw: bytes, sample_rate: int, channels: int) -> list[tuple[str
             raise ValueError("Capture must contain between 3 and 15 seconds of PCM")
         if sample_rate != SAMPLE_RATE:
             audio = soxr.resample(audio, sample_rate, SAMPLE_RATE, quality="HQ")
+        rms = float((audio.astype("float64") ** 2).mean() ** 0.5)
+        peak = float(abs(audio).max())
         query = fingerprint(audio)
         if len(query) > 10000:
             raise ValueError("Capture contains too many landmarks")
+        LOGGER.info(
+            "Recognition capture seconds=%.2f input_rate=%s channels=%s "
+            "rms=%.6f peak=%.6f landmarks=%s",
+            len(audio) / SAMPLE_RATE,
+            sample_rate,
+            channels,
+            rms,
+            peak,
+            len(query),
+        )
         return query
     except ValueError as err:
         raise HTTPException(422, str(err)) from err
@@ -327,6 +325,18 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Submission not found")
         return row
 
+    @application.get("/api/v1/dejavu/artwork/{reference}")
+    async def artwork(request: Request, reference: str) -> dict[str, Any]:
+        await authorize(request, "read")
+        if not re.fullmatch(r"[a-f0-9]{64}", reference):
+            raise HTTPException(422, "Invalid reference")
+        if not request.app.state.settings.musicbrainz_enabled:
+            return {"status": "missing", "url": None}
+        result = await run_sync(ArtworkStore(request.app.state.store).request, reference)
+        if (worker := request.app.state.worker) is not None:
+            worker.wakeup.set()
+        return result
+
     @application.post("/api/v1/dejavu/recognize")
     async def recognize(
         request: Request,
@@ -356,38 +366,50 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
 
     async def match_query(request: Request, query: list[tuple[str, int]]) -> dict[str, Any]:
         if not query:
+            LOGGER.info("Recognition decision=no_match reason=no_landmarks")
             return {"status": "no_match", "reason": "No acoustic landmarks", "match": None}
         try:
             candidates = await run_sync(request.app.state.store.match, query)
         except QueryTooBroadError as err:
+            LOGGER.warning(
+                "Recognition decision=unavailable reason=candidate_limit query_landmarks=%s",
+                len(query),
+            )
             raise HTTPException(503, "Query too repetitive to evaluate safely") from err
         settings: Settings = request.app.state.settings
         if not candidates:
+            LOGGER.info(
+                "Recognition decision=no_match reason=no_candidates query_landmarks=%s", len(query)
+            )
             return {"status": "no_match", "match": None}
         best = candidates[0]
+        LOGGER.info(
+            "Recognition evidence query_landmarks=%s candidates=%s best_matches=%s "
+            "fraction=%.6f span_seconds=%.3f offset_seconds=%.3f runner_up_matches=%s",
+            len(query),
+            len(candidates),
+            best["matched_landmarks"],
+            best["match_fraction"],
+            best["matched_span_seconds"],
+            best["offset_seconds"],
+            candidates[1]["matched_landmarks"] if len(candidates) > 1 else 0,
+        )
         if (
             best["matched_landmarks"] < settings.minimum_matches
             or best["match_fraction"] < settings.minimum_fraction
             or best["matched_span_seconds"] < 1
             or best["offset_seconds"] < -0.1
         ):
+            LOGGER.info("Recognition decision=no_match reason=acceptance_threshold")
             return {"status": "no_match", "match": None}
         if len(candidates) > 1 and (
             best["matched_landmarks"] < candidates[1]["matched_landmarks"] * 1.5
             or best["matched_landmarks"] - candidates[1]["matched_landmarks"] < 8
         ):
+            LOGGER.info("Recognition decision=ambiguous")
             return {"status": "ambiguous", "match": None}
+        LOGGER.info("Recognition decision=matched")
         return {"status": "matched", "match": best}
-
-    @application.get("/")
-    async def microphone_page() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
-
-    @application.get("/static/{name}")
-    async def static_file(name: str) -> FileResponse:
-        if name not in ("microphone.js", "capture.js", "style.css"):
-            raise HTTPException(404)
-        return FileResponse(STATIC / name)
 
     application.add_middleware(AccessLogMiddleware)
     return application

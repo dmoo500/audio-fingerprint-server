@@ -29,8 +29,9 @@ admin = ["starlette-admin==0.16.1", "itsdangerous>=2.2,<3", "psycopg[binary]>=3.
 include = ["fingerprint_server*"]
 
 [tool.setuptools.package-data]
-fingerprint_server = ["static/*", "logging.json"]
+fingerprint_server = ["logging.json"]
 "fingerprint_server.admin" = ["templates/*"]
+"fingerprint_server.recognition" = ["static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

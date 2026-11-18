@@ -14,6 +14,7 @@ All shell commands assume the repository root, not this directory. Links are rel
 - [APISIX setup and personal credentials](operations/gateway.md#optional-apisix-mode-application-token-and-personal-token)
 - [Credential storage, rotation and rollback](operations/gateway.md#storage-rotation-and-rollback)
 - [Administrator website: tables, unresolved ISRCs and personal API keys](operations/admin.md)
+- [Public microphone recognition app](operations/recognition.md)
 - [MusicBrainz configuration and cooldowns](metadata.md#optional-metadata-enrichment)
 - [Pending housekeeping, queue window and manual checks](metadata.md#pending-metadata-housekeeping)
 

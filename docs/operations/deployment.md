@@ -20,7 +20,9 @@ uv run --no-sync uvicorn fingerprint_server.app:app --host 127.0.0.1 --port 8097
 
 Keep these keys privately for your session. Set the MA provider's URL to `http://localhost:8097` and its API key to `FP_UPLOAD_KEY` when MA runs on the same machine. MA in another container needs a reachable HTTPS destination; localhost there means that container, not this host. Do not relax the MA provider's HTTP guard.
 
-Open <http://localhost:8097>, enter the **read** key and allow microphone access. The page records exactly ten seconds after you press the button, stops microphone access and sends normalized mono float32 PCM to this server. It does not keep the key in browser storage. The upload key is never distributed with the website.
+The API port no longer serves a microphone page. For browser recognition, start
+the [standalone recognition app](recognition.md) and open <http://127.0.0.1:8100>.
+The app supplies its read credentials server-side; visitors do not enter keys.
 
 Enable sharing in MA **before** analyzing reference tracks. Old private analyses are not backfilled. The reference database must contain the song and the captured passage must overlap indexed audio. New full-track references have no sampling gaps; legacy references remain only partially covered.
 

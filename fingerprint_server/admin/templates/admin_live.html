@@ -13,6 +13,29 @@ $(function () {
   let expired = false;
   let tableFailed = false;
   const source = new EventSource(root.dataset.eventsUrl);
+  const chart = document.getElementById("submission-chart");
+
+  function updateChart(counts) {
+    if (!chart) return;
+    const colors = {
+      processed: "#2f9e44", pending_metadata: "#f59f00", failed: "#d63939",
+      queued: "#4263eb", processing: "#ae3ec9",
+    };
+    const entries = Object.entries(counts);
+    const total = entries.reduce((sum, [, count]) => sum + count, 0);
+    let position = 0;
+    const segments = entries.filter(([, count]) => count > 0).map(([state, count]) => {
+      const start = position;
+      position += count / total * 100;
+      return (colors[state] || "#868e96") + " " + start + "% " + position + "%";
+    });
+    chart.style.background = total ? "conic-gradient(" + segments.join(", ") + ")" : "#868e96";
+    chart.setAttribute("aria-label", total
+      ? "Submissions by status: " + entries.map(([state, count]) => state + ": " + count).join(", ")
+      : "No submissions yet");
+    document.getElementById("submission-chart-total").textContent = total.toLocaleString();
+  }
+  if (chart) updateChart(JSON.parse(chart.dataset.counts));
 
   function showStatus(message, state) {
     status.textContent = message;
@@ -58,6 +81,7 @@ $(function () {
       Object.entries(overview.submissions).forEach(function ([state, count]) {
         setValue(state, count);
       });
+      updateChart(overview.submissions);
     }
   });
   source.addEventListener("unavailable", function () {

@@ -8,6 +8,7 @@ from contextlib import ExitStack, asynccontextmanager
 
 import httpx
 
+from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage, create_store
 from fingerprint_server.settings import Settings
@@ -23,6 +24,7 @@ async def runtime(
     """Start selected roles and retain ownership until their blocking work has stopped."""
     store = create_store(settings)
     await run_sync(store.initialize)
+    await run_sync(ArtworkStore(store).initialize)
     owners = ExitStack()
     worker_task: asyncio.Task[None] | None = None
     monitor: asyncio.Task[None] | None = None

@@ -10,6 +10,20 @@
   <style>
     :root { --tblr-font-sans-serif: system-ui, sans-serif; }
     .navbar-logo { width: auto; height: 2rem; }
+    .submission-chart { position: relative; width: 15rem; max-width: 100%; aspect-ratio: 1;
+      border-radius: 50%; background: var(--tblr-border-color, #ddd); flex-shrink: 0; }
+    .submission-chart-center { position: absolute; inset: 23%; border-radius: 50%;
+      background: var(--tblr-bg-surface, white); display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center; }
+    .submission-chart-center strong { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+    .submission-chart-center span { font-size: .75rem; }
+    .submission-state-dot { display: inline-block; width: .75rem; height: .75rem;
+      border-radius: 50%; margin-right: .5rem; }
+    [data-submission-state="processed"] { background: #2f9e44; }
+    [data-submission-state="pending_metadata"] { background: #f59f00; }
+    [data-submission-state="failed"] { background: #d63939; }
+    [data-submission-state="queued"] { background: #4263eb; }
+    [data-submission-state="processing"] { background: #ae3ec9; }
     .admin-live-status { float: right; position: relative; margin-left: 1rem; z-index: 10; }
     .admin-live-status summary {
       display: flex; align-items: center; justify-content: center;

@@ -6,7 +6,10 @@
 
 ```text
 fingerprint_server/
-  app.py                 Public API and microphone page
+  app.py                 Fingerprint API
+  recognition/           Optional standalone public microphone app
+    app.py               Server-held read credentials and bounded public facade
+    static/              Public recognition UI, without API keys or admin data
   admin/                 Optional administrator service
     app.py               Framework views, authentication and service entry point
     data.py              Bounded metadata queries and guarded actions
@@ -19,7 +22,6 @@ fingerprint_server/
     postgres_schema.py   PostgreSQL table definitions and format version
     postgres_postings.py Experimental compact layout (not deployed)
     logic.py             Backend-independent coverage and matching decisions
-  static/                Microphone UI assets
   musicbrainz.py         Metadata verification, batching, cache and cooldown
   worker.py              Ingestion lifecycle
   runtime.py             Process ownership and shutdown
@@ -33,6 +35,8 @@ docs/
 
 Public start commands remain `fingerprint_server.app:app`,
 `fingerprint_server.admin:app` and `python -m fingerprint_server.worker_runtime`.
+The optional public app starts with `fingerprint_server.recognition:app`;
+see [configuration and admission limits](operations/recognition.md).
 Storage modules are internal; their imports now live under
 `fingerprint_server.database`. No stored schema, API or fingerprint format changes
 are involved in this reorganization.
@@ -80,7 +84,7 @@ uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 uv run --no-sync ruff format --check .
 uv run --no-sync mypy fingerprint_server
-node --test tests/test_microphone.js tests/test_admin_live.js
+node --test tests/test_*.js
 # Optional: real gateway test with isolated containers, fresh volumes and local ports.
 FP_RUN_GATEWAY_TESTS=1 uv run --no-sync pytest -q tests/test_gateway_integration.py
 # Optional PostgreSQL runtime and importer tests: disposable PostgreSQL 17 containers.

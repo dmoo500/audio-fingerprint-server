@@ -114,9 +114,8 @@ All mutation/status calls require the upload key; recognition requires the read 
   their recording MBID was verified by the current MusicBrainz verification version; uncertain
   or unverified references remain separate. A recording is full if any searchable variant is
   fully covered, partial if it has searchable variants but none is full, and excluded only if
-  none of its variants is searchable. The microphone page refreshes counts every 15 seconds
-  while visible after entering the read key. Failed requests clear the displayed counts instead
-  of presenting stale data as current.
+  none of its variants is searchable. The [recognition app](operations/recognition.md) uses
+  only the searchable recording count.
 
 Coverage is computed from stored windows rather than a separate stored coverage flag. Full coverage means the union of windows starts at zero, has no gaps and reaches the exact track duration in samples; even small unsampled gaps count as partial. This describes sampled audio, not guaranteed recognition of every passage. New v2 references have full coverage; legacy references usually have partial coverage because only three windows were analyzed. Different acoustic references with the same verified recording MBID count as one logical recording but remain separate acoustic variants. References without a verified MBID count separately; matching titles, artists, durations or ISRCs alone never merge records. Duplicate uploads of an identical reference still count once. Queue counts describe submissions, not recordings or analyses still running inside MA before upload.
 

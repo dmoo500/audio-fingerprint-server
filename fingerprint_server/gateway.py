@@ -97,6 +97,7 @@ def configure(client: httpx.Client, settings: Settings) -> None:
         ("recognize", "/api/v1/dejavu/recognize", "POST", "read", 30),
         ("recognize-landmarks", "/api/v1/dejavu/recognize/landmarks", "POST", "read", 30),
         ("statistics", "/api/v1/dejavu/statistics", "GET", "read", 30),
+        ("artwork", "/api/v1/dejavu/artwork/*", "GET", "read", 60),
     ]
     for name, uri, method, scope, count in routes:
         internal = settings.upload_key if scope == "upload" else settings.read_key
@@ -131,13 +132,7 @@ def configure(client: httpx.Client, settings: Settings) -> None:
     client.put(
         "routes/public",
         json={
-            "uris": [
-                "/",
-                "/health",
-                "/static/microphone.js",
-                "/static/capture.js",
-                "/static/style.css",
-            ],
+            "uris": ["/health"],
             "methods": ["GET"],
             "upstream_id": "fingerprints",
             "plugins": {

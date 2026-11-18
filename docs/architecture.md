@@ -62,9 +62,9 @@ Publishing is atomic: recognition cannot see a half-inserted reference. On worke
 
 ```mermaid
 flowchart TD
-    A["Browser: read key and microphone permission"] --> B["Capture ten seconds of mono PCM in memory"]
+    A["Browser: microphone permission"] --> B["Capture ten seconds of mono PCM in memory"]
     B --> C["Stop microphone tracks; encode little-endian float32 PCM"]
-    C --> D["POST recognize: read key, sample rate and channel count"]
+    C --> D["Recognition app forwards PCM with server-side credentials"]
     D --> E["Server: authenticate, enforce limits, decode PCM and resample"]
     E --> F["Shared library: extract query landmarks in memory"]
     F --> G["SQLite or PostgreSQL: join query hashes to indexed reference landmarks"]
@@ -77,6 +77,12 @@ flowchart TD
 For each matching hash, the matcher subtracts the query offset from the reference offset. Many distinct landmarks agreeing on that difference support the same alignment within a track. The server performs this database lookup and ranking; the shared library only supplies the acoustic extraction. Weak or insufficiently separated candidates do not produce a match. Invalid input, overload and excessive candidate counts return explicit HTTP errors, not `no_match`.
 
 Only indexed passages can contribute matching landmarks. MusicBrainz enrichment adds metadata, not fingerprints, and cannot make an unindexed song recognizable.
+
+The optional [public recognition app](operations/recognition.md) places a separate
+web backend in front of this same recognition path. Visitors record in the browser,
+but the web backend supplies its own read-only credentials; no API key reaches
+the browser. It exposes only song title, artists, album and a cached count of
+searchable recordings. Landmark extraction remains in the fingerprint API.
 
 ## Database tables
 

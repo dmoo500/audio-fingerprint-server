@@ -303,15 +303,19 @@ async def test_invalid_microphone_pcm(client: httpx.AsyncClient, raw: bytes) -> 
     assert response.status_code == 422
 
 
-async def test_microphone_page_has_no_embedded_credentials(client: httpx.AsyncClient) -> None:
-    """The browser UI exposes neither server key and loads a real worklet."""
-    page = await client.get("/")
-    assert page.status_code == 200
-    assert UPLOAD not in page.text and READ not in page.text
-    assert page.headers["permissions-policy"] == "microphone=(self)"
-    assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
-    assert (await client.get("/static/capture.js")).status_code == 200
-    assert (await client.get("/static/other")).status_code == 404
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/static/capture.js",
+        "/static/recording.js",
+        "/static/microphone.js",
+        "/static/style.css",
+    ],
+)
+async def test_legacy_microphone_page_is_retired(client: httpx.AsyncClient, path: str) -> None:
+    """Keep the browser UI and its assets off the API service."""
+    assert (await client.get(path)).status_code == 404
 
 
 def test_durable_queue_restart_and_atomic_visibility(tmp_path: Path) -> None:

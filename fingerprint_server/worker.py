@@ -11,6 +11,7 @@ from uuid import UUID
 import httpx
 from pydantic import ValidationError
 
+from fingerprint_server.artwork import ArtworkResolver
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage
 from fingerprint_server.musicbrainz import (
@@ -42,14 +43,18 @@ class Worker:
         self.settings = settings
         self.client = client
         self.musicbrainz = MusicBrainzService(store, settings, client)
+        self.artwork = ArtworkResolver(store, self.musicbrainz)
         self.wakeup = asyncio.Event()
         self.manual_pending_pass = False
 
     async def run(self, pending_ids: list[str] | None = None) -> None:
         """Process queued work and eligible pending rechecks until cancelled."""
+        await run_sync(self.artwork.queue.initialize)
         while True:
             self.wakeup.clear()
             await self.musicbrainz.wait_for_cooldown()
+            if self.settings.musicbrainz_enabled:
+                await self.artwork.process_one()
             if pending_ids is None and self.settings.musicbrainz_enabled:
                 pending_ids = await run_sync(self.store.take_pending_recheck)
                 if pending_ids is not None:

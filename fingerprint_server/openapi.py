@@ -109,6 +109,11 @@ class Error(BaseModel):
     detail: str
 
 
+class Artwork(BaseModel):
+    status: Literal["pending", "ready", "missing", "unavailable", "busy"]
+    url: str | None
+
+
 def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
     """Generate a deployment-specific schema without starting the app or reading secrets."""
     schema = get_openapi(
@@ -175,6 +180,7 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
     operations: dict[str, tuple[str, type[BaseModel], str, str | None]] = {
         "/health": ("get", Health, "health", None),
         "/api/v1/dejavu/statistics": ("get", Statistics, "getStatistics", "read"),
+        "/api/v1/dejavu/artwork/{reference}": ("get", Artwork, "getArtwork", "read"),
         "/api/v1/dejavu/capabilities": ("get", Capabilities, "getCapabilities", "upload"),
         "/api/v1/dejavu/availability": ("post", AvailabilityResponse, "getAvailability", "upload"),
         "/api/v1/dejavu/submissions": ("post", SubmissionReceipt, "submitFingerprints", "upload"),
@@ -208,6 +214,14 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
             codes.append(503)
         if identifier == "getSubmission":
             codes.append(404)
+        if identifier == "getArtwork":
+            codes.append(422)
+            operation["description"] += (
+                "Queue or read cached album artwork for a published reference. "
+                "The worker resolves the album through MusicBrainz and Cover Art Archive. "
+                "Poll pending results no more than once every three seconds. "
+                "Missing artwork and transient unavailability do not affect recognition."
+            )
         if identifier == "getAvailability":
             operation["requestBody"] = {
                 "required": True,

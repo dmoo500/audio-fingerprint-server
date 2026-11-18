@@ -4,13 +4,18 @@ An independent experimental service compatible with Music Assistant fingerprint 
 
 Licensed under [MIT](LICENSE). The shared library is available at [dmoo500/audio-fingerprint](https://github.com/dmoo500/audio-fingerprint). Its exact Git revision is pinned because there is no PyPI release.
 
-The old analysis server is not modified. It accepts the MA `dejavu_analysis` provider's full-track `ma-dejavu-landmarks-v2` fingerprints and legacy sampled `ma-dejavu-landmarks-v1` documents, durably queues them and publishes validated references atomically. A local microphone page tests recognition against those references. No original provider audio is requested or stored; microphone PCM is processed in memory and discarded.
+The old analysis server is not modified. This server accepts the MA `dejavu_analysis` provider's full-track `ma-dejavu-landmarks-v2` fingerprints and legacy sampled `ma-dejavu-landmarks-v1` documents, durably queues them and publishes validated references atomically. No original provider audio is requested or stored; microphone PCM is processed in memory and discarded.
 
 ## Getting started
 
 1. Follow [local setup or Docker deployment](docs/operations/deployment.md#local-setup). SQLite uses one combined process; optional PostgreSQL permits separate API/worker roles and [opt-in API replicas behind APISIX](docs/operations/replicas.md), always with one ingestion worker.
 2. Enable fingerprint sharing in the compatible MA analysis integration before analyzing tracks; old private analyses are not automatically uploaded.
-3. Open the server's microphone page, enter the read key and capture a known indexed track. Microphone recognition does not add unknown songs to the collection.
+3. To try recognition in a browser, start the optional [public recognition app](docs/operations/recognition.md) and capture a known indexed track. Microphone recognition does not add unknown songs to the collection.
+
+For visitors, the optional [public recognition app](docs/operations/recognition.md)
+provides a separate microphone-only experience without exposing API keys in the
+browser. It includes a searchable-recording counter and keeps technical and admin
+data private. It is a separately configured service, not enabled by default.
 
 This is an experimental service. Recognition quality depends on indexed coverage and capture conditions; it is not guaranteed. Before exposing it remotely, read the [gateway and credentials guide](docs/operations/gateway.md) and [admission-protection limits](docs/operations/deployment.md#gateway-admission-protection). Back up existing installations and read the [database upgrade policy](docs/operations/deployment.md#database-upgrades-and-version-policy) before upgrading.
 

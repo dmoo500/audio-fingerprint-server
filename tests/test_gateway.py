@@ -114,9 +114,6 @@ async def test_two_token_upload_and_recognition(tmp_path: Path) -> None:
             )
             assert response.status_code == 200
             assert response.json()["status"] == "matched"
-            page = await client.get("/")
-            assert APPLICATION not in page.text
-            assert 'id="application-key"' in page.text
 
 
 async def test_audit_logs_only_authenticated_user_and_application(
@@ -200,8 +197,10 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         "recognize",
         "recognize-landmarks",
         "statistics",
+        "artwork",
         "public",
     }
+    assert routes["public"]["uris"] == ["/health"]
     for name, scope, secret in [
         ("upload", "upload", UPLOAD),
         ("status", "upload", UPLOAD),
@@ -210,6 +209,7 @@ def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(
         ("recognize", "read", READ),
         ("recognize-landmarks", "read", READ),
         ("statistics", "read", READ),
+        ("artwork", "read", READ),
     ]:
         plugins = routes[name]["plugins"]
         assert plugins["key-auth"] == {"header": "X-API-Key", "query": "", "hide_credentials": True}

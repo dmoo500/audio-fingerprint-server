@@ -1,0 +1,433 @@
+"""Public recognition facade boundaries, privacy and admission tests."""
+
+import asyncio
+from importlib import import_module
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import SecretStr, ValidationError
+
+from fingerprint_server.recognition.app import Admission, RecognitionSettings, create_app
+
+ORIGIN = "https://listen.example"
+HEADERS = {
+    "Origin": ORIGIN,
+    "Content-Type": "application/octet-stream",
+    "X-Recognition-Request": "microphone",
+}
+PCM = b"\0" * (8000 * 4 * 3)
+
+
+def settings(**overrides: object) -> RecognitionSettings:
+    """Create isolated configuration with non-production test identities."""
+    return RecognitionSettings.model_validate(
+        {
+            "public_url": ORIGIN,
+            "api_url": "http://fingerprints.internal",
+            "read_key": SecretStr("r" * 32),
+            "application_key": SecretStr("a" * 32),
+            **overrides,
+        }
+    )
+
+
+def matched() -> dict[str, object]:
+    """Include internal fields that must never appear in the public response."""
+    return {
+        "status": "matched",
+        "match": {
+            "reference_id": "private-reference",
+            "matched_landmarks": 100,
+            "metadata": {
+                "title": "Example song",
+                "artists": ["Example artist"],
+                "album": "Example album",
+                "private": "retained metadata",
+            },
+        },
+    }
+
+
+def test_facade_keeps_credentials_and_internal_metadata_on_server() -> None:
+    """Forward only configured read credentials and expose an explicit public projection."""
+    requests = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["X-API-Key"] == "r" * 32
+        assert request.headers["X-Application-Key"] == "a" * 32
+        assert "Cookie" not in request.headers
+        if request.url.path.endswith("statistics"):
+            return httpx.Response(
+                200,
+                json={
+                    "recordings": {"total": 42, "excluded": 9},
+                    "submissions": {"failed": 7},
+                    "worker_available": True,
+                    "references": {"total": 100},
+                },
+            )
+        assert dict(request.url.params) == {"sample_rate": "8000", "channels": "1"}
+        assert request.content == PCM
+        return httpx.Response(200, json=matched())
+
+    app = create_app(settings(), transport=httpx.MockTransport(upstream))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/recognize?sample_rate=8000",
+            content=PCM,
+            headers={
+                **HEADERS,
+                "X-API-Key": "caller-cannot-replace-server-identity",
+                "Cookie": "x=y",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "matched",
+            "match": {
+                "title": "Example song",
+                "artists": ["Example artist"],
+                "album": "Example album",
+            },
+        }
+        assert client.get("/api/statistics").json() == {"recordings": 42}
+        assert client.get("/api/statistics").json() == {"recordings": 42}
+        assert len(requests) == 2
+        for path in ("/", "/assets/app.js", "/assets/recording.js", "/assets/capture.js"):
+            page = client.get(path)
+            assert page.status_code == 200
+            assert "r" * 32 not in page.text
+            assert "a" * 32 not in page.text
+            assert page.headers["cache-control"] == "no-store"
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+        assert response.headers["permissions-policy"].startswith("microphone=(self)")
+        for path in ("/admin", "/api/v1/dejavu/submissions", "/assets/../app.py", "/openapi.json"):
+            assert client.get(path).status_code == 404
+
+
+@pytest.mark.parametrize("address", ["http://localhost:8100", "http://127.0.0.1:8100"])
+def test_page_redirects_to_configured_origin_before_microphone_capture(address: str) -> None:
+    """Alternative hostnames must not serve a page whose recognition POST will be rejected."""
+    app = create_app(settings(public_url="http://127.0.0.1:8100"))
+    with TestClient(app, base_url=address, follow_redirects=False) as client:
+        response = client.get("/")
+        if address == "http://localhost:8100":
+            assert response.status_code == 307
+            assert response.headers["location"] == "http://127.0.0.1:8100/"
+        else:
+            assert response.status_code == 200
+            assert "Find this song" in response.text
+
+
+@pytest.mark.parametrize("outcome", ["no_match", "ambiguous"])
+def test_unmatched_outcomes_remain_distinct(outcome: str) -> None:
+    """Do not invent a successful match for ambiguous or absent evidence."""
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"status": outcome, "match": None})
+    )
+    with TestClient(create_app(settings(), transport=transport)) as client:
+        response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+        assert response.status_code == 200
+        assert response.json() == {"status": outcome, "match": None}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {**HEADERS, "Origin": "https://stranger.example"},
+        {key: value for key, value in HEADERS.items() if key != "X-Recognition-Request"},
+    ],
+)
+def test_other_origins_cannot_spend_recognition_credentials(headers: dict[str, str]) -> None:
+    """Reject browser cross-origin and missing-marker requests before forwarding."""
+    with TestClient(create_app(settings())) as client:
+        response = client.post("/api/recognize?sample_rate=8000", headers=headers, content=PCM)
+        assert response.status_code == 403
+        assert "access-control-allow-origin" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("pcm", "rate", "content_type", "expected"),
+    [
+        (b"", 8000, "application/octet-stream", 422),
+        (PCM + b"x", 8000, "application/octet-stream", 422),
+        (b"\0" * (15 * 8000 * 4 + 4), 8000, "application/octet-stream", 413),
+        (PCM, 7999, "application/octet-stream", 422),
+        (PCM, 192001, "application/octet-stream", 422),
+        (PCM, 8000, "text/plain", 415),
+    ],
+)
+def test_invalid_audio_is_rejected_before_upstream(
+    pcm: bytes, rate: int, content_type: str, expected: int
+) -> None:
+    """Check exact duration, alignment, byte and sample-rate boundaries."""
+
+    def unexpected(_: httpx.Request) -> httpx.Response:
+        pytest.fail("Invalid audio reached the fingerprint API")
+
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(unexpected))) as client:
+        response = client.post(
+            f"/api/recognize?sample_rate={rate}",
+            content=pcm,
+            headers={**HEADERS, "Content-Type": content_type},
+        )
+        assert response.status_code == expected
+
+
+def test_per_address_limit_ignores_spoofed_forwarded_header() -> None:
+    """A caller cannot rotate its identity using an untrusted forwarding header."""
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"status": "no_match", "match": None})
+    )
+    with TestClient(create_app(settings(requests_per_minute=1), transport=transport)) as client:
+        assert (
+            client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM).status_code
+            == 200
+        )
+        limited = client.post(
+            "/api/recognize?sample_rate=8000",
+            headers={**HEADERS, "X-Forwarded-For": "1.2.3.4"},
+            content=PCM,
+        )
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "60"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"), [(401, 503), (403, 503), (429, 429), (500, 503), (422, 422)]
+)
+def test_upstream_errors_are_explicit_and_never_leak_details(code: int, expected: int) -> None:
+    """Keep outages distinct from no-match without forwarding backend messages."""
+    transport = httpx.MockTransport(lambda _: httpx.Response(code, text="internal secret details"))
+    with TestClient(create_app(settings(), transport=transport)) as client:
+        response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+        assert response.status_code == expected
+        assert "internal secret details" not in response.text
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"not-json",
+        b'{"status":"matched","match":null}',
+        b'{"status":"unknown","match":null}',
+        b'{"status":"no_match","match":{"metadata":{}}}',
+        b"x" * 64_001,
+    ],
+)
+def test_invalid_upstream_results_are_not_success_shaped(data: bytes) -> None:
+    """Reject malformed or oversized responses instead of showing an empty song."""
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, content=data))
+    with TestClient(create_app(settings(), transport=transport)) as client:
+        assert (
+            client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM).status_code
+            == 502
+        )
+
+
+def test_count_failure_is_explicit_and_backed_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failed or expired counters are never shown as current, and retries are bounded."""
+    module = import_module("fingerprint_server.recognition.app")
+    clock = SimpleNamespace(monotonic=lambda: 0.0)
+    monkeypatch.setattr(module, "time", clock)
+    calls = []
+
+    def upstream(_: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(200, json={"recordings": {"total": -1}})
+
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(upstream))) as client:
+        assert client.get("/api/statistics").status_code == 502
+        assert client.get("/api/statistics").status_code == 503
+        assert len(calls) == 1
+        clock.monotonic = lambda: 6.0
+        assert client.get("/api/statistics").status_code == 502
+        assert len(calls) == 2
+
+
+async def test_global_concurrency_is_bounded_and_released() -> None:
+    """Reject a third in-flight recording even when its client address differs."""
+    started = asyncio.Queue[None]()
+    finish = asyncio.Event()
+
+    async def upstream(_: httpx.Request) -> httpx.Response:
+        await started.put(None)
+        await finish.wait()
+        return httpx.Response(200, json={"status": "no_match", "match": None})
+
+    app = create_app(settings(), transport=httpx.MockTransport(upstream))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=ORIGIN
+        ) as client:
+            tasks = [
+                asyncio.create_task(
+                    client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+                )
+                for _ in range(2)
+            ]
+            await asyncio.wait_for(started.get(), 2)
+            await asyncio.wait_for(started.get(), 2)
+            try:
+                busy = await client.post(
+                    "/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM
+                )
+                assert busy.status_code == 503
+            finally:
+                finish.set()
+                await asyncio.gather(*tasks)
+            assert (
+                await client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+            ).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.test/with-path",
+        "https://user:password@example.test",  # pragma: allowlist secret
+        "https://example.test/?x=y",
+        "https://example.test/#fragment",
+    ],
+)
+def test_configuration_rejects_non_origin_urls(url: str) -> None:
+    """Reject ambiguous routing and embedded credentials in configuration."""
+    with pytest.raises(ValidationError):
+        settings(public_url=url)
+
+
+def test_statistics_cache_expires_without_showing_stale_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A once-valid count cannot hide a later upstream outage."""
+    module = import_module("fingerprint_server.recognition.app")
+    clock = SimpleNamespace(monotonic=lambda: 0.0)
+    monkeypatch.setattr(module, "time", clock)
+    calls = []
+
+    def upstream(_: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) > 1:
+            raise httpx.ConnectError("unreachable")
+        return httpx.Response(200, json={"recordings": {"total": 42}})
+
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(upstream))) as client:
+        assert client.get("/api/statistics").json() == {"recordings": 42}
+        clock.monotonic = lambda: 59.0
+        assert client.get("/api/statistics").json() == {"recordings": 42}
+        assert len(calls) == 1
+        clock.monotonic = lambda: 61.0
+        assert client.get("/api/statistics").status_code == 503
+
+
+def test_admission_expires_and_rejects_new_addresses_at_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bound accounting memory without evicting active rate-limit budgets."""
+    from fastapi import HTTPException, Request
+
+    module = import_module("fingerprint_server.recognition.app")
+    clock = SimpleNamespace(monotonic=lambda: 0.0)
+    monkeypatch.setattr(module, "time", clock)
+    admission = Admission()
+    request = Request({"type": "http", "client": ("one-client", 123)})
+    admission.check(request, "recognize", 1)
+    with pytest.raises(HTTPException) as limited:
+        admission.check(request, "recognize", 1)
+    assert limited.value.status_code == 429
+    clock.monotonic = lambda: 60.0
+    admission.check(request, "recognize", 1)
+    for index in range(4095):
+        admission.check(
+            Request({"type": "http", "client": (f"address-{index}", 123)}), "recognize", 1
+        )
+    with pytest.raises(HTTPException) as full:
+        admission.check(Request({"type": "http", "client": ("new-address", 123)}), "recognize", 1)
+    assert full.value.status_code == 503
+    assert len(admission.requests) == 4096
+
+
+@pytest.mark.parametrize("sample_rate", [44100, 48000])
+@pytest.mark.parametrize("gain", [1.0, 0.1, 0.02])
+async def test_public_audio_path_extracts_landmarks_on_real_api(
+    tmp_path: Path, sample_rate: int, gain: float
+) -> None:
+    """Direct and public paths must return the same decision for identical native-rate PCM."""
+    import numpy as np
+    import soxr
+    from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
+    from test_server import READ, audio, document, submit
+    from test_server import settings as api_settings
+
+    from fingerprint_server.app import create_app as create_api
+
+    api = create_api(api_settings(tmp_path))
+    web = create_app(
+        settings(read_key=SecretStr(READ), application_key=None),
+        transport=httpx.ASGITransport(app=api),
+    )
+    async with api.router.lifespan_context(api), web.router.lifespan_context(web):
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=api), base_url="http://index.test"
+            ) as producer,
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as visitor,
+        ):
+            samples = audio()
+            await submit(producer, document(samples))
+            excerpt = samples[50 * HOP_SIZE : 50 * HOP_SIZE + 5 * SAMPLE_RATE]
+            if sample_rate != SAMPLE_RATE:
+                excerpt = soxr.resample(excerpt, SAMPLE_RATE, sample_rate, quality="HQ")
+            pcm = (excerpt * gain).astype("<f4").tobytes()
+            direct = await producer.post(
+                f"/api/v1/dejavu/recognize?sample_rate={sample_rate}&channels=1",
+                content=pcm,
+                headers={"Content-Type": "application/octet-stream", "X-API-Key": READ},
+            )
+            assert direct.status_code == 200
+            assert direct.json()["status"] == ("no_match" if gain == 0.02 else "matched")
+            response = await visitor.post(
+                f"/api/recognize?sample_rate={sample_rate}",
+                content=pcm,
+                headers=HEADERS,
+            )
+            assert response.status_code == 200
+            assert response.json()["status"] == direct.json()["status"]
+            if direct.json()["status"] == "no_match":
+                assert response.json() == {"status": "no_match", "match": None}
+                return
+            public = response.json()
+            artwork_path = public["match"].pop("artwork")
+            assert artwork_path.startswith("/api/artwork/")
+            assert direct.json()["match"]["reference_id"] not in artwork_path
+            assert (await visitor.get(artwork_path)).json() == {"status": "missing", "url": None}
+            assert public["match"] == {
+                key: direct.json()["match"]["metadata"][key]
+                for key in ("title", "artists", "album")
+            }
+            assert public == {
+                "status": "matched",
+                "match": {
+                    "title": "Synthetic reference",
+                    "artists": ["Test signal"],
+                    "album": "Synthetic album",
+                },
+            }
+            for unknown in (
+                np.zeros(5 * sample_rate, dtype="<f4"),
+                np.full(5 * sample_rate, 0.0001, dtype="<f4"),
+                np.random.default_rng(99).normal(0, 0.002, 5 * sample_rate).astype("<f4"),
+            ):
+                negative = await visitor.post(
+                    f"/api/recognize?sample_rate={sample_rate}",
+                    content=unknown.tobytes(),
+                    headers=HEADERS,
+                )
+                assert negative.status_code == 200
+                assert negative.json() == {"status": "no_match", "match": None}
+            assert (await visitor.get("/api/statistics")).json() == {"recordings": 1}

@@ -1,6 +1,38 @@
 {
   "components": {
     "schemas": {
+      "Artwork": {
+        "properties": {
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "missing",
+              "unavailable",
+              "busy"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "status",
+          "url"
+        ],
+        "title": "Artwork",
+        "type": "object"
+      },
       "AvailabilityItem": {
         "additionalProperties": false,
         "description": "Identity evidence for one recording.",
@@ -925,6 +957,111 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/dejavu/artwork/{reference}": {
+      "get": {
+        "description": "Requires read access. Queue or read cached album artwork for a published reference. The worker resolves the album through MusicBrainz and Cover Art Archive. Poll pending results no more than once every three seconds. Missing artwork and transient unavailability do not affect recognition.",
+        "operationId": "getArtwork",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reference",
+            "required": true,
+            "schema": {
+              "title": "Reference",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Artwork"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 401; gateway errors may have a different body."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 403; gateway errors may have a different body."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 422; gateway errors may have a different body."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 429; gateway errors may have a different body.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until retry, when provided.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "HTTP 503; gateway errors may have a different body.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until retry, when provided.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApplicationKey": [],
+            "PersonalKey": []
+          }
+        ],
+        "summary": "Artwork",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/api/v1/dejavu/availability": {
       "post": {
         "description": "Requires upload access. At most 100 identities and 128,000 request bytes.",

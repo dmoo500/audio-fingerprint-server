@@ -374,7 +374,13 @@ async def test_due_worker_success_exhaustion_or_outage(
             async with asyncio.timeout(5):
                 while True:
                     row = store.get_submission("pending")
-                    if row is None or row["state"] == "processed":
+                    if row is None:
+                        # The database write can finish before the worker logs the deletion.
+                        if "deleted after 3 unresolved" in caplog.text:
+                            break
+                        await asyncio.sleep(0.01)
+                        continue
+                    if row["state"] == "processed":
                         break
                     if (
                         row["state"] == "pending_metadata"

@@ -33,6 +33,26 @@ from fingerprint_server.runtime import runtime
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission
 
 
+def test_artwork_additive_migration_and_queue(store) -> None:
+    from fingerprint_server.artwork import ArtworkStore
+
+    queue = ArtworkStore(store)
+    queue.initialize()
+    payload = document()
+    payload["metadata"]["recording_mbid"] = MBID
+    store.submit("cover-job", json.dumps(payload), 10)
+    store.finish("cover-job", "a" * 64, payload["metadata"], [("0" * 20, 0)])
+    assert queue.request("a" * 64)["status"] == "pending"
+    store.initialize()
+    queue.initialize()
+    assert queue.next()["reference_key"] == "a" * 64
+    queue.finish("a" * 64, "https://archive.org/example.jpg")
+    assert queue.request("a" * 64) == {
+        "status": "ready",
+        "url": "https://archive.org/example.jpg",
+    }
+
+
 @pytest.fixture
 def configuration(tmp_path: Path, postgres: object):
     return settings(tmp_path, database_backend="postgres", postgres_schema=f"test_{uuid4().hex}")

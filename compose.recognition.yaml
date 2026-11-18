@@ -1,0 +1,38 @@
+# Public recognition facade. Put only this service behind an HTTPS reverse proxy.
+services:
+  recognition:
+    build:
+      context: ..
+      dockerfile: music-assistant-fingerprint-server/Dockerfile
+    command:
+      - uvicorn
+      - fingerprint_server.recognition:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8100"
+      - --workers
+      - "1"
+      - --no-proxy-headers
+      - --log-config
+      - fingerprint_server/logging.json
+    environment:
+      FP_WEB_PUBLIC_URL: ${FP_WEB_PUBLIC_URL:?Set the browser-visible HTTPS origin}
+      FP_WEB_API_URL: http://gateway:9080
+      FP_WEB_READ_KEY: ${FP_WEB_READ_KEY:?Set a dedicated read-only personal key}
+      FP_WEB_APPLICATION_KEY: ${FP_WEB_APPLICATION_KEY:?Set a dedicated application token}
+      FP_WEB_REQUESTS_PER_MINUTE: ${FP_WEB_REQUESTS_PER_MINUTE:-4}
+    ports:
+      - "127.0.0.1:8100:8100"
+    networks:
+      - backend
+      - outbound
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    restart: unless-stopped

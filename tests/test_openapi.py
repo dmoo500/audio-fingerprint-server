@@ -24,7 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_published_schema_matches_generated_contract() -> None:
     schema = build_schema(create_app())
     assert json.loads((ROOT / "openapi.json").read_text()) == schema
-    assert len(schema["paths"]) == 8
+    assert len(schema["paths"]) == 9
+    assert schema["paths"]["/api/v1/dejavu/artwork/{reference}"]["get"]["security"] == [
+        {"PersonalKey": [], "ApplicationKey": []}
+    ]
     assert schema["paths"]["/health"]["get"]["security"] == []
     for path, methods in schema["paths"].items():
         if path != "/health":

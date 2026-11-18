@@ -410,6 +410,8 @@ class MusicBrainzService:
             self.lookup_call = (
                 "GET /recording (identifier batch)"
                 if kind == "batch"
+                else f"GET /recording/{identifier} (artwork)"
+                if kind == "artwork"
                 else "GET /recording (metadata search)"
                 if kind == "search"
                 else f"GET /{kind}/{identifier}"
@@ -434,14 +436,20 @@ class MusicBrainzService:
         async with self.client.stream(
             "GET",
             (
-                f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/recording"
+                f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/recording/{identifier}"
+                if kind == "artwork"
+                else f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/recording"
                 if kind in ("search", "batch")
                 else f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/{kind}/{identifier}"
             ),
             params={"query": identifier, "limit": "100" if kind == "batch" else "25", "fmt": "json"}
             if kind in ("search", "batch")
             else {
-                "inc": "artists+isrcs+releases" if kind == "recording" else "artists+releases",
+                "inc": "releases+release-groups"
+                if kind == "artwork"
+                else "artists+isrcs+releases"
+                if kind == "recording"
+                else "artists+releases",
                 "fmt": "json",
             },
             headers={"User-Agent": f"MA-Fingerprint/0.1 ({self.settings.musicbrainz_contact})"},
@@ -480,7 +488,23 @@ class MusicBrainzService:
                     document = await run_sync(json.loads, body)
                     if not isinstance(document, dict):
                         raise ValueError
-                    if kind == "recording":
+                    if kind == "artwork":
+                        releases = document.get("releases")
+                        if not isinstance(releases, list) or len(releases) > 1000:
+                            raise ValueError("Invalid artwork releases")
+                        result = {
+                            "status": "resolved",
+                            "releases": [
+                                {
+                                    "title": item["title"],
+                                    "group": str(UUID(item["release-group"]["id"])),
+                                }
+                                for item in releases
+                                if isinstance(item.get("title"), str)
+                                and isinstance(item.get("release-group"), dict)
+                            ],
+                        }
+                    elif kind == "recording":
                         result = {"status": "resolved", "recording": self.parse_recording(document)}
                     elif kind in ("search", "batch"):
                         recordings = document.get("recordings")
