@@ -1,0 +1,6 @@
+# Match compose.local-gateway.yaml's host-user bind mount.
+services:
+  admin:
+    user: "501:20"
+    volumes: !override
+      - ./data:/data

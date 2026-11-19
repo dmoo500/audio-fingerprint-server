@@ -22,6 +22,35 @@ class TableSpec(TypedDict):
 
 
 EXTENSION_TABLES: dict[str, TableSpec] = {
+    "application_key_schema": {
+        "columns": ("id", "version"),
+        "source_order": "id",
+        "target_order": "id",
+        "definition": (
+            "CREATE TABLE application_key_schema ("
+            "id integer PRIMARY KEY CHECK(id=1), version integer NOT NULL)"
+        ),
+    },
+    "application_keys": {
+        "columns": ("id", "name", "key_hash", "created_at", "revoked_at"),
+        "source_order": "id",
+        "target_order": "id",
+        "definition": (
+            "CREATE TABLE application_keys ("
+            "id text PRIMARY KEY, name text NOT NULL, key_hash text NOT NULL UNIQUE, "
+            "created_at double precision NOT NULL, revoked_at double precision)"
+        ),
+    },
+    "artwork_requests": {
+        "columns": ("reference_key", "state", "url", "due_at", "expires_at"),
+        "source_order": "reference_key",
+        "target_order": "reference_key",
+        "definition": (
+            "CREATE TABLE artwork_requests ("
+            "reference_key text PRIMARY KEY, state text NOT NULL, url text, "
+            "due_at double precision NOT NULL, expires_at double precision NOT NULL)"
+        ),
+    },
     "musicbrainz_reviews": {
         "columns": ("submission_id", "candidates", "selected_mbid"),
         "source_order": "submission_id",

@@ -153,16 +153,21 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
                 application_key.get_secret_value().encode(),
             ):
                 application_identity = "fingerprint"
-            elif settings.database_backend == "postgres":
-                import psycopg
+            else:
+                import sqlite3
 
                 from fingerprint_server.database.application_keys import ApplicationKeys
 
+                database_error: type[Exception] = sqlite3.Error
+                if settings.database_backend == "postgres":
+                    from psycopg import Error
+
+                    database_error = Error
                 try:
                     identity = await run_sync(
                         ApplicationKeys(request.app.state.store).authenticate, supplied
                     )
-                except psycopg.Error as err:
+                except database_error as err:
                     AUDIT_LOGGER.error(
                         "Application credential verification unavailable: %s", type(err).__name__
                     )
@@ -243,6 +248,18 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
     @application.get("/health")
     async def health(request: Request) -> JSONResponse:
         healthy = await worker_available(request)
+        if healthy and request.app.state.settings.database_backend == "sqlite":
+            import sqlite3
+
+            def check_database() -> None:
+                with request.app.state.store.connect() as db:
+                    db.execute("SELECT value FROM service_state LIMIT 1").fetchone()
+
+            try:
+                await run_sync(check_database)
+            except (sqlite3.Error, OSError):
+                LOGGER.exception("SQLite health check failed")
+                healthy = False
         return JSONResponse(
             {"status": "ok" if healthy else "failed"}, status_code=200 if healthy else 503
         )

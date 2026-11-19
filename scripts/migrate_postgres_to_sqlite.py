@@ -17,6 +17,7 @@ import psycopg
 from migrate_sqlite_to_postgres import COPY_HEADER, COPY_TRAILER, LANDMARK_ROW, validate_source
 from psycopg import sql
 
+from fingerprint_server.database.application_keys import REGISTRY_VERSION
 from fingerprint_server.database.migrations import SCHEMA
 from fingerprint_server.database.postgres_postings import POSTINGS_VERSION
 from fingerprint_server.database.postgres_schema import (
@@ -97,6 +98,12 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
     expected.update({name: set(EXTENSION_TABLES[name]["columns"]) for name in extensions})
     if actual != expected:
         raise ValueError("Unexpected PostgreSQL source layout")
+    if ("application_key_schema" in actual) != ("application_keys" in actual):
+        raise ValueError("Incomplete application key registry")
+    if "application_key_schema" in actual:
+        versions = db.execute("SELECT id,version FROM application_key_schema").fetchall()
+        if versions != [(1, REGISTRY_VERSION)]:
+            raise ValueError("Unsupported application key registry version")
     return extensions
 
 

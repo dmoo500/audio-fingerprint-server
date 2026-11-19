@@ -37,13 +37,17 @@ different scales are not directly comparable.
 The chart now also includes the schema 8 pre-PostgreSQL backup (3,299.09 MiB,
 845 stored references, 57,373,098 landmarks) and the verified SQLite return
 export from the isolated compact-runtime rehearsal (3,336.75 MiB file size, 846 references,
-57,377,988 landmarks). The returned file includes synthetic test changes; it is
-**not a fresh export of the currently growing live PostgreSQL database**.
+57,377,988 landmarks). Snapshot 5 includes synthetic test changes and was
+never the live database.
 The return point is a newly created file whose occupied pages were not separately
 measured; its size uses a hollow marker and dashed segment, not a claim that file
 size equals occupied pages. The early schema 7 points predate a secondary index, so the change in size is
 not solely collection growth. The chart uses **all stored references**, including
 unpublished ones; the earlier version of this diagram displayed published counts.
+
+Snapshot 6 measures the live SQLite database after the return from PostgreSQL:
+**6,673.21 MiB occupied**, **1,714 stored references** and **116,999,128 landmarks**.
+The main database measured 6,674.29 MiB including reusable pages, excluding WAL.
 
 Occupied space rose from 1,418.54 to 2,111.26 MiB; published references from 460 to 715;
 and stored landmarks from 38,637,618 to 56,424,148. Stored acoustic references, including

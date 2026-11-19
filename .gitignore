@@ -15,5 +15,6 @@ build/
 credentials*.json
 data/
 dist/
+node_modules/
 .DS_Store
 compose.local-gateway.yaml

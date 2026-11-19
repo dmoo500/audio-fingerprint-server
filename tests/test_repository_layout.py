@@ -11,7 +11,7 @@ def test_documentation_links_resolve() -> None:
     assert check(root) == []
 
 
-def test_admin_templates_are_package_resources() -> None:
-    templates = importlib.resources.files("fingerprint_server").joinpath("admin", "templates")
-    for name in ("base.html", "login.html", "admin_keys.html", "admin_overview.html"):
-        assert templates.joinpath(name).is_file()
+def test_admin_frontend_is_a_package_resource() -> None:
+    assets = importlib.resources.files("fingerprint_server").joinpath("admin", "dist")
+    for parts in (("index.html",), ("assets", "app.js"), ("assets", "index.css")):
+        assert assets.joinpath(*parts).is_file()

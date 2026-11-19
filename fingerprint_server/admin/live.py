@@ -6,12 +6,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
 
 from fingerprint_server.admin.data import AdminData
+from fingerprint_server.admin.sqlite_data import SQLiteAdminData
 from fingerprint_server.async_utils import run_sync
 
 LOGGER = logging.getLogger(__name__)
@@ -20,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 class AdminLive:
     """Share one current snapshot across browsers without buffering event histories."""
 
-    def __init__(self, data: AdminData) -> None:
+    def __init__(self, data: AdminData | SQLiteAdminData) -> None:
         self.data = data
         self.snapshot: dict[str, Any] = {}
         self.failed = False
@@ -32,7 +34,7 @@ class AdminLive:
         try:
             overview = await run_sync(self.data.overview)
             counters = await run_sync(self.data.revisions)
-        except (psycopg.Error, OSError):
+        except (psycopg.Error, sqlite3.Error, OSError):
             LOGGER.exception("Admin live data sampling failed")
             self.failed = True
         else:

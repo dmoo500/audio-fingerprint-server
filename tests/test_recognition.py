@@ -21,6 +21,27 @@ HEADERS = {
 PCM = b"\0" * (8000 * 4 * 3)
 
 
+@pytest.mark.parametrize(
+    ("upstream_status", "body", "expected"),
+    [(200, {"status": "ok"}, True), (503, {}, False), (200, {"status": "wrong"}, False)],
+)
+def test_availability_reports_and_caches_upstream_health(
+    upstream_status: int, body: dict[str, str], expected: bool
+) -> None:
+    calls = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.url.path == "/health"
+        return httpx.Response(upstream_status, json=body)
+
+    app = create_app(settings(), transport=httpx.MockTransport(upstream))
+    with TestClient(app) as client:
+        assert client.get("/api/availability").json() == {"available": expected}
+        assert client.get("/api/availability").json() == {"available": expected}
+    assert len(calls) == 1
+
+
 def settings(**overrides: object) -> RecognitionSettings:
     """Create isolated configuration with non-production test identities."""
     return RecognitionSettings.model_validate(
@@ -32,6 +53,17 @@ def settings(**overrides: object) -> RecognitionSettings:
             **overrides,
         }
     )
+
+
+def test_missing_frontend_build_fails_at_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make an incomplete source or package installation actionable."""
+    module = import_module("fingerprint_server.recognition.app")
+    monkeypatch.setattr(module, "FRONTEND", tmp_path)
+    with pytest.raises(RuntimeError, match="frontend assets are missing"):
+        with TestClient(create_app(settings())):
+            pass
 
 
 def matched() -> dict[str, object]:
@@ -97,7 +129,13 @@ def test_facade_keeps_credentials_and_internal_metadata_on_server() -> None:
         assert client.get("/api/statistics").json() == {"recordings": 42}
         assert client.get("/api/statistics").json() == {"recordings": 42}
         assert len(requests) == 2
-        for path in ("/", "/assets/app.js", "/assets/recording.js", "/assets/capture.js"):
+        for path in (
+            "/",
+            "/assets/app.js",
+            "/assets/index.css",
+            "/assets/recording.js",
+            "/assets/capture.js",
+        ):
             page = client.get(path)
             assert page.status_code == 200
             assert "r" * 32 not in page.text
@@ -120,7 +158,8 @@ def test_page_redirects_to_configured_origin_before_microphone_capture(address: 
             assert response.headers["location"] == "http://127.0.0.1:8100/"
         else:
             assert response.status_code == 200
-            assert "Find this song" in response.text
+            assert '<div id="app"></div>' in response.text
+            assert 'src="/assets/app.js"' in response.text
 
 
 @pytest.mark.parametrize("outcome", ["no_match", "ambiguous"])

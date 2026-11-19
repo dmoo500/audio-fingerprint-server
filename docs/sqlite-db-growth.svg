@@ -1,75 +1,85 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="700" viewBox="0 0 1300 700" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="800" viewBox="0 0 1300 800" role="img" aria-labelledby="title description">
 <title id="title">SQLite DB Growth</title>
-<desc id="description">1: 1,418.54 MiB, 575 stored references, 38,637,618 landmarks.; 2: 1,687.23 MiB, 670 stored references, 45,496,656 landmarks.; 3: 2,111.26 MiB, 830 stored references, 56,424,148 landmarks.; 4: 3,299.09 MiB, 845 stored references, 57,373,098 landmarks.; 5: 3,336.75 MiB, 846 stored references, 57,377,988 landmarks.</desc>
-<rect width="1300" height="700" fill="#ffffff"/>
+<desc id="description">1: 1,418.54 MiB, 575 stored references, 38,637,618 landmarks.; 2: 1,687.23 MiB, 670 stored references, 45,496,656 landmarks.; 3: 2,111.26 MiB, 830 stored references, 56,424,148 landmarks.; 4: 3,299.09 MiB, 845 stored references, 57,373,098 landmarks.; 5: 3,336.75 MiB, 846 stored references, 57,377,988 landmarks.; 6: 6,673.21 MiB, 1,714 stored references, 116,999,128 landmarks.</desc>
+<rect width="1300" height="800" fill="#ffffff"/>
 <g font-family="sans-serif" fill="#222222">
 <text x="650" y="32" font-size="23" font-weight="bold" text-anchor="middle">SQLite DB Growth</text>
-<text x="650" y="58" font-size="14" text-anchor="middle">Occupied pages for snapshots 1-4; snapshot 5 is new-file size (hollow marker); excludes WAL</text>
+<text x="650" y="58" font-size="14" text-anchor="middle">Occupied pages except snapshot 5 (new-file size, hollow marker); excludes WAL</text>
 <text x="650" y="82" font-size="13" text-anchor="middle">Each series has its own vertical scale; snapshots are not a capacity forecast</text>
-<path d="M300 610H850" stroke="#dddddd"/>
-<path d="M300 365.0H850" stroke="#dddddd"/>
+<path d="M300 710H850" stroke="#dddddd"/>
+<path d="M300 415.0H850" stroke="#dddddd"/>
 <path d="M300 120H850" stroke="#dddddd"/>
 <text x="55" y="106" fill="#1769aa" font-size="13" text-anchor="middle">MiB</text>
-<text x="55" y="614" fill="#1769aa" font-size="12" text-anchor="middle">0</text>
-<text x="55" y="369.0" fill="#1769aa" font-size="12" text-anchor="middle">2,000</text>
-<text x="55" y="124" fill="#1769aa" font-size="12" text-anchor="middle">4,000</text>
-<path d="M340.00 436.23L460.00 403.31" fill="none" stroke="#1769aa" stroke-width="3"/>
-<path d="M460.00 403.31L580.00 351.37" fill="none" stroke="#1769aa" stroke-width="3"/>
-<path d="M580.00 351.37L700.00 205.86" fill="none" stroke="#1769aa" stroke-width="3"/>
-<path d="M700.00 205.86L820.00 201.25" fill="none" stroke="#1769aa" stroke-width="3" stroke-dasharray="6 4"/>
-<circle cx="340.00" cy="436.23" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>1: 1,418.54</title></circle>
-<circle cx="460.00" cy="403.31" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>2: 1,687.23</title></circle>
-<circle cx="580.00" cy="351.37" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>3: 2,111.26</title></circle>
-<circle cx="700.00" cy="205.86" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>4: 3,299.09</title></circle>
-<circle cx="820.00" cy="201.25" r="5" fill="#ffffff" stroke="#1769aa" stroke-width="2"><title>5: 3,336.75</title></circle>
+<text x="55" y="714" fill="#1769aa" font-size="12" text-anchor="middle">0</text>
+<text x="55" y="419.0" fill="#1769aa" font-size="12" text-anchor="middle">3,500</text>
+<text x="55" y="124" fill="#1769aa" font-size="12" text-anchor="middle">7,000</text>
+<path d="M340.00 590.44L436.00 567.79" fill="none" stroke="#1769aa" stroke-width="3"/>
+<path d="M436.00 567.79L532.00 532.05" fill="none" stroke="#1769aa" stroke-width="3"/>
+<path d="M532.00 532.05L628.00 431.93" fill="none" stroke="#1769aa" stroke-width="3"/>
+<path d="M628.00 431.93L724.00 428.76" fill="none" stroke="#1769aa" stroke-width="3" stroke-dasharray="6 4"/>
+<path d="M724.00 428.76L820.00 147.54" fill="none" stroke="#1769aa" stroke-width="3" stroke-dasharray="6 4"/>
+<circle cx="340.00" cy="590.44" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>1: 1,418.54</title></circle>
+<circle cx="436.00" cy="567.79" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>2: 1,687.23</title></circle>
+<circle cx="532.00" cy="532.05" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>3: 2,111.26</title></circle>
+<circle cx="628.00" cy="431.93" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>4: 3,299.09</title></circle>
+<circle cx="724.00" cy="428.76" r="5" fill="#ffffff" stroke="#1769aa" stroke-width="2"><title>5: 3,336.75</title></circle>
+<circle cx="820.00" cy="147.54" r="5" fill="#1769aa" stroke="#1769aa" stroke-width="2"><title>6: 6,673.21</title></circle>
 <text x="890" y="120" fill="#1769aa" font-size="15" font-weight="bold">SQLite space (MiB)</text>
 <text x="890" y="144" font-size="14">1: 1,418.54</text>
 <text x="890" y="166" font-size="14">2: 1,687.23</text>
 <text x="890" y="188" font-size="14">3: 2,111.26</text>
 <text x="890" y="210" font-size="14">4: 3,299.09</text>
 <text x="890" y="232" font-size="14">5: 3,336.75 (file)</text>
+<text x="890" y="254" font-size="14">6: 6,673.21</text>
 <text x="145" y="106" fill="#1b6d38" font-size="13" text-anchor="middle">References</text>
-<text x="145" y="614" fill="#1b6d38" font-size="12" text-anchor="middle">0</text>
-<text x="145" y="369.0" fill="#1b6d38" font-size="12" text-anchor="middle">450</text>
-<text x="145" y="124" fill="#1b6d38" font-size="12" text-anchor="middle">900</text>
-<path d="M340.00 296.94L460.00 245.22" fill="none" stroke="#1b6d38" stroke-width="3"/>
-<path d="M460.00 245.22L580.00 158.11" fill="none" stroke="#1b6d38" stroke-width="3"/>
-<path d="M580.00 158.11L700.00 149.94" fill="none" stroke="#1b6d38" stroke-width="3"/>
-<path d="M700.00 149.94L820.00 149.40" fill="none" stroke="#1b6d38" stroke-width="3"/>
-<circle cx="340.00" cy="296.94" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>1: 575</title></circle>
-<circle cx="460.00" cy="245.22" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>2: 670</title></circle>
-<circle cx="580.00" cy="158.11" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>3: 830</title></circle>
-<circle cx="700.00" cy="149.94" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>4: 845</title></circle>
-<circle cx="820.00" cy="149.40" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>5: 846</title></circle>
-<text x="890" y="280" fill="#1b6d38" font-size="15" font-weight="bold">Stored references</text>
-<text x="890" y="304" font-size="14">1: 575</text>
-<text x="890" y="326" font-size="14">2: 670</text>
-<text x="890" y="348" font-size="14">3: 830</text>
-<text x="890" y="370" font-size="14">4: 845</text>
-<text x="890" y="392" font-size="14">5: 846</text>
+<text x="145" y="714" fill="#1b6d38" font-size="12" text-anchor="middle">0</text>
+<text x="145" y="419.0" fill="#1b6d38" font-size="12" text-anchor="middle">1,000</text>
+<text x="145" y="124" fill="#1b6d38" font-size="12" text-anchor="middle">2,000</text>
+<path d="M340.00 540.38L436.00 512.35" fill="none" stroke="#1b6d38" stroke-width="3"/>
+<path d="M436.00 512.35L532.00 465.15" fill="none" stroke="#1b6d38" stroke-width="3"/>
+<path d="M532.00 465.15L628.00 460.73" fill="none" stroke="#1b6d38" stroke-width="3"/>
+<path d="M628.00 460.73L724.00 460.43" fill="none" stroke="#1b6d38" stroke-width="3"/>
+<path d="M724.00 460.43L820.00 204.37" fill="none" stroke="#1b6d38" stroke-width="3"/>
+<circle cx="340.00" cy="540.38" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>1: 575</title></circle>
+<circle cx="436.00" cy="512.35" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>2: 670</title></circle>
+<circle cx="532.00" cy="465.15" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>3: 830</title></circle>
+<circle cx="628.00" cy="460.73" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>4: 845</title></circle>
+<circle cx="724.00" cy="460.43" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>5: 846</title></circle>
+<circle cx="820.00" cy="204.37" r="5" fill="#1b6d38" stroke="#1b6d38" stroke-width="2"><title>6: 1,714</title></circle>
+<text x="890" y="302" fill="#1b6d38" font-size="15" font-weight="bold">Stored references</text>
+<text x="890" y="326" font-size="14">1: 575</text>
+<text x="890" y="348" font-size="14">2: 670</text>
+<text x="890" y="370" font-size="14">3: 830</text>
+<text x="890" y="392" font-size="14">4: 845</text>
+<text x="890" y="414" font-size="14">5: 846</text>
+<text x="890" y="436" font-size="14">6: 1,714</text>
 <text x="245" y="106" fill="#b65c00" font-size="13" text-anchor="middle">Landmarks</text>
-<text x="245" y="614" fill="#b65c00" font-size="12" text-anchor="middle">0</text>
-<text x="245" y="369.0" fill="#b65c00" font-size="12" text-anchor="middle">30,000,000</text>
-<text x="245" y="124" fill="#b65c00" font-size="12" text-anchor="middle">60,000,000</text>
-<path d="M340.00 294.46L460.00 238.44" fill="none" stroke="#b65c00" stroke-width="3"/>
-<path d="M460.00 238.44L580.00 149.20" fill="none" stroke="#b65c00" stroke-width="3"/>
-<path d="M580.00 149.20L700.00 141.45" fill="none" stroke="#b65c00" stroke-width="3"/>
-<path d="M700.00 141.45L820.00 141.41" fill="none" stroke="#b65c00" stroke-width="3"/>
-<circle cx="340.00" cy="294.46" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>1: 38,637,618</title></circle>
-<circle cx="460.00" cy="238.44" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>2: 45,496,656</title></circle>
-<circle cx="580.00" cy="149.20" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>3: 56,424,148</title></circle>
-<circle cx="700.00" cy="141.45" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>4: 57,373,098</title></circle>
-<circle cx="820.00" cy="141.41" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>5: 57,377,988</title></circle>
-<text x="890" y="440" fill="#b65c00" font-size="15" font-weight="bold">Stored landmarks</text>
-<text x="890" y="464" font-size="14">1: 38,637,618</text>
-<text x="890" y="486" font-size="14">2: 45,496,656</text>
-<text x="890" y="508" font-size="14">3: 56,424,148</text>
-<text x="890" y="530" font-size="14">4: 57,373,098</text>
-<text x="890" y="552" font-size="14">5: 57,377,988</text>
-<text x="340.0" y="640" text-anchor="middle" font-size="13">1</text>
-<text x="460.0" y="640" text-anchor="middle" font-size="13">2</text>
-<text x="580.0" y="640" text-anchor="middle" font-size="13">3</text>
-<text x="700.0" y="640" text-anchor="middle" font-size="13">4</text>
-<text x="820.0" y="640" text-anchor="middle" font-size="13">5</text>
-<text x="575" y="676" font-size="13" text-anchor="middle">Measured snapshots; reference counts include unpublished references</text>
+<text x="245" y="714" fill="#b65c00" font-size="12" text-anchor="middle">0</text>
+<text x="245" y="419.0" fill="#b65c00" font-size="12" text-anchor="middle">100,000,000</text>
+<text x="245" y="124" fill="#b65c00" font-size="12" text-anchor="middle">200,000,000</text>
+<path d="M340.00 596.02L436.00 575.78" fill="none" stroke="#b65c00" stroke-width="3"/>
+<path d="M436.00 575.78L532.00 543.55" fill="none" stroke="#b65c00" stroke-width="3"/>
+<path d="M532.00 543.55L628.00 540.75" fill="none" stroke="#b65c00" stroke-width="3"/>
+<path d="M628.00 540.75L724.00 540.73" fill="none" stroke="#b65c00" stroke-width="3"/>
+<path d="M724.00 540.73L820.00 364.85" fill="none" stroke="#b65c00" stroke-width="3"/>
+<circle cx="340.00" cy="596.02" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>1: 38,637,618</title></circle>
+<circle cx="436.00" cy="575.78" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>2: 45,496,656</title></circle>
+<circle cx="532.00" cy="543.55" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>3: 56,424,148</title></circle>
+<circle cx="628.00" cy="540.75" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>4: 57,373,098</title></circle>
+<circle cx="724.00" cy="540.73" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>5: 57,377,988</title></circle>
+<circle cx="820.00" cy="364.85" r="5" fill="#b65c00" stroke="#b65c00" stroke-width="2"><title>6: 116,999,128</title></circle>
+<text x="890" y="484" fill="#b65c00" font-size="15" font-weight="bold">Stored landmarks</text>
+<text x="890" y="508" font-size="14">1: 38,637,618</text>
+<text x="890" y="530" font-size="14">2: 45,496,656</text>
+<text x="890" y="552" font-size="14">3: 56,424,148</text>
+<text x="890" y="574" font-size="14">4: 57,373,098</text>
+<text x="890" y="596" font-size="14">5: 57,377,988</text>
+<text x="890" y="618" font-size="14">6: 116,999,128</text>
+<text x="340.0" y="740" text-anchor="middle" font-size="13">1</text>
+<text x="436.0" y="740" text-anchor="middle" font-size="13">2</text>
+<text x="532.0" y="740" text-anchor="middle" font-size="13">3</text>
+<text x="628.0" y="740" text-anchor="middle" font-size="13">4</text>
+<text x="724.0" y="740" text-anchor="middle" font-size="13">5</text>
+<text x="820.0" y="740" text-anchor="middle" font-size="13">6</text>
+<text x="575" y="776" font-size="13" text-anchor="middle">Measured snapshots; reference counts include unpublished references</text>
 </g></svg>

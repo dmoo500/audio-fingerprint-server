@@ -46,12 +46,13 @@ async def test_shared_streams_receive_latest_snapshot_and_end_on_logout(samples)
     overview, counters, read_overview, read_revisions = samples
     app = create_admin(configuration())
     async with app.router.lifespan_context(app):
-        admin = app.state.admin
         live = app.state.live
-        auth = admin.auth_provider
+        auth = app.state.auth
         auth.sessions["session"] = time.monotonic() + 60
-        request = Request({"type": "http", "session": {"token": "session"}})
-        endpoint = next(route.endpoint for route in admin.routes if route.name == "events")
+        request = Request({"type": "http", "session": {"token": "session"}, "app": app})
+        endpoint = next(
+            route.endpoint for route in app.routes if getattr(route, "name", None) == "events"
+        )
         first = (await endpoint(request)).body_iterator
         second = (await endpoint(request)).body_iterator
         initial = await anext(first)
@@ -89,11 +90,11 @@ async def test_sampling_failure_is_visible_and_recovers(samples, caplog):
         assert live.failed
         assert live.snapshot is snapshot
         assert "Admin live data sampling failed" in caplog.text
-        auth = app.state.admin.auth_provider
+        auth = app.state.auth
         auth.sessions["session"] = time.monotonic() + 60
-        request = Request({"type": "http", "session": {"token": "session"}})
+        request = Request({"type": "http", "session": {"token": "session"}, "app": app})
         endpoint = next(
-            route.endpoint for route in app.state.admin.routes if route.name == "events"
+            route.endpoint for route in app.routes if getattr(route, "name", None) == "events"
         )
         stream = (await endpoint(request)).body_iterator
         assert await anext(stream) == "event: unavailable\ndata: {}\n\n"

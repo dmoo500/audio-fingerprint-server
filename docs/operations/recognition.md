@@ -40,6 +40,13 @@ opening and refreshes every 60 seconds while visible, including after a failed
 request. Refreshes pause in hidden tabs and resume immediately when the page
 becomes visible again. Failed refreshes are explicit and are not displayed as zero.
 
+The microphone button stays disabled until the recognition service is available.
+If the backend or database becomes unavailable, the page displays a temporary
+unavailability/maintenance message and checks again every ten seconds while
+visible. It enables the button automatically when service returns. The backend
+shares a ten-second health-check cache between visitors; neither credentials nor
+database details are exposed to the browser.
+
 ## Album artwork
 
 Successful matches offer a separate, short-lived artwork URL on this service.
@@ -82,8 +89,7 @@ entry in existing service state. Installation is transactional and idempotent on
 SQLite and PostgreSQL. Existing reference rows, fingerprint formats and core
 database versions are unchanged; there is no rescan or bulk MusicBrainz lookup.
 The queue/cache is bounded to 4,096 entries and populated only on demand.
-The existing core offline database import/export does not transfer this optional
-cache; covers are resolved again on demand after conversion.
+The offline database import/export transfers this optional cache.
 
 Deploy the updated worker, API and recognition service and update the gateway's
 read-authenticated `/api/v1/dejavu/artwork/*` route. Multiple API replicas share the
@@ -107,6 +113,17 @@ Use the admin pages to issue the dedicated credentials. Do not copy the admin
 login key, an MA login token, or an upload credential. This adds no schema change
 or stored-data migration.
 
+For a source checkout, install Node.js 24 and Corepack, then build the Vue 3
+and TypeScript frontend before starting the Python service:
+
+```bash
+corepack enable
+cd recognition-frontend
+pnpm install --frozen-lockfile
+pnpm build
+cd ..
+```
+
 After loading the private environment:
 
 ```bash
@@ -120,7 +137,11 @@ Opening the root page through another hostname redirects to `FP_WEB_PUBLIC_URL`
 before microphone capture, so aliases such as `localhost` cannot cause a later
 Origin-check failure. Behind a TLS-terminating proxy, preserve the public Host
 and configure trusted forwarded scheme handling as described below.
-No new frontend dependencies or build step are needed. Assets ship in the Python package.
+The build produces the static assets included in the Python package. Run
+`pnpm dev` in `recognition-frontend` to rebuild them when source files change;
+the Python service still serves the website. Run `pnpm test` there for the Vue
+tests. Rebuild before creating a Python distribution. Docker builds the
+frontend automatically and does not require Node.js in the runtime image.
 
 ## Gateway deployment
 

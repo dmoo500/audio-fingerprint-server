@@ -2,14 +2,15 @@
 
 [Documentation](../README.md)
 
-The optional Starlette-Admin service is separate from the public fingerprint API.
+The optional admin service serves a Vue 3 frontend and a private, same-origin
+JSON API, separate from the public fingerprint API.
 It adds searchable, server-paginated metadata tables without introducing ORM
-models or changing the database schema. It currently requires PostgreSQL and
-APISIX; SQLite installations can continue using the existing API and CLI.
+models or changing the database schema. It supports SQLite and PostgreSQL with
+APISIX.
 
 ## What it provides
 
-- Database size (including indexes/TOAST, excluding WAL), layout version,
+- Database size (including indexes, excluding WAL), layout version,
   worker availability, reference counts and submission lifecycle counts.
 - Searchable submissions and references, detail views, sortable columns and
   advanced text filters. Tables show at most 100 records per page and scroll
@@ -33,7 +34,7 @@ APISIX; SQLite installations can continue using the existing API and CLI.
   a random suffix to avoid replacing an existing named consumer through
   APISIX's upsert endpoint.
 - Separate **Application keys** page for creating and revoking named application
-  credentials. Secrets appear once on creation; PostgreSQL stores only SHA-256
+  credentials. Secrets appear once on creation; the database stores only SHA-256
   hashes of the randomly generated keys. Revoked identities remain listed for
   audit purposes. Every application still needs a personal key for permissions.
   Internal scope and gateway/admin credentials are not managed here.
@@ -43,7 +44,7 @@ No data is submitted back to MusicBrainz.
 
 ## A quick look
 
-These screenshots use synthetic example records and key names, not a live
+These screenshots show the previous layout and use synthetic example records and key names, not a live
 installation's private data. Creation screenshots show clearly labelled,
 non-functional example credentials only.
 
@@ -51,8 +52,8 @@ non-functional example credentials only.
 
 The overview shows worker availability, database size and live ingestion counts:
 queued, processing, pending metadata and awaiting manual MusicBrainz review.
-Manual review is a subset of pending metadata. The green **?** at the top right
-indicates fresh live data; hover or click it for connection details.
+Manual review is a subset of pending metadata. The connection indicator shows
+whether live data is current.
 
 The history charts show searchable recordings (not individual fingerprint
 references) and the submission backlog. The worker stores one sample per UTC
@@ -119,7 +120,7 @@ example below is deliberately not a valid token.
 ## Application-key registry upgrade
 
 Deploy the new API code to **all replicas before issuing registry keys**.
-Gateway-enabled PostgreSQL service startup creates the independent version-1
+Gateway-enabled service startup creates the independent version-1
 `application_key_schema` and `application_keys` tables transactionally under
 the existing migration/write lock. Repeated startup preserves credentials.
 This does not change the fingerprint format version or alter existing rows.
@@ -130,17 +131,16 @@ environment credential, without revealing its value. It cannot be revoked
 through this page. After moving clients to registry keys, rotate that variable
 consistently on backend services to retire its old value; removing it is not
 currently supported. Restart the admin with the same configuration too.
-SQLite gateway deployments retain their existing single-token behavior.
 
-Active registry keys are checked against PostgreSQL on each request without
+Active registry keys are checked against the database on each request without
 a positive-authentication cache, so revocation affects the next check on every
 updated replica. A database error fails registry authentication with HTTP 503,
 not legacy access. Already authenticated requests may finish. Authentication
 logs use the opaque `app-<id>` identity, never the secret or its hash.
 
-Back up the registry with the PostgreSQL database. The experimental SQLite
-export only exports fingerprint tables and **does not carry these credentials**;
-after such a backend change only the configured legacy token is supported.
+Back up the registry with the database. The SQLite/PostgreSQL migration tools
+carry the registry and its revocation state. Personal gateway keys are separate
+and require an etcd backup.
 Rolling back to pre-registry API code similarly disables registry keys; it
 does not delete them.
 
@@ -167,12 +167,9 @@ the database every five seconds while browsers are connected, regardless of
 how many tabs are open. Slow clients receive the latest snapshot rather than
 an ever-growing event queue. Connection and database failures are shown
 explicitly; displayed numbers must not be treated as fresh during an outage.
-On the overview and database table pages, a small **?** indicator at the top
-right shows green for fresh data, yellow while connecting/reconnecting, and
-red for failed checks, stale data or an ended session. Hover, keyboard focus
-or click reveals the explanation and last successful check time. Click pins
-the explanation open; click again to unpin it. Key-management pages do not
-open a live database stream and therefore have no connection indicator.
+On the overview and database table pages, the connection status shows the last
+successful check or explains why the data may be stale. Key-management pages
+do not open a live database stream.
 
 Submission, unresolved-ISRC and reference tables keep their rows, filters,
 sorting, selection and scroll position when changes arrive. A **Newer data
@@ -181,11 +178,13 @@ the current search, sort, page and scroll position. That explicit refresh
 clears selected rows to avoid applying actions to an outdated selection.
 API-key pages are not part of this database stream.
 
-Table notices are advisory: they use PostgreSQL's asynchronous per-table write
+Table notices are advisory: PostgreSQL uses asynchronous per-table write
 counters plus lifecycle/reference counts, not expensive metadata or landmark
 scans. Metadata-only updates are detected even when row counts stay the same,
 but PostgreSQL statistics can lag and unrelated writes can trigger a notice.
 `track_counts=on` is required. This adds no schema changes or database triggers.
+SQLite uses a persistent connection's `PRAGMA data_version`; any external
+database commit can mark both tables as changed.
 
 The SSE stream rechecks session validity on each update and at least every ten
 seconds; logout or expiry ends updates. The browser reconnects automatically
@@ -197,14 +196,27 @@ and allow long-lived responses.
 
 Install `.[admin]` for native use, or add `compose.admin.yaml` **after** the
 existing gateway/PostgreSQL Compose files. The optional image build installs
-the admin extra; ordinary API/worker images do not need it.
+the admin extra and builds the frontend; ordinary API/worker images do not need
+the admin extra. For a native source checkout, use Node.js 24 and run
+`pnpm install --frozen-lockfile` and `pnpm build` in `admin-frontend` before
+starting the admin or packaging a Python distribution.
+
+For SQLite, append `compose.sqlite-admin.yaml` after `compose.admin.yaml` and
+mount the same database directory into both services. When also using
+`compose.local-gateway.yaml`, append `compose.local-sqlite-admin.yaml` to
+share its bind mount and user. Other bind mounts require an equivalent admin
+mount. Set `FP_SQLITE_DATABASE` if the database filename differs from the
+default `/data/fingerprints.db`. The database and its directory must be writable by both
+processes, including the WAL/SHM files. Run exactly one SQLite API process,
+which also runs the worker. `FP_WORKER_HEALTH_URL` must point to its private
+`/health` endpoint; an unreachable or unhealthy worker is shown as unavailable.
 
 Set these additional values in a private environment file outside version
 control, with owner-only permissions:
 
 - `FP_ADMIN_KEY`: an independently generated URL-safe secret of at least
   32 characters. This is the password for username **admin**.
-- `FP_ADMIN_POSTGRES_DSN`: a PostgreSQL connection string reachable from the
+- `FP_ADMIN_POSTGRES_DSN` (PostgreSQL only): a connection string reachable from the
   admin container, using the existing service database role, not the database
   superuser. Native runs use `FP_POSTGRES_DSN` instead.
 - `FP_GATEWAY_ADMIN_KEY`: the existing private APISIX administration key.
@@ -250,5 +262,5 @@ It is not a public multi-tenant portal. Public operation needs deployment-specif
 access control and edge request limits; adding OIDC later belongs in the auth
 provider/proxy, without replacing the tables or data adapters.
 
-Before upgrading Starlette-Admin, rerun admin tests and browser checks,
-particularly POST-only row actions, authentication, filtering and key creation.
+After changing the frontend or admin API, rerun the admin tests and browser
+checks for authentication, filtering, confirmed actions and one-time key display.

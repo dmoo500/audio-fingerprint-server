@@ -25,6 +25,14 @@ async def runtime(
     """Start selected roles and retain ownership until their blocking work has stopped."""
     store = create_store(settings)
     await run_sync(store.initialize)
+    if settings.database_backend == "sqlite" and settings.gateway_enabled:
+        from fingerprint_server.database.application_keys import ApplicationKeys, initialize
+
+        def initialize_keys() -> None:
+            with ApplicationKeys(store).connection(write=True) as db:
+                initialize(db)
+
+        await run_sync(initialize_keys)
     await run_sync(ArtworkStore(store).initialize)
     owners = ExitStack()
     worker_task: asyncio.Task[None] | None = None

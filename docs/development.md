@@ -9,11 +9,13 @@ fingerprint_server/
   app.py                 Fingerprint API
   recognition/           Optional standalone public microphone app
     app.py               Server-held read credentials and bounded public facade
-    static/              Public recognition UI, without API keys or admin data
+    static/              Capture worklet and recorder
+    dist/                Generated public frontend assets
   admin/                 Optional administrator service
-    app.py               Framework views, authentication and service entry point
+    app.py               Authentication, static frontend and SSE entry point
+    api.py               Private JSON routes for the admin frontend
     data.py              Bounded metadata queries and guarded actions
-    templates/           Administrator templates only
+    dist/                Generated administrator frontend assets
   database/
     __init__.py          Backend selection
     sqlite.py            SQLite queue and acoustic reference store
@@ -26,6 +28,8 @@ fingerprint_server/
   worker.py              Ingestion lifecycle
   runtime.py             Process ownership and shutdown
 scripts/                 Offline migration, benchmark and maintenance tools
+recognition-frontend/    Vue, TypeScript and Vite recognition website
+admin-frontend/          Vue, TypeScript and Vite administrator website
 tests/                   Unit tests and opt-in isolated integration tests
 docs/
   operations/            Deployment, admin, credentials, migrations and replicas
@@ -66,6 +70,8 @@ wrong test password and a dummy credential URL used to test rejection. It does
 not exempt whole test directories. Do not regenerate the baseline to silence a
 new finding: inspect it, remove/rotate real credentials, and approve only
 demonstrably synthetic fixtures. The separate private-key hook has no baseline.
+The scanner excludes standalone pnpm SHA-512 package-integrity lines, not the
+lockfile or other credential-bearing lines.
 
 The repository-checks GitHub workflow runs the same hooks, type checks and
 hook/layout regression tests on pull requests and pushes to `main`. Local hooks
@@ -80,6 +86,8 @@ credentials. If a secret was committed, rotate it even after deleting the file.
 ## Validation and limitations
 
 ```sh
+cd recognition-frontend && pnpm install --frozen-lockfile && pnpm build && pnpm test && cd ..
+cd admin-frontend && pnpm install --frozen-lockfile && pnpm build && pnpm test && cd ..
 uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 uv run --no-sync ruff format --check .

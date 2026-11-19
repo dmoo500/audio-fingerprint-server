@@ -8,7 +8,7 @@ repos:
         types: [text]
       - id: detect-secrets
         name: Detect credentials and tokens
-        entry: scripts/run-in-env.sh detect-secrets-hook --no-verify --baseline .secrets.baseline
+        entry: "scripts/run-in-env.sh detect-secrets-hook --no-verify --baseline .secrets.baseline --exclude-lines '^integrity: \"sha512-[A-Za-z0-9+/]{86}==\"$'"
         language: system
         types: [text]
         exclude: ^\.secrets\.baseline$

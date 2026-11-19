@@ -28,6 +28,7 @@ from fingerprint_server.http_utils import bounded_body, trusted_image
 
 LOGGER = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")
+FRONTEND = Path(__file__).with_name("dist")
 MAX_RESPONSE_BYTES = 64_000
 
 
@@ -129,10 +130,19 @@ def create_app(
     statistics_count: int | None = None
     statistics_checked = float("-inf")
     statistics_retry = float("-inf")
+    availability_lock = asyncio.Lock()
+    availability_checked = float("-inf")
+    available = False
     artwork_tokens: dict[str, tuple[str, float]] = {}
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        for asset_path in ("index.html", "assets/app.js", "assets/index.css"):
+            if not (FRONTEND / asset_path).is_file():
+                raise RuntimeError(
+                    "Recognition frontend assets are missing. Build recognition-frontend "
+                    "with pnpm before starting the service."
+                )
         settings = configuration or RecognitionSettings()  # type: ignore[call-arg]
         headers = {"X-API-Key": settings.read_key.get_secret_value()}
         if settings.application_key is not None:
@@ -215,11 +225,13 @@ def create_app(
         settings: RecognitionSettings = request.app.state.settings
         if str(request.base_url) != str(settings.public_url):
             return RedirectResponse(str(settings.public_url), status_code=307)
-        return FileResponse(STATIC / "index.html")
+        return FileResponse(FRONTEND / "index.html")
 
     @application.get("/assets/{name}")
     async def asset(name: str) -> FileResponse:
-        if name not in ("app.js", "style.css", "capture.js", "recording.js"):
+        if name in ("app.js", "index.css"):
+            return FileResponse(FRONTEND / "assets" / name)
+        if name not in ("capture.js", "recording.js"):
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 
@@ -249,6 +261,29 @@ def create_app(
             statistics_count = count
             statistics_checked = time.monotonic()
             return {"recordings": count}
+
+    @application.get("/api/availability")
+    async def availability(request: Request) -> dict[str, bool]:
+        """Report current recognition availability without exposing backend details."""
+        nonlocal available, availability_checked
+        admission.check(request, "availability", 30)
+        async with availability_lock:
+            now = time.monotonic()
+            if now - availability_checked >= 10:
+                try:
+                    raw = await upstream(request, "GET", "/health")
+                    payload = json.loads(raw)
+                    if payload != {"status": "ok"}:
+                        raise ValueError("Invalid upstream health response")
+                except HTTPException:
+                    available = False
+                except (ValueError, UnicodeError):
+                    LOGGER.error("Recognition upstream returned invalid health data")
+                    available = False
+                else:
+                    available = True
+                availability_checked = time.monotonic()
+            return {"available": available}
 
     @application.get("/api/artwork/{token}")
     async def artwork(request: Request, token: str) -> dict[str, str | None]:

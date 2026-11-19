@@ -12,6 +12,8 @@ from test_postgres_migration import migration as migration
 from test_postgres_migration import postgres as postgres
 from test_postgres_migration import source as source
 
+from fingerprint_server.artwork import ArtworkStore
+from fingerprint_server.database.application_keys import ApplicationKeys, initialize
 from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
 from fingerprint_server.database.sqlite import Store
 
@@ -24,17 +26,61 @@ def reverse(monkeypatch: pytest.MonkeyPatch) -> dict:
     return runpy.run_path(str(script))
 
 
+def test_rejects_unknown_application_registry_version(source: Path, migration: dict) -> None:
+    store = Store(source)
+    with ApplicationKeys(store).connection(write=True) as db:
+        initialize(db)
+        db.execute("UPDATE application_key_schema SET version=999")
+    with (
+        sqlite3.connect(source) as db,
+        pytest.raises(ValueError, match="Unsupported application key registry version"),
+    ):
+        migration["validate_source"](db)
+
+
 def imported(source: Path, postgres, migration: dict) -> None:
     with sqlite3.connect(source) as db:
         migration["migrate"](db, postgres, "reverse_test")
 
 
+@pytest.mark.parametrize("damage", ["missing", "unknown"])
+def test_rejects_damaged_registry_before_export(
+    source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path, damage: str
+) -> None:
+    store = Store(source)
+    with ApplicationKeys(store).connection(write=True) as db:
+        initialize(db)
+    imported(source, postgres, migration)
+    with postgres.transaction():
+        postgres.execute("SET LOCAL search_path TO reverse_test,pg_catalog")
+        if damage == "missing":
+            postgres.execute("DROP TABLE application_key_schema")
+        else:
+            postgres.execute("UPDATE application_key_schema SET version=999")
+    output = tmp_path / "output.db"
+    with pytest.raises(ValueError, match="application key registry"):
+        reverse["export_sqlite"](postgres, "reverse_test", output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+
+
 def test_roundtrip_preserves_all_fields_and_new_changes(
     source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path
 ) -> None:
+    store = Store(source)
+    ArtworkStore(store).initialize()
+    keys = ApplicationKeys(store)
+    with keys.connection(write=True) as db:
+        initialize(db)
+    active_id, active_key = keys.issue("active")
+    revoked_id, revoked_key = keys.issue("revoked")
+    keys.revoke(revoked_id)
     with sqlite3.connect(source) as db:
         db.execute("INSERT INTO admin_hourly_metrics VALUES (1000,1,2,3,4,1)")
         db.execute("INSERT INTO musicbrainz_reviews VALUES ('second','[]',NULL)")
+        db.execute(
+            "INSERT INTO artwork_requests VALUES ('reference','ready','https://example.com',1,2)"
+        )
     imported(source, postgres, migration)
     with postgres.transaction():
         postgres.execute("SET LOCAL search_path TO reverse_test,pg_catalog")
@@ -77,12 +123,18 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
             ("second", "[]", None)
         ]
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert db.execute("SELECT * FROM artwork_requests").fetchall() == [
+            ("reference", "ready", "https://example.com", 1, 2)
+        ]
     # Export back to PostgreSQL proves all mapped fields, landmarks and FIFO survive both ways.
     with sqlite3.connect(output) as db:
         again = migration["migrate"](db, postgres, "second_import")
     assert again == result["counts"]
     store = Store(output)
     store.initialize()
+    exported_keys = ApplicationKeys(store)
+    assert exported_keys.authenticate(active_key) == "app-" + active_id
+    assert exported_keys.authenticate(revoked_key) is None
     assert store.get_submission("first") is None
     # Existing SQLite startup pauses background rechecks when verification is disabled.
     assert store.get_submission("second")["state"] == "pending_metadata"

@@ -1,0 +1,23 @@
+# Use after compose.admin.yaml for a gateway deployment with one SQLite API/worker.
+services:
+  fingerprints:
+    environment:
+      FP_DATABASE_BACKEND: sqlite
+      FP_DATABASE: ${FP_SQLITE_DATABASE:-/data/fingerprints.db}
+  admin:
+    environment: !override
+      FP_DATABASE_BACKEND: sqlite
+      FP_DATABASE: ${FP_SQLITE_DATABASE:-/data/fingerprints.db}
+      FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set internal upload key}
+      FP_READ_KEY: ${FP_READ_KEY:?Set internal read key}
+      FP_APPLICATION_KEY: ${FP_APPLICATION_KEY:?Set application key}
+      FP_GATEWAY_ENABLED: "true"
+      FP_ADMIN_KEY: ${FP_ADMIN_KEY:?Set a separate admin login key}
+      FP_ADMIN_COOKIE_SECURE: ${FP_ADMIN_COOKIE_SECURE:-false}
+      FP_GATEWAY_ADMIN_KEY: ${FP_GATEWAY_ADMIN_KEY:?Set gateway administration key}
+      FP_GATEWAY_ADMIN_URL: http://gateway:9180/apisix/admin/
+      FP_WORKER_HEALTH_URL: http://fingerprints:8097/health
+      FP_QUEUE_LIMIT: ${FP_QUEUE_LIMIT:-1000}
+      FP_QUEUE_BYTES_LIMIT: ${FP_QUEUE_BYTES_LIMIT:-256000000}
+    volumes:
+      - fingerprints:/data

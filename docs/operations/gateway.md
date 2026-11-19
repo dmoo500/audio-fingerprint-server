@@ -17,7 +17,7 @@ In this default mode there are no individual accounts, per-contributor credentia
 
 ### Optional APISIX mode: application token AND personal token
 
-This deployment uses [Apache APISIX](https://apisix.apache.org/) for administratively issued personal keys. It is opt-in; the existing local setup and `compose.yaml` remain unchanged. There is no self-service developer portal, user login or automatic expiry. The application token is a separate fingerprint-service credential, **never** a login token from a local MA instance and not an officially issued Music Assistant credential. PostgreSQL deployments also support separate revocable application keys through the [administrator registry](admin.md#application-key-registry-upgrade); the configured environment token remains valid for existing clients. SQLite retains the single configured application token.
+This deployment uses [Apache APISIX](https://apisix.apache.org/) for administratively issued personal keys. It is opt-in; the existing local setup and `compose.yaml` remain unchanged. There is no self-service developer portal, user login or automatic expiry. The application token is a separate fingerprint-service credential, **never** a login token from a local MA instance and not an officially issued Music Assistant credential. SQLite and PostgreSQL deployments also support separate revocable application keys through the [administrator registry](admin.md#application-key-registry-upgrade); the configured environment token remains valid for existing clients.
 
 ```mermaid
 flowchart TD

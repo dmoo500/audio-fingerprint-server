@@ -7,8 +7,7 @@ import logging
 import time
 from typing import Any, Literal
 
-from starlette_admin.exceptions import ActionFailed
-
+from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.database.metrics import HISTORY_HOURS, REVIEW_COUNT
 from fingerprint_server.database.postgres import PostgresStore
 from fingerprint_server.settings import Settings
@@ -31,12 +30,8 @@ REFERENCE_FIELDS = ("recording_key",)
 STATES = ("queued", "processing", "processed", "failed", "pending_metadata")
 
 
-class AdminData:
-    """Read metadata and perform explicit actions without exposing fingerprint payloads."""
-
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self.store = PostgresStore(settings)
+class AdminFilters:
+    """Compile bounded, allowlisted administration filters and sorting fields."""
 
     def source(self, dataset: Dataset) -> str:
         """Return the metadata-only projection for a supported data set."""
@@ -131,6 +126,14 @@ class AdminData:
         if dataset == "unresolved":
             clause = f"({clause}) AND state!='processed' AND coalesce(isrc,'')!=''"
         return clause, args
+
+
+class AdminData(AdminFilters):
+    """Read metadata and perform explicit actions without exposing fingerprint payloads."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.store = PostgresStore(settings)
 
     def read(
         self,

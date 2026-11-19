@@ -97,6 +97,10 @@ failure rolls back the new schema. Existing source files are not changed.
 Run PostgreSQL `VACUUM (ANALYZE)` on the imported tables before measuring lookup
 performance. Keep the same verification, housekeeping and queue settings on
 the new runtime; changing them can intentionally change recovery behavior.
+When present, the application-key registry, artwork requests, MusicBrainz
+reviews and hourly administration history are transferred too. Gateway
+personal keys and configuration are stored separately and require their own
+backups.
 
 See the [measured import/runtime rehearsal](../benchmarks/postgresql-runtime.md).
 PostgreSQL needs substantially more disk space than occupied SQLite pages,
@@ -122,6 +126,12 @@ landmarks, cache entries, service-state values and queue/retry state are copied.
 PostgreSQL `queue_order` becomes SQLite's submission `rowid`, preserving FIFO
 ties and gaps. New PostgreSQL records and deletions are reflected in the result.
 PostgreSQL-only rate/ownership state is retained; SQLite does not interpret it.
+The application-key registry, artwork requests, MusicBrainz reviews and hourly
+administration history are retained when present. Gateway personal keys and
+configuration are separate from this database and are not included in the export.
+To use the standalone administration service with SQLite, share the same
+database directory and configure its worker health URL as described in the
+[administrator guide](admin.md).
 
 Metadata is compared field by field. Every landmark is checked against the
 source-stream SHA-256 digest and row count. The exporter then builds SQLite's

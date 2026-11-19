@@ -16,6 +16,7 @@ from urllib.parse import quote
 import psycopg
 from psycopg import sql
 
+from fingerprint_server.database.application_keys import REGISTRY_VERSION
 from fingerprint_server.database.migrations import _validate_schema
 from fingerprint_server.database.postgres_schema import (
     EXTENSION_TABLES,
@@ -50,6 +51,16 @@ def validate_source(source: sqlite3.Connection) -> None:
         raise ValueError(f"Expected SQLite schema {SQLITE_SCHEMA_VERSION}, found {version}")
     if _validate_schema(source, version):
         raise ValueError("Empty SQLite source")
+    registry = source.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='application_key_schema'"
+    ).fetchone()
+    if registry:
+        versions = source.execute("SELECT id,version FROM application_key_schema").fetchall()
+        if [tuple(row) for row in versions] != [(1, REGISTRY_VERSION)]:
+            raise ValueError("Unsupported application key registry version")
+        source.execute(
+            "SELECT id,name,key_hash,created_at,revoked_at FROM application_keys LIMIT 0"
+        )
     result = source.execute("PRAGMA integrity_check").fetchone()
     if result is None or result[0] != "ok":
         raise ValueError(f"SQLite integrity check failed: {result}")

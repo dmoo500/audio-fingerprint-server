@@ -19,7 +19,7 @@ services:
       - fingerprint_server/logging.json
     environment:
       FP_DATABASE_BACKEND: postgres
-      FP_POSTGRES_DSN: ${FP_ADMIN_POSTGRES_DSN:?Set the admin PostgreSQL DSN}
+      FP_POSTGRES_DSN: ${FP_ADMIN_POSTGRES_DSN:-}
       FP_POSTGRES_SCHEMA: ${FP_POSTGRES_SCHEMA:-fingerprints}
       FP_UPLOAD_KEY: ${FP_UPLOAD_KEY:?Set internal upload key}
       FP_READ_KEY: ${FP_READ_KEY:?Set internal read key}

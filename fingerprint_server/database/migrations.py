@@ -168,7 +168,17 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
     expected_tables = set(LEGACY_COLUMNS)
     if "artwork_requests" in tables:
         expected_tables.add("artwork_requests")
-    expected_tables.update(tables & {"musicbrainz_reviews", "admin_hourly_metrics"})
+    expected_tables.update(
+        tables
+        & {
+            "musicbrainz_reviews",
+            "admin_hourly_metrics",
+            "application_key_schema",
+            "application_keys",
+        }
+    )
+    if bool("application_key_schema" in tables) != bool("application_keys" in tables):
+        raise RuntimeError("Incomplete application key registry; refusing to migrate")
     if version >= 4:
         expected_tables.add("service_state")
     if tables != expected_tables:
