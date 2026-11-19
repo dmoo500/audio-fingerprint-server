@@ -65,13 +65,15 @@ def client(monkeypatch):
 
     monkeypatch.setattr("fingerprint_server.database.postgres.PostgresStore.connect", connect)
     overview = {
-        "submissions": {"pending_metadata": 1},
+        "submissions": {"queued": 3, "processing": 2, "pending_metadata": 1},
+        "manual_review": 1,
         "references": {"published": 1, "stored": 2},
         "database_bytes": 2048,
         "format_version": 1,
         "worker_available": True,
     }
     monkeypatch.setattr(AdminData, "overview", lambda self: overview)
+    monkeypatch.setattr(AdminData, "hourly_history", lambda self, hour: [])
     monkeypatch.setattr(
         AdminData,
         "revisions",
@@ -79,6 +81,50 @@ def client(monkeypatch):
     )
     with TestClient(create_admin(configuration())) as client:
         yield client
+
+
+def test_overview_shows_live_queue_and_persisted_history(client, monkeypatch):
+    assert client.get("/admin/", follow_redirects=False).status_code == 303
+    assert client.get("/admin/?view=history", follow_redirects=False).status_code == 303
+    assert login(client).status_code == 303
+    empty = client.get("/admin/")
+    assert 'data-live-value="queue-queued">3</div>' in empty.text
+    assert 'data-live-value="manual_review">1</div>' in empty.text
+    assert "No hourly measurements yet" in empty.text
+    assert 'id="history-reload"' in empty.text
+    monkeypatch.setattr(
+        AdminData,
+        "hourly_history",
+        lambda self, hour: [
+            dict(
+                hour=hour - 1,
+                recordings=17,
+                queued=4,
+                processing=2,
+                pending_metadata=1,
+                manual_review=1,
+            ),
+            dict(
+                hour=hour,
+                recordings=18,
+                queued=3,
+                processing=2,
+                pending_metadata=1,
+                manual_review=1,
+            ),
+        ],
+    )
+    page = client.get("/admin/")
+    assert page.status_code == 200
+    assert 'aria-label="Searchable recordings over time"' in page.text
+    assert 'aria-label="Submission backlog over time"' in page.text
+    assert "Searchable recordings: <strong>18</strong>" in page.text
+    refreshed = client.get("/admin/?view=history")
+    assert refreshed.status_code == 200
+    assert refreshed.headers["Cache-Control"] == "no-store"
+    assert "Searchable recordings: <strong>18</strong>" in refreshed.text
+    assert 'aria-label="Submission backlog over time"' in refreshed.text
+    assert 'id="admin-live"' not in refreshed.text
 
 
 def test_login_is_separate_and_sessions_are_revoked(client):
@@ -175,6 +221,122 @@ def test_pending_and_row_actions_use_existing_service_logic(client, monkeypatch)
     response = client.post("/admin/api/references/row-action?name=retry&pk=test", headers=ORIGIN)
     assert response.status_code == 400
     assert mutation.call_count == 1
+
+
+def test_musicbrainz_reviews_are_authenticated_and_select_through_admin_data(client, monkeypatch):
+    from starlette_admin.exceptions import ActionFailed
+
+    assert client.get("/admin/musicbrainz-reviews", follow_redirects=False).status_code == 303
+    login(client)
+    candidates = [
+        {
+            "id": "recording-a",
+            "title": "Song",
+            "artists": ["Artist"],
+            "length": 226339,
+            "disambiguation": "",
+            "albums": ["Album", "Reissue"],
+            "earliest_album": {"title": "Album", "date": "1985-06"},
+        },
+        {"id": "recording-b", "length": 3600000},
+        {"id": "recording-c", "length": 59000},
+        {"id": "recording-d", "length": None},
+    ]
+    monkeypatch.setattr(
+        AdminData,
+        "musicbrainz_reviews",
+        lambda self, skip=0: [
+            {
+                "submission_id": "submission-a",
+                "title": 'Song "Original"',
+                "metadata": {"artists": ["Artist & Co", "Guest"]},
+                "candidates": candidates,
+            }
+        ],
+    )
+    select = Mock()
+    monkeypatch.setattr(AdminData, "select_musicbrainz_candidate", select)
+    response = client.get("/admin/musicbrainz-reviews")
+    assert response.status_code == 200
+    assert "Song" in response.text and "recording-a" in response.text
+    assert 'value="Song &#34;Original&#34; - Artist &amp; Co, Guest"' in response.text
+    assert 'value="Song - Artist"' not in response.text
+    assert response.text.count('aria-label="Copy title and artist"') == 1
+    assert "navigator.clipboard.writeText(input.value)" in response.text
+    assert "Recording MBID: <code>recording-a</code>" in response.text
+    assert "Length: 03:46</span>" in response.text
+    assert "Earliest known official album:" in response.text
+    assert "(1985-06)" in response.text
+    assert "<summary>Show album credits</summary>" in response.text
+    assert "Album, Reissue" in response.text
+    assert response.text.count("Earliest known official album:") == 1
+    assert " checked" not in response.text
+    assert "Length: 01:00:00</span>" in response.text
+    assert "Length: 00:59</span>" in response.text
+    assert response.text.count("Length:") == 3
+    assert 'name="selected_mbid"' in response.text
+    assert client.post("/admin/musicbrainz-reviews", data={}).status_code == 403
+    response = client.post(
+        "/admin/musicbrainz-reviews",
+        headers=ORIGIN,
+        data={"submission_id": "submission-a", "selected_mbid": "recording-a"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("/admin/musicbrainz-reviews?selected=1")
+    select.assert_called_once_with("submission-a", "recording-a")
+    select.side_effect = ActionFailed("Select one of the listed MusicBrainz candidates")
+    response = client.post(
+        "/admin/musicbrainz-reviews",
+        headers=ORIGIN,
+        data={"submission_id": "submission-a", "selected_mbid": "not-listed"},
+    )
+    assert response.status_code == 400
+    assert "Select one of the listed MusicBrainz candidates" in response.text
+
+
+def test_musicbrainz_selection_locks_and_validates_before_updates(monkeypatch):
+    from contextlib import contextmanager
+
+    from starlette_admin.exceptions import ActionFailed
+
+    data = AdminData(configuration())
+    db = Mock()
+    submission_result = Mock()
+    submission_result.fetchone.return_value = {"id": "submission-a", "state": "pending_metadata"}
+    review_result = Mock()
+    review_result.fetchone.return_value = {
+        "candidates": json.dumps([{"id": "recording-a"}]),
+        "selected_mbid": None,
+    }
+
+    @contextmanager
+    def connect(*, write=False):
+        assert write
+        yield db
+
+    monkeypatch.setattr(data.store, "connect", connect)
+    db.execute.side_effect = [submission_result, review_result, Mock(), Mock()]
+    data.select_musicbrainz_candidate("submission-a", "recording-a")
+    calls = db.execute.call_args_list
+    assert len(calls) == 4
+    assert "FROM submissions WHERE id=%s FOR UPDATE" in calls[0].args[0]
+    assert "FROM musicbrainz_reviews" in calls[1].args[0]
+    assert calls[2].args[1] == ("recording-a", "submission-a")
+    assert calls[3].args[1][1] == "submission-a"
+
+    db.execute.reset_mock()
+    db.execute.side_effect = [submission_result, review_result]
+    with pytest.raises(ActionFailed, match="listed"):
+        data.select_musicbrainz_candidate("submission-a", "not-listed")
+    assert db.execute.call_count == 2
+
+    db.execute.reset_mock()
+    submission_result.fetchone.return_value = {"id": "submission-a", "state": "failed"}
+    db.execute.side_effect = [submission_result]
+    with pytest.raises(ActionFailed, match="no longer awaiting"):
+        data.select_musicbrainz_candidate("submission-a", "recording-a")
+    assert db.execute.call_count == 1
 
 
 def test_application_key_ui_requires_confirmation_and_never_redisplays_secrets(client, monkeypatch):
@@ -374,6 +536,68 @@ def test_actual_postgres_admin_queries_and_atomic_actions(postgres, tmp_path: Pa
         assert time.monotonic() < deadline
         time.sleep(0.1)
     assert after["submissions"] == before["submissions"]
+
+
+def test_postgres_musicbrainz_review_selection_is_membership_and_state_guarded(postgres):
+    from uuid import uuid4
+
+    from starlette_admin.exceptions import ActionFailed
+
+    data = AdminData(configuration(postgres_schema="mb_review_" + uuid4().hex))
+    data.store.initialize()
+    candidates = [
+        {
+            "id": "recording-a",
+            "title": "Song",
+            "artists": ["Artist"],
+            "length": 180000,
+            "disambiguation": "",
+            "albums": ["Album"],
+        },
+        {
+            "id": "recording-b",
+            "title": "Song (Live)",
+            "artists": ["Artist"],
+            "length": 190000,
+            "disambiguation": "live",
+            "albums": ["Live Album"],
+        },
+    ]
+    with data.store.connect(write=True) as db:
+        for submission_id, state in (("pending", "pending_metadata"), ("failed", "failed")):
+            db.execute(
+                "INSERT INTO submissions(id,state,document,created_at,attempts,error) "
+                "VALUES(%s,%s,%s,1,7,'Waiting for review')",
+                (submission_id, state, json.dumps({"metadata": {"title": "Song"}})),
+            )
+            db.execute(
+                "INSERT INTO musicbrainz_reviews(submission_id,candidates) VALUES(%s,%s)",
+                (submission_id, json.dumps(candidates)),
+            )
+    reviews = data.musicbrainz_reviews()
+    assert [row["submission_id"] for row in reviews] == ["pending"]
+    assert reviews[0]["title"] == "Song"
+    assert reviews[0]["candidates"] == candidates
+    with pytest.raises(ActionFailed, match="listed"):
+        data.select_musicbrainz_candidate("pending", "not-listed")
+    with pytest.raises(ActionFailed, match="no longer awaiting"):
+        data.select_musicbrainz_candidate("failed", "recording-a")
+    assert data.store.get_submission("pending")["state"] == "pending_metadata"
+    data.select_musicbrainz_candidate("pending", "recording-b")
+    submission = data.store.get_submission("pending")
+    assert submission["state"] == "queued"
+    assert submission["attempts"] == 0
+    assert submission["error"] is None
+    with data.store.connect() as db:
+        internal = db.execute(
+            "SELECT retry_at,pending_check,background_kind FROM submissions WHERE id='pending'"
+        ).fetchone()
+        assert internal == {"retry_at": 0, "pending_check": 0, "background_kind": 0}
+        review = db.execute(
+            "SELECT selected_mbid FROM musicbrainz_reviews WHERE submission_id='pending'"
+        ).fetchone()
+    assert review["selected_mbid"] == "recording-b"
+    assert data.musicbrainz_reviews() == []
 
 
 def test_postgres_search_normalization_and_numeric_column_sort(postgres):

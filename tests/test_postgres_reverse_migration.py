@@ -32,6 +32,9 @@ def imported(source: Path, postgres, migration: dict) -> None:
 def test_roundtrip_preserves_all_fields_and_new_changes(
     source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path
 ) -> None:
+    with sqlite3.connect(source) as db:
+        db.execute("INSERT INTO admin_hourly_metrics VALUES (1000,1,2,3,4,1)")
+        db.execute("INSERT INTO musicbrainz_reviews VALUES ('second','[]',NULL)")
     imported(source, postgres, migration)
     with postgres.transaction():
         postgres.execute("SET LOCAL search_path TO reverse_test,pg_catalog")
@@ -67,6 +70,12 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
             "WHERE id='second'"
         ).fetchone() == ("processing", 1, 1, 42)
         assert db.execute("SELECT max(reference_id) FROM landmarks").fetchone()[0] == 5000000000
+        assert db.execute("SELECT * FROM admin_hourly_metrics").fetchall() == [
+            (1000, 1, 2, 3, 4, 1)
+        ]
+        assert db.execute("SELECT * FROM musicbrainz_reviews").fetchall() == [
+            ("second", "[]", None)
+        ]
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
     # Export back to PostgreSQL proves all mapped fields, landmarks and FIFO survive both ways.
     with sqlite3.connect(output) as db:

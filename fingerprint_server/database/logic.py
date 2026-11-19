@@ -14,6 +14,19 @@ from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete, metadata_searchable
 
 
+def can_add_recording_mbid(existing: object, incoming: Mapping[str, Any]) -> bool:
+    """Require the same retained identity before adding a verified recording ID."""
+    return (
+        isinstance(existing, dict)
+        and not existing.get("recording_mbid")
+        and all(existing.get(key) == incoming.get(key) for key in ("title", "artists", "duration"))
+        and (
+            not existing.get("isrc")
+            or str(existing["isrc"]).upper() == str(incoming.get("isrc")).upper()
+        )
+    )
+
+
 def has_identifier(metadata: object) -> bool:
     """Check for a usable retained ISRC or recording UUID."""
     if not isinstance(metadata, dict):

@@ -105,9 +105,9 @@ async def test_auth_limits_and_capability(tmp_path: Path) -> None:
                     headers={**headers, "Content-Type": "application/json"},
                 )
             ).status_code == 413
-            assert (await client.get("/api/v1/dejavu/capabilities", headers=headers)).json()[
-                "availability_version"
-            ] == 1
+            capabilities = (await client.get("/api/v1/dejavu/capabilities", headers=headers)).json()
+            assert capabilities["availability_version"] == 1
+            assert capabilities["release_hints_version"] == 1
 
 
 async def test_preflight_uses_local_published_data_without_upstream(

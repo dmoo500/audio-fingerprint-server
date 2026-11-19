@@ -10,7 +10,10 @@ const script = readFileSync(
 
 function browser(dataset, counts) {
   const elements = new Map();
-  for (const id of ["admin-live", "live-status", "live-status-icon", "worker", "database", "processed"]) {
+  for (const id of [
+    "admin-live", "live-status", "live-status-icon", "worker", "database", "processed",
+    "queue-queued", "queue-processing", "queue-pending_metadata", "manual_review",
+  ]) {
     elements.set(id, {
       dataset: {}, textContent: "", handlers: {},
       setAttribute(name, value) { this[name] = value; },
@@ -70,14 +73,14 @@ function browser(dataset, counts) {
     clearInterval() {},
     model: { apiUrl: "/admin/api/submissions" },
   });
-  function snapshot(revision, age = 0) {
+  function snapshot(revision, age = 0, counts = { processed: 9 }, manualReview) {
     events.snapshot({ data: JSON.stringify({
       updated_at: new Date(Date.now() - age).toISOString(),
       revisions: { [dataset]: revision },
       overview: {
         worker_available: true, database_bytes: 1073741824,
         references: { published: 3, stored: 4 }, format_version: 1,
-        submissions: { processed: 9 },
+        submissions: counts, manual_review: manualReview,
       },
     }) });
   }
@@ -123,6 +126,18 @@ test("dashboard updates only fresh values and exposes outages and session expiry
   assert.equal(page.closed(), true);
   page.watchdog();
   assert.match(page.elements.get("live-status").textContent, /Session ended/);
+});
+
+test("queue cards follow the authenticated snapshot and do not display stale values as fresh", () => {
+  const page = browser();
+  page.snapshot(undefined, 0, { queued: 8, processing: 2, pending_metadata: 4 }, 3);
+  assert.equal(page.elements.get("queue-queued").textContent, 8);
+  assert.equal(page.elements.get("queue-processing").textContent, 2);
+  assert.equal(page.elements.get("queue-pending_metadata").textContent, 4);
+  assert.equal(page.elements.get("manual_review").textContent, 3);
+  page.snapshot(undefined, 30000, { queued: 0 }, 0);
+  assert.equal(page.elements.get("queue-queued").textContent, 8);
+  assert.equal(page.elements.get("manual_review").textContent, 3);
 });
 
 test("reconnecting is yellow and fresh data restores green with accessible details", () => {

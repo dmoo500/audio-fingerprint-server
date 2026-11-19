@@ -112,6 +112,30 @@
             "default": null,
             "title": "Recording Mbid"
           },
+          "release_group_mbid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Group Mbid"
+          },
+          "release_mbid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Mbid"
+          },
           "title": {
             "anyOf": [
               {
@@ -268,6 +292,19 @@
             ],
             "default": null,
             "title": "Recognition Landmarks Version"
+          },
+          "release_hints_version": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Hints Version"
           }
         },
         "required": [
@@ -553,6 +590,30 @@
             ],
             "default": null,
             "title": "Recording Mbid"
+          },
+          "release_group_mbid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Group Mbid"
+          },
+          "release_mbid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Release Mbid"
           },
           "title": {
             "anyOf": [

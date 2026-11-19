@@ -49,11 +49,38 @@ non-functional example credentials only.
 
 ### Overview
 
-The overview brings together worker availability, database size and processing
-counts. The green **?** at the top right indicates fresh live data; hover or
-click it for connection details.
+The overview shows worker availability, database size and live ingestion counts:
+queued, processing, pending metadata and awaiting manual MusicBrainz review.
+Manual review is a subset of pending metadata. The green **?** at the top right
+indicates fresh live data; hover or click it for connection details.
+
+The history charts show searchable recordings (not individual fingerprint
+references) and the submission backlog. The worker stores one sample per UTC
+hour and keeps the most recent 30 days. History begins with the first saved
+sample; missing hours stay blank. Use **Refresh charts** to load the latest
+saved samples without reloading the overview.
+The updated server creates the history table on startup without rewriting
+existing fingerprints. Deploy the updated worker to start collection.
 
 ![Admin overview with worker availability, database size and submission counts](images/admin-overview.png)
+
+![Live ingestion queue and 30-day charts for searchable recordings and submission backlog, with the Refresh charts button](images/admin-queue-history.png)
+
+### MusicBrainz reviews
+
+On the MusicBrainz review page, each candidate shows its MusicBrainz recording
+ID (MBID), not its ISRC or the server's submission ID. Candidate durations are
+shown as `mm:ss` or `hh:mm:ss` for recordings of at least an hour.
+Use the copy icon beside the submission title to copy its title and artist as
+`title - artist`. If clipboard access is unavailable, the text is selected for
+manual copying instead.
+New reviews highlight the earliest dated official album among the releases
+MusicBrainz returned for each candidate. Expand **Show album credits** to see
+the full list from the response. The highlight is only a hint: it does not
+select a recording or change the submitted album. Older reviews without dates
+still show their album credits but have no highlight.
+
+![MusicBrainz review comparing a studio recording and an alternate mix, with album hints and one expanded list of album credits](images/admin-musicbrainz-review.png)
 
 ### Search and sort
 

@@ -15,6 +15,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from fingerprint_server.database.logic import (
+    can_add_recording_mbid,
     coverage_statistics,
     full_coverage,
     has_identifier,
@@ -22,10 +23,12 @@ from fingerprint_server.database.logic import (
     rank_matches,
     resolve_availability,
 )
+from fingerprint_server.database.metrics import METRICS_TABLE
 from fingerprint_server.database.migrations import (
     MUSICBRAINZ_VERIFICATION_VERSION,
     initialize_database,
 )
+from fingerprint_server.database.review_schema import REVIEW_TABLE
 from fingerprint_server.schemas import (
     acoustic_reference_id,
     decode_submission,
@@ -89,6 +92,8 @@ class Store:
         with self.connect() as db:
             initialize_database(db, self.path)
             db.execute("BEGIN IMMEDIATE")
+            db.execute(REVIEW_TABLE)
+            db.execute(METRICS_TABLE)
             previous = db.execute(
                 "SELECT value FROM service_state WHERE key='musicbrainz_enabled'"
             ).fetchone()
@@ -413,14 +418,7 @@ class Store:
                     ).fetchone()
                     if retained:
                         existing = json.loads(retained["metadata"])
-                        identity_fields = ("title", "artists", "duration", "isrc")
-                        if (
-                            isinstance(existing, dict)
-                            and not existing.get("recording_mbid")
-                            and all(
-                                existing.get(key) == metadata.get(key) for key in identity_fields
-                            )
-                        ):
+                        if can_add_recording_mbid(existing, metadata):
                             existing["recording_mbid"] = metadata["recording_mbid"]
                             db.execute(
                                 "UPDATE reference_tracks SET metadata=?,recording_key=? "
@@ -676,6 +674,7 @@ class Store:
         rows = db.execute(
             "SELECT id,background_kind FROM submissions WHERE state='pending_metadata' "
             "AND pending_due_at<=? AND (background_kind=2 OR ?) "
+            "AND NOT EXISTS (SELECT 1 FROM musicbrainz_reviews WHERE submission_id=submissions.id) "
             "ORDER BY pending_due_at,created_at,rowid LIMIT ?",
             (now, self.housekeeping_enabled, available),
         ).fetchall()

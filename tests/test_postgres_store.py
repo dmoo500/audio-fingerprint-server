@@ -18,6 +18,7 @@ import httpx
 import pytest
 from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 from pydantic import ValidationError
+from test_admin_history import assert_hourly_sampling
 from test_availability import MBID, publish
 from test_metadata_gate import document
 from test_postgres_migration import migration as migration
@@ -74,6 +75,10 @@ def store(configuration, request, monkeypatch):
             migrate(db, configuration.postgres_schema, 2)
         result.initialize()
     return result
+
+
+def test_postgres_hourly_sampling(store) -> None:
+    assert_hourly_sampling(store)
 
 
 def test_shared_hash_publication_and_reference_removal(store) -> None:

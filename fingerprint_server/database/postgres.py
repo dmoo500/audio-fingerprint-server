@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from fingerprint_server.database import application_keys, postgres_postings
 from fingerprint_server.database.logic import (
+    can_add_recording_mbid,
     coverage_statistics,
     full_coverage,
     has_identifier,
@@ -24,6 +25,7 @@ from fingerprint_server.database.logic import (
     rank_matches,
     resolve_availability,
 )
+from fingerprint_server.database.metrics import METRICS_TABLE
 from fingerprint_server.database.migrations import MUSICBRAINZ_VERIFICATION_VERSION
 from fingerprint_server.database.postgres_schema import (
     FORMAT_VERSION,
@@ -31,6 +33,7 @@ from fingerprint_server.database.postgres_schema import (
     create_tables,
     finish_schema,
 )
+from fingerprint_server.database.review_schema import REVIEW_TABLE
 from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS, Settings
@@ -119,6 +122,8 @@ class PostgresStore:
                     raise ValueError(f"Unexpected PostgreSQL table layout: {name}")
             if self.settings.gateway_enabled:
                 application_keys.initialize(db)
+            db.execute(REVIEW_TABLE)
+            db.execute(METRICS_TABLE)
 
     @contextmanager
     def owner(self, role: str) -> Iterator[Connection]:
@@ -427,14 +432,7 @@ class PostgresStore:
                     ).fetchone()
                     if retained:
                         existing = json.loads(retained["metadata"])
-                        if (
-                            isinstance(existing, dict)
-                            and not existing.get("recording_mbid")
-                            and all(
-                                existing.get(key) == metadata.get(key)
-                                for key in ("title", "artists", "duration", "isrc")
-                            )
-                        ):
+                        if can_add_recording_mbid(existing, metadata):
                             existing["recording_mbid"] = metadata["recording_mbid"]
                             db.execute(
                                 "UPDATE reference_tracks SET metadata=%s,recording_key=%s "
@@ -760,6 +758,7 @@ class PostgresStore:
         rows = db.execute(
             "SELECT id,background_kind FROM submissions WHERE state='pending_metadata' "
             "AND pending_due_at<=%s AND (background_kind=2 OR %s) "
+            "AND NOT EXISTS (SELECT 1 FROM musicbrainz_reviews WHERE submission_id=submissions.id) "
             "ORDER BY pending_due_at,created_at,queue_order LIMIT %s",
             (now, self.housekeeping_enabled, available),
         ).fetchall()

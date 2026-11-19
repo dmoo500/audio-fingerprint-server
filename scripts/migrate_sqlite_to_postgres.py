@@ -18,6 +18,7 @@ from psycopg import sql
 
 from fingerprint_server.database.migrations import _validate_schema
 from fingerprint_server.database.postgres_schema import (
+    EXTENSION_TABLES,
     SQLITE_SCHEMA_VERSION,
     TABLES,
     create_tables,
@@ -59,7 +60,7 @@ def validate_source(source: sqlite3.Connection) -> None:
 
 def source_rows(source: sqlite3.Connection, name: str) -> sqlite3.Cursor:
     """Read rows in stable source order, preserving the SQLite FIFO tie-breaker."""
-    spec = TABLES[name]
+    spec = (TABLES | EXTENSION_TABLES)[name]
     columns = [column for column in spec["columns"] if column != "queue_order"]
     if name == "submissions":
         columns.append("rowid")
@@ -69,7 +70,7 @@ def source_rows(source: sqlite3.Connection, name: str) -> sqlite3.Cursor:
 
 def copy_small_table(source: sqlite3.Connection, target: psycopg.Connection, name: str) -> int:
     """Copy a metadata table and compare every imported value."""
-    spec = TABLES[name]
+    spec = (TABLES | EXTENSION_TABLES)[name]
     columns = spec["columns"]
     fields = sql.SQL(",").join(map(sql.Identifier, columns))
     with target.cursor() as cur:
@@ -169,6 +170,13 @@ def migrate(source: sqlite3.Connection, target: psycopg.Connection, schema: str)
         for name in TABLES:
             counts[name] = copy_small_table(source, target, name)
             LOGGER.info("Verified %s: %s rows", name, counts[name])
+        present = {
+            row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        for name, spec in EXTENSION_TABLES.items():
+            if name in present:
+                target.execute(spec["definition"])
+                counts[name] = copy_small_table(source, target, name)
         counts["landmarks"] = copy_landmarks(source, target)
         LOGGER.info("Verified landmarks: %s rows", counts["landmarks"])
         finish_schema(target, imported=True)

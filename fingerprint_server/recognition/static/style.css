@@ -10,7 +10,6 @@ button:focus-visible, a:focus-visible { outline: 3px solid #fff; outline-offset:
 .shell { max-width: 1280px; margin: auto; padding: 0 56px; }
 header { display: flex; justify-content: space-between; align-items: center; padding: 32px 0; border-bottom: 1px solid #ffffff12; gap: 16px; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--accent); font-size: 23px; font-weight: 750; letter-spacing: -1px; }
-.beta { color: #b6c4b8; font-size: 9px; letter-spacing: 1.5px; border: 1px solid #ffffff26; border-radius: 5px; padding: 4px 5px; align-self: flex-start; margin-top: 3px; }
 .header-note { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 70px; padding: 92px 0 72px; align-items: start; }

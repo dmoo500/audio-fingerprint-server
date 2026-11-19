@@ -1,0 +1,25 @@
+<script>
+$(function () {
+  const button = document.getElementById("history-reload");
+  const charts = document.getElementById("history-charts");
+  const status = document.getElementById("history-status");
+  button.addEventListener("click", async function () {
+    button.disabled = true;
+    status.textContent = "Refreshing charts...";
+    try {
+      const response = await fetch("?view=history");
+      if (response.redirected) {
+        status.textContent = "Sign in again to refresh the charts.";
+        return;
+      }
+      if (!response.ok) throw new Error("History request failed");
+      charts.innerHTML = await response.text();
+      status.textContent = "Charts refreshed.";
+    } catch {
+      status.textContent = "Could not refresh the charts. Try again.";
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+</script>

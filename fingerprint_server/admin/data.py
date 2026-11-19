@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Literal
 
 from starlette_admin.exceptions import ActionFailed
 
+from fingerprint_server.database.metrics import HISTORY_HOURS, REVIEW_COUNT
 from fingerprint_server.database.postgres import PostgresStore
 from fingerprint_server.settings import Settings
 
@@ -206,12 +208,34 @@ class AdminData:
                 "(SELECT format_version FROM migration_info) AS format_version"
             ).fetchone()
             assert sizes is not None
+            review_table = db.execute(
+                "SELECT to_regclass('musicbrainz_reviews') IS NOT NULL AS installed"
+            ).fetchone()
+            assert review_table is not None
+            review = db.execute(REVIEW_COUNT).fetchone() if review_table["installed"] else None
         return {
             "submissions": uploads,
             "references": references,
+            "manual_review": review["count"] if review is not None else None,
             **sizes,
             "worker_available": self.store.worker_available(),
         }
+
+    def hourly_history(self, hour: int) -> list[dict[str, Any]]:
+        """Read at most 30 days of persisted hourly samples."""
+        with self.store.connect() as db:
+            db.execute("SET LOCAL statement_timeout='5s'")
+            table = db.execute(
+                "SELECT to_regclass('admin_hourly_metrics') IS NOT NULL AS installed"
+            ).fetchone()
+            assert table is not None
+            if not table["installed"]:
+                return []
+            return db.execute(
+                "SELECT hour,recordings,queued,processing,pending_metadata,manual_review "
+                "FROM admin_hourly_metrics WHERE hour BETWEEN %s AND %s ORDER BY hour",
+                (hour - HISTORY_HOURS + 1, hour),
+            ).fetchall()
 
     def revisions(self) -> dict[str, list[int]]:
         """Read advisory change counters without scanning documents or landmarks."""
@@ -239,6 +263,83 @@ class AdminData:
         if len(revisions) != 2:
             raise RuntimeError("Admin live updates require existing submission/reference tables")
         return revisions
+
+    def musicbrainz_reviews(self, skip: int = 0) -> list[dict[str, Any]]:
+        """Read a bounded list of pending MusicBrainz candidate reviews."""
+        if skip < 0 or skip > 1_000_000:
+            raise ActionFailed("Review page offset must be from 0 to 1000000")
+        with self.store.connect() as db:
+            db.execute("SET LOCAL statement_timeout='15s'")
+            rows = db.execute(
+                "SELECT s.id AS submission_id,s.created_at,"
+                "(s.document::json->'metadata')::jsonb AS metadata,r.candidates "
+                "FROM musicbrainz_reviews r JOIN submissions s ON s.id=r.submission_id "
+                "WHERE s.state='pending_metadata' AND r.selected_mbid IS NULL "
+                "ORDER BY s.created_at,s.id LIMIT 51 OFFSET %s",
+                (skip,),
+            ).fetchall()
+        for row in rows:
+            try:
+                candidates = json.loads(row["candidates"])
+            except (TypeError, json.JSONDecodeError) as err:
+                raise ActionFailed(
+                    f"MusicBrainz candidates for submission {row['submission_id']} are invalid"
+                ) from err
+            if not isinstance(candidates, list) or any(
+                not isinstance(candidate, dict) or not isinstance(candidate.get("id"), str)
+                for candidate in candidates
+            ):
+                raise ActionFailed(
+                    f"MusicBrainz candidates for submission {row['submission_id']} are invalid"
+                )
+            row["candidates"] = candidates
+            metadata = row["metadata"]
+            row["title"] = metadata.get("title") if isinstance(metadata, dict) else None
+        return rows
+
+    def select_musicbrainz_candidate(self, submission_id: str, selected_mbid: str) -> None:
+        """Select a listed candidate and atomically requeue its pending submission."""
+        if not submission_id or not selected_mbid:
+            raise ActionFailed("Select a MusicBrainz candidate from the pending review")
+        with self.store.connect(write=True) as db:
+            submission = db.execute(
+                "SELECT id,state FROM submissions WHERE id=%s FOR UPDATE",
+                (submission_id,),
+            ).fetchone()
+            if submission is None or submission["state"] != "pending_metadata":
+                raise ActionFailed("This submission is no longer awaiting metadata review")
+            review = db.execute(
+                "SELECT candidates,selected_mbid FROM musicbrainz_reviews "
+                "WHERE submission_id=%s FOR UPDATE",
+                (submission_id,),
+            ).fetchone()
+            if review is None or review["selected_mbid"] is not None:
+                raise ActionFailed("This MusicBrainz review is no longer pending")
+            try:
+                candidates = json.loads(review["candidates"])
+            except (TypeError, json.JSONDecodeError) as err:
+                raise ActionFailed("MusicBrainz candidates are invalid") from err
+            if not isinstance(candidates, list) or not any(
+                isinstance(candidate, dict)
+                and isinstance(candidate.get("id"), str)
+                and candidate["id"] == selected_mbid
+                for candidate in candidates
+            ):
+                raise ActionFailed("Select one of the listed MusicBrainz candidates")
+            db.execute(
+                "UPDATE musicbrainz_reviews SET selected_mbid=%s WHERE submission_id=%s",
+                (selected_mbid, submission_id),
+            )
+            db.execute(
+                "UPDATE submissions SET state='queued',retry_at=0,attempts=0,error=NULL,"
+                "pending_check=0,background_kind=0,enqueued_at=%s WHERE id=%s",
+                (time.time(), submission_id),
+            )
+        LOGGER.info(
+            "Admin selected MusicBrainz candidate submission=%s recording=%s",
+            submission_id,
+            selected_mbid,
+        )
 
     def mutate(self, ids: list[str], action: Literal["retry", "delete"]) -> None:
         """Atomically act on inactive submissions while preserving acoustic references."""

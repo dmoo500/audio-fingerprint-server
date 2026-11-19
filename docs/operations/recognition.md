@@ -1,8 +1,9 @@
-# Public microphone recognition app
+# What's That Song? — public microphone recognition app
 
 [Home](../../README.md) · [Documentation](../README.md)
 
-The optional `fingerprint_server.recognition` service is a standalone public website
+What's That Song? is an independent song recognition app for Music Assistant. Its
+optional `fingerprint_server.recognition` service is a standalone public website
 in this repository. Visitors need no account or API keys. It shows a microphone
 button, a song result and one collection counter, not the upload queue,
 reference variants or administrator tools. It replaces the former browser

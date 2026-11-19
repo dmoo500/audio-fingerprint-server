@@ -263,6 +263,7 @@ def create_app(configuration: Settings | None = None) -> FastAPI:
             "fingerprint_encodings": ["json", ENCODING_ID],
             "max_document_bytes": MAX_DOCUMENT_BYTES,
             "availability_version": 1,
+            "release_hints_version": 1,
             "recognition_landmarks_version": 1,
         }
 

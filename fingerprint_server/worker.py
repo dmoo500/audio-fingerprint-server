@@ -19,9 +19,11 @@ from fingerprint_server.musicbrainz import (
     MissingIdentifierVerification,
     MusicBrainzService,
     MusicBrainzUnavailable,
+    RecordingReviewRequired,
     UnresolvableVerification,
     VerificationPending,
 )
+from fingerprint_server.recording_review import RecordingReviews
 from fingerprint_server.schemas import (
     Metadata,
     Submission,
@@ -44,6 +46,7 @@ class Worker:
         self.client = client
         self.musicbrainz = MusicBrainzService(store, settings, client)
         self.artwork = ArtworkResolver(store, self.musicbrainz)
+        self.reviews = RecordingReviews(store)
         self.wakeup = asyncio.Event()
         self.manual_pending_pass = False
 
@@ -88,10 +91,12 @@ class Worker:
                     row["pending_rechecks"],
                 )
             self.musicbrainz.lookup_call = "-"
+            review = None
             try:
                 submission = await run_sync(decode_submission, row["document"])
                 metadata = submission.metadata.model_dump(exclude_none=True)
                 if self.settings.musicbrainz_enabled:
+                    review = await run_sync(self.reviews.get, row["id"])
                     if row["id"] not in self.musicbrainz.batch_submissions:
                         upcoming = await run_sync(self.store.preview_metadata, pending_ids)
                         await self.musicbrainz.prefetch([row, *upcoming])
@@ -142,7 +147,16 @@ class Worker:
                     for key in ("title", "artists", "duration"):
                         if self._present(old.get(key)):
                             metadata[key] = old[key]
-                    metadata = await self.musicbrainz.verify(metadata)
+                    selected_mbid = review["selected_mbid"] if review else None
+                    if (
+                        selected_mbid
+                        and metadata.get("recording_mbid")
+                        and UUID(metadata["recording_mbid"]) != UUID(selected_mbid)
+                    ):
+                        raise UnresolvableVerification(
+                            "Selected MusicBrainz recording conflicts with retained metadata"
+                        )
+                    metadata = await self.musicbrainz.verify(metadata, selected_mbid=selected_mbid)
                     for key in ("title", "artists", "album", "duration", "isrc", "recording_mbid"):
                         value = old.get(key)
                         if self._present(value):
@@ -158,6 +172,8 @@ class Worker:
                     for key, value in old.items():
                         if key not in validated["metadata"]:
                             metadata[key] = value
+                metadata.pop("release_mbid", None)
+                metadata.pop("release_group_mbid", None)
                 if not metadata_complete(metadata):
                     reason = "Incomplete metadata"
                     if self.settings.musicbrainz_enabled:
@@ -167,9 +183,12 @@ class Worker:
                             if not self._present(metadata.get(key))
                         ]
                         reason += " after MusicBrainz verification: " + ", ".join(missing)
-                    await self._retain_pending(
-                        row, reason, completed_check=self.settings.musicbrainz_enabled
-                    )
+                    if review is not None:
+                        await run_sync(self.reviews.hold, row["id"], reason)
+                    else:
+                        await self._retain_pending(
+                            row, reason, completed_check=self.settings.musicbrainz_enabled
+                        )
                     continue
                 await run_sync(self.publish, row["id"], submission, metadata, row["reference_id"])
                 if self.settings.musicbrainz_enabled:
@@ -194,10 +213,18 @@ class Worker:
                     delay,
                     row["pending_recheck"],
                 )
+            except RecordingReviewRequired as err:
+                await run_sync(self.reviews.hold, row["id"], str(err), err.candidates)
+                LOGGER.info("Submission %s awaits manual MusicBrainz selection", row["id"])
             except VerificationPending as err:
-                await self._retain_pending(row, str(err), completed_check=True)
+                if review is not None:
+                    await run_sync(self.reviews.hold, row["id"], str(err))
+                else:
+                    await self._retain_pending(row, str(err), completed_check=True)
             except UnresolvableVerification as err:
-                if (
+                if review is not None:
+                    await run_sync(self.reviews.hold, row["id"], str(err))
+                elif (
                     pending_ids is None
                     and self.settings.musicbrainz_enabled
                     and self.settings.housekeeping_enabled

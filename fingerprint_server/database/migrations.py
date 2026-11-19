@@ -168,6 +168,7 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
     expected_tables = set(LEGACY_COLUMNS)
     if "artwork_requests" in tables:
         expected_tables.add("artwork_requests")
+    expected_tables.update(tables & {"musicbrainz_reviews", "admin_hourly_metrics"})
     if version >= 4:
         expected_tables.add("service_state")
     if tables != expected_tables:

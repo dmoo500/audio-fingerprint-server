@@ -20,6 +20,7 @@ from psycopg import sql
 from fingerprint_server.database.migrations import SCHEMA
 from fingerprint_server.database.postgres_postings import POSTINGS_VERSION
 from fingerprint_server.database.postgres_schema import (
+    EXTENSION_TABLES,
     FORMAT_VERSION,
     SQLITE_SCHEMA_VERSION,
     TABLES,
@@ -65,8 +66,8 @@ def offline_snapshot(
             db.autocommit = previous_autocommit
 
 
-def validate_postgres(db: psycopg.Connection, schema: str) -> None:
-    """Require the exact supported PostgreSQL source layout and provenance."""
+def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
+    """Validate the source layout and return its installed metadata extensions."""
     versions = db.execute(
         "SELECT format_version,sqlite_schema_version FROM migration_info"
     ).fetchall()
@@ -92,13 +93,16 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> None:
         (schema,),
     ):
         actual.setdefault(table, set()).add(column)
+    extensions = tuple(name for name in EXTENSION_TABLES if name in actual)
+    expected.update({name: set(EXTENSION_TABLES[name]["columns"]) for name in extensions})
     if actual != expected:
         raise ValueError("Unexpected PostgreSQL source layout")
+    return extensions
 
 
 def copy_metadata(db: psycopg.Connection, target: sqlite3.Connection, name: str) -> int:
     """Copy and compare every metadata field, preserving submission rowids and FIFO."""
-    spec = TABLES[name]
+    spec = (TABLES | EXTENSION_TABLES)[name]
     columns = spec["columns"]
     fields = sql.SQL(",").join(map(sql.Identifier, columns))
     target_fields = ",".join(
@@ -168,7 +172,7 @@ def export_sqlite(db: psycopg.Connection, schema: str, destination: Path) -> dic
     if os.path.lexists(destination):
         raise FileExistsError(f"SQLite destination already exists: {destination}")
     with offline_snapshot(db, schema):
-        validate_postgres(db, schema)
+        extensions = validate_postgres(db, schema)
         fd, filename = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".partial", dir=destination.parent
         )
@@ -190,6 +194,9 @@ def export_sqlite(db: psycopg.Connection, schema: str, destination: Path) -> dic
                 for name in TABLES:
                     counts[name] = copy_metadata(db, target, name)
                     LOGGER.info("Verified %s: %s rows", name, counts[name])
+                for name in extensions:
+                    target.execute(EXTENSION_TABLES[name]["definition"])
+                    counts[name] = copy_metadata(db, target, name)
                 counts["landmarks"], checksum = copy_landmarks(db, target)
                 LOGGER.info("Building SQLite secondary indexes")
                 for statement in indexes:

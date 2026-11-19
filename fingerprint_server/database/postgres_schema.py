@@ -5,6 +5,9 @@ from typing import TypedDict
 import psycopg
 from psycopg import sql
 
+from fingerprint_server.database.metrics import METRICS_TABLE
+from fingerprint_server.database.review_schema import REVIEW_TABLE
+
 FORMAT_VERSION = 1
 SQLITE_SCHEMA_VERSION = 8
 
@@ -16,6 +19,29 @@ class TableSpec(TypedDict):
     source_order: str
     target_order: str
     definition: str
+
+
+EXTENSION_TABLES: dict[str, TableSpec] = {
+    "musicbrainz_reviews": {
+        "columns": ("submission_id", "candidates", "selected_mbid"),
+        "source_order": "submission_id",
+        "target_order": "submission_id",
+        "definition": REVIEW_TABLE,
+    },
+    "admin_hourly_metrics": {
+        "columns": (
+            "hour",
+            "recordings",
+            "queued",
+            "processing",
+            "pending_metadata",
+            "manual_review",
+        ),
+        "source_order": "hour",
+        "target_order": "hour",
+        "definition": METRICS_TABLE,
+    },
+}
 
 
 TABLES: dict[str, TableSpec] = {

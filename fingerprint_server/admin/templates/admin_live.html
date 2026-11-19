@@ -80,7 +80,9 @@ $(function () {
       setValue("format", "Version " + overview.format_version);
       Object.entries(overview.submissions).forEach(function ([state, count]) {
         setValue(state, count);
+        setValue("queue-" + state, count);
       });
+      setValue("manual_review", overview.manual_review ?? "Unavailable");
       updateChart(overview.submissions);
     }
   });

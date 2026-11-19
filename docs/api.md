@@ -4,6 +4,22 @@
 
 ## API
 
+### Release hints on uploads
+
+When upload capabilities advertise `release_hints_version: 1`, a submission's
+`metadata` may include the MusicBrainz UUIDs `release_mbid` (an exact edition)
+and `release_group_mbid` (the group of editions). Omit them on older receivers.
+Use identifiers already available from the source; clients do not need to
+query MusicBrainz. Include the fields in the canonical document before
+computing its `Idempotency-Key`. The landmark format is unchanged.
+
+A supplied Recording MBID still takes the direct verification path. When the
+worker falls back to searching by track metadata, it tries the release scope
+first and checks the association on the recording before using it. Missing,
+incomplete or conflicting evidence falls back to ordinary matching and review.
+Release hints do not replace the submitted album or become recording identity.
+Update all replicas behind a shared gateway before using the capability.
+
 ### Availability
 
 `POST /api/v1/dejavu/availability` requires upload credentials (and the application key in gateway mode). Send JSON `{"version":1,"items":[{"index":0,"format_id":"ma-dejavu-landmarks-v2","recording_mbid":"e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"}]}` with at most 100 items and 128,000 bytes. Items may also contain `isrc`, `title`, `artists`, `duration`, and `album`; an ISRC-only lookup needs title, artists and duration to select a matching stored recording.

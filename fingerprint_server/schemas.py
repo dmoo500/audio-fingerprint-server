@@ -124,12 +124,14 @@ class Metadata(StrictModel):
     artists: list[Text] = Field(default_factory=list, max_length=30)
     album: Text | None = None
     recording_mbid: str | None = None
+    release_mbid: str | None = None
+    release_group_mbid: str | None = None
     isrc: Annotated[str, Field(pattern=ISRC_PATTERN)] | None = None
 
-    @field_validator("recording_mbid")
+    @field_validator("recording_mbid", "release_mbid", "release_group_mbid")
     @classmethod
     def valid_mbid(cls, value: str | None) -> str | None:
-        """Require a MusicBrainz recording UUID when supplied."""
+        """Require a MusicBrainz UUID when supplied."""
         if value is not None:
             UUID(value)
         return value

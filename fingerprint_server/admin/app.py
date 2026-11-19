@@ -43,10 +43,12 @@ from starlette_admin.exceptions import ActionFailed, LoginFailed
 
 from fingerprint_server.access_log import AccessLogMiddleware
 from fingerprint_server.admin.data import AdminData, Dataset, Filter
+from fingerprint_server.admin.history import QUEUE, RECORDINGS, chart
 from fingerprint_server.admin.live import AdminLive
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database.application_keys import ApplicationKeys
 from fingerprint_server.database.application_keys import validate as validate_application_keys
+from fingerprint_server.database.metrics import HOUR
 from fingerprint_server.settings import Settings
 
 LOGGER = logging.getLogger(__name__)
@@ -363,16 +365,98 @@ class Dashboard(CustomView):
             return RedirectResponse(str(request.url.replace(query="review=requested")), 303)
         if request.query_params.get("review") == "requested":
             message = "Pending review requested. Unresolved entries are retained by this pass."
-        overview = self.live.snapshot["overview"]
+        hour = int(time.time()) // HOUR
+        samples = await run_sync(self.data.hourly_history, hour)
+        charts = (
+            ("Searchable recordings", chart(samples, hour, RECORDINGS)),
+            ("Submission backlog", chart(samples, hour, QUEUE)),
+        )
+        if request.query_params.get("view") == "history":
+            return templates.TemplateResponse(
+                request=request,
+                name="admin_history.html",
+                context={"charts": charts},
+                headers={"Cache-Control": "no-store"},
+            )
         return templates.TemplateResponse(
             request=request,
             name=self.template_path,
             context={
                 "title": "Overview",
-                "overview": overview,
+                "overview": self.live.snapshot["overview"],
+                "queue_series": QUEUE,
+                "charts": charts,
                 "message": message,
                 "live_failed": self.live.failed,
             },
+        )
+
+
+class MusicBrainzReviews(CustomView):
+    """Review pending MusicBrainz candidates without contacting MusicBrainz."""
+
+    def __init__(self, data: AdminData) -> None:
+        super().__init__(
+            "MusicBrainz reviews",
+            name="musicbrainz-reviews",
+            path="/musicbrainz-reviews",
+            template_path="admin_musicbrainz_reviews.html",
+            methods=["GET", "POST"],
+            icon="fa-solid fa-music",
+        )
+        self.data = data
+
+    async def render(self, request: Request, templates: Jinja2Templates) -> Response:
+        """List pending candidates or record a validated selection."""
+        error = None
+        page_value: Any = request.query_params.get("skip", "0")
+        if request.method == "POST":
+            form = await request.form()
+            page_value = form.get("skip", page_value)
+            submission_id = form.get("submission_id")
+            selected_mbid = form.get("selected_mbid")
+            if not isinstance(submission_id, str) or not isinstance(selected_mbid, str):
+                error = "Select one of the listed MusicBrainz candidates"
+            else:
+                try:
+                    await run_sync(
+                        self.data.select_musicbrainz_candidate, submission_id, selected_mbid
+                    )
+                except ActionFailed as err:
+                    error = err.msg
+                else:
+                    return RedirectResponse(
+                        str(request.url.replace(query="selected=1")), status_code=303
+                    )
+        try:
+            skip = int(page_value)
+        except (TypeError, ValueError):
+            skip = -1
+        try:
+            items = await run_sync(self.data.musicbrainz_reviews, skip)
+        except ActionFailed as err:
+            items = []
+            error = err.msg
+            skip = 0
+        has_more = len(items) > 50
+        items = items[:50]
+        return templates.TemplateResponse(
+            request=request,
+            name=self.template_path,
+            context={
+                "title": "MusicBrainz reviews",
+                "items": items,
+                "error": error,
+                "skip": skip,
+                "has_previous": skip > 0,
+                "has_more": has_more,
+                "message": (
+                    "Candidate selected and submission queued."
+                    if request.query_params.get("selected") == "1"
+                    else None
+                ),
+            },
+            status_code=400 if error else 200,
         )
 
 
@@ -605,6 +689,7 @@ def create_admin(configuration: AdminSettings | None = None) -> FastAPI:
             admin.add_view(DataView(data, "submissions", "Submissions"))
             admin.add_view(DataView(data, "unresolved", "Unresolved ISRC submissions"))
             admin.add_view(DataView(data, "references", "References"))
+            admin.add_view(MusicBrainzReviews(data))
             admin.add_view(Keys(gateway))
             admin.add_view(Applications(data, config))
             admin.routes.append(Route("/events", events, methods=["GET"], name="events"))

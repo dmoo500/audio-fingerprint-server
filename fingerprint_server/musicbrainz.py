@@ -10,7 +10,7 @@ import math
 import re
 import time
 import unicodedata
-from datetime import UTC
+from datetime import UTC, date
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -24,14 +24,45 @@ from fingerprint_server.schemas import ISRC_PATTERN, metadata_searchable
 from fingerprint_server.settings import Settings
 
 LOGGER = logging.getLogger(__name__)
-MUSICBRAINZ_CACHE_VERSION = 4
+MUSICBRAINZ_CACHE_VERSION = 7
+
+
+def _official_album_date(release: dict[str, Any]) -> str | None:
+    """Return a known release date for an official album linked to the recording."""
+    group = release.get("release-group")
+    if (
+        release.get("status") != "Official"
+        or not isinstance(group, dict)
+        or group.get("primary-type") != "Album"
+    ):
+        return None
+    value = release.get("date")
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}(?:-[0-9]{2}){0,2}", value):
+        return None
+    try:
+        date.fromisoformat(value + "-01" * (2 - value.count("-")))
+    except ValueError:
+        return None
+    return value
 
 
 def _normalized_name(value: str) -> str:
     return "".join(char for char in unicodedata.normalize("NFKD", value.lower()) if char.isalnum())
 
 
-def _metadata_matches(recording: dict[str, Any], metadata: dict[str, Any]) -> bool:
+def _release_evidence(recording: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    """Match the supplied release and group against the same MusicBrainz release."""
+    release = str(UUID(value)) if (value := metadata.get("release_mbid")) else None
+    group = str(UUID(value)) if (value := metadata.get("release_group_mbid")) else None
+    return any(
+        (not release or release == release_id) and (not group or group == group_id)
+        for release_id, group_id in recording["release_ids"]
+    )
+
+
+def _metadata_matches(
+    recording: dict[str, Any], metadata: dict[str, Any], *, contextual: bool = False
+) -> bool:
     """Require exact normalized credits/title, explicit duration and no version ambiguity."""
     title = metadata.get("title")
     artists = metadata.get("artists")
@@ -50,8 +81,25 @@ def _metadata_matches(recording: dict[str, Any], metadata: dict[str, Any]) -> bo
         or duration <= 0
         or type(length) is not int
         or abs(length - duration * 1000) > 2000
-        or recording.get("disambiguation") != ""
     ):
+        return False
+    version = recording.get("disambiguation", "")
+    if contextual:
+        expected = {_normalized_name(artist) for artist in artists}
+        alternatives = recording["credit_names"]
+        if len(artists) != len(alternatives) or not all(
+            _normalized_name(artist) in {_normalized_name(name) for name in names}
+            for artist, names in zip(artists, alternatives, strict=True)
+        ):
+            if expected != {_normalized_name(name) for name in credits}:
+                return False
+        candidate_title = recording.get("title", "")
+        return bool(candidate_title) and _normalized_name(title) == _normalized_name(
+            f"{candidate_title} {version}"
+            if version and not _normalized_name(candidate_title).endswith(_normalized_name(version))
+            else candidate_title
+        )
+    if version != "":
         return False
     return _normalized_name(title) == _normalized_name(recording.get("title", "")) and {
         _normalized_name(artist) for artist in artists
@@ -112,6 +160,14 @@ class EnrichmentError(Exception):
 
 class VerificationPending(EnrichmentError):
     """A valid MusicBrainz result cannot yet resolve a unique complete recording."""
+
+
+class RecordingReviewRequired(VerificationPending):
+    """Multiple recordings matched the submission metadata."""
+
+    def __init__(self, candidates: list[dict[str, Any]]) -> None:
+        super().__init__("MusicBrainz recording requires manual selection")
+        self.candidates = candidates
 
 
 class UnresolvableVerification(EnrichmentError):
@@ -234,9 +290,11 @@ class MusicBrainzService:
         while (delay := max(deadline, self.cooldown_until) - time.monotonic()) > 0:
             await asyncio.sleep(delay)
 
-    async def verify(self, metadata: dict[str, Any]) -> dict[str, Any]:
+    async def verify(
+        self, metadata: dict[str, Any], *, selected_mbid: str | None = None
+    ) -> dict[str, Any]:
         """Verify supplied identifiers and fill only missing, unambiguous fields."""
-        mbid = metadata.get("recording_mbid")
+        mbid = selected_mbid or metadata.get("recording_mbid")
         isrc = metadata.get("isrc")
         recording: dict[str, Any] | None = None
         if mbid:
@@ -254,6 +312,8 @@ class MusicBrainzService:
             recording = response["recording"]
             if recording["id"] != canonical:
                 raise UnresolvableVerification("MusicBrainz recording identifier conflict")
+            if selected_mbid and not _metadata_matches(recording, metadata, contextual=True):
+                raise VerificationPending("Selected MusicBrainz recording no longer matches")
         if isrc:
             if not isinstance(isrc, str) or re.fullmatch(ISRC_PATTERN, isrc) is None:
                 raise UnresolvableVerification("Invalid MusicBrainz ISRC")
@@ -289,7 +349,7 @@ class MusicBrainzService:
                     raise VerificationPending(f"MusicBrainz ISRC {response['status']}")
                 if recording is None:
                     recording = await self._resolve_metadata(metadata)
-                elif not _metadata_matches(recording, metadata):
+                elif not _metadata_matches(recording, metadata, contextual=True):
                     raise VerificationPending("MusicBrainz ISRC not found; metadata unconfirmed")
                 LOGGER.info(
                     "MusicBrainz recording %s resolved by exact metadata; "
@@ -377,26 +437,99 @@ class MusicBrainzService:
                 raise MissingIdentifierVerification("MusicBrainz identifier unavailable")
             raise VerificationPending("MusicBrainz ISRC not found; search metadata incomplete")
         assert isinstance(title, str) and isinstance(artists, list)
+        title_clause = f"recording:{_search_phrase(title)}"
+        if versioned := re.fullmatch(r"(.+?)\s+\([^()]+\)", title):
+            title_clause = f"({title_clause} OR recording:{_search_phrase(versioned[1])})"
         query = " AND ".join(
-            [f"recording:{_search_phrase(title)}"]
-            + [f"artist:{_search_phrase(artist)}" for artist in artists]
+            [title_clause] + [f"artist:{_search_phrase(artist)}" for artist in artists]
         )
+        scope = [
+            f"{field}:{UUID(value)}"
+            for key, field in (("release_mbid", "reid"), ("release_group_mbid", "rgid"))
+            if (value := metadata.get(key))
+        ]
+        if scope:
+            # Search responses can omit releases without saying the list is incomplete.
+            scoped = await self.lookup("search", " AND ".join([query, *scope]))
+            if scoped["status"] == "resolved" and scoped["complete"]:
+                matches = {
+                    item["id"]
+                    for item in scoped["recordings"]
+                    if _metadata_matches(item, metadata, contextual=True)
+                }
+                if len(matches) == 1:
+                    identifier = next(iter(matches))
+                    hydrated = await self.lookup("recording", identifier)
+                    if (
+                        hydrated["status"] == "resolved"
+                        and hydrated["recording"]["id"] == identifier
+                        and _metadata_matches(hydrated["recording"], metadata, contextual=True)
+                        and _release_evidence(hydrated["recording"], metadata)
+                    ):
+                        LOGGER.info(
+                            "MusicBrainz recording %s resolved by release scope", identifier
+                        )
+                        return hydrated["recording"]
         response = await self.lookup("search", query)
         if response["status"] != "resolved" or not response["complete"]:
             raise VerificationPending("MusicBrainz metadata search missing or incomplete")
         candidates = {
             candidate["id"]: candidate
             for candidate in response["recordings"]
-            if _metadata_matches(candidate, metadata)
+            if _metadata_matches(candidate, metadata, contextual=True)
         }
-        if len(candidates) != 1:
-            raise VerificationPending("MusicBrainz metadata search not uniquely resolved")
+        if not candidates:
+            raise VerificationPending("MusicBrainz metadata search found no matching recording")
+        album = metadata.get("album")
+        has_release_hint = bool(metadata.get("release_mbid") or metadata.get("release_group_mbid"))
+        album_candidates = {
+            key: candidate
+            for key, candidate in candidates.items()
+            if (
+                _release_evidence(candidate, metadata)
+                if has_release_hint
+                else album and any(_matches_text(album, name) for name in candidate["albums"])
+            )
+        }
+        # A partial release list cannot rule out a competing recording on the same album.
+        use_album = bool(album_candidates) and all(
+            candidate["albums_complete"] for candidate in candidates.values()
+        )
+        if use_album:
+            candidates = album_candidates
+        if len(candidates) > 1:
+            raise RecordingReviewRequired(
+                [
+                    {
+                        key: candidate.get(key)
+                        for key in (
+                            "id",
+                            "title",
+                            "artists",
+                            "length",
+                            "disambiguation",
+                            "albums",
+                            "earliest_album",
+                        )
+                    }
+                    for candidate in candidates.values()
+                ]
+            )
         identifier = next(iter(candidates))
         hydrated = await self.lookup("recording", identifier)
         if (
             hydrated["status"] != "resolved"
             or hydrated["recording"]["id"] != identifier
-            or not _metadata_matches(hydrated["recording"], metadata)
+            or not _metadata_matches(hydrated["recording"], metadata, contextual=True)
+            or (
+                use_album
+                and not (
+                    _release_evidence(hydrated["recording"], metadata)
+                    if has_release_hint
+                    else isinstance(album, str)
+                    and any(_matches_text(album, name) for name in hydrated["recording"]["albums"])
+                )
+            )
         ):
             raise VerificationPending("MusicBrainz metadata search recording not confirmed")
         LOGGER.info("MusicBrainz recording %s resolved by exact metadata", identifier)
@@ -447,7 +580,7 @@ class MusicBrainzService:
             else {
                 "inc": "releases+release-groups"
                 if kind == "artwork"
-                else "artists+isrcs+releases"
+                else "artists+isrcs+releases+release-groups"
                 if kind == "recording"
                 else "artists+releases",
                 "fmt": "json",
@@ -591,21 +724,24 @@ class MusicBrainzService:
             raise ValueError("Invalid artists")
         artists = []
         artist_names = []
+        credit_names = []
         for credit in credits:
             if not isinstance(credit, dict):
                 raise ValueError("Invalid artist")
-            name = credit.get("name") or (credit.get("artist") or {}).get("name")
+            artist = credit.get("artist") or {}
+            if not isinstance(artist, dict):
+                raise ValueError("Invalid artist")
+            name = credit.get("name") or artist.get("name")
             if not isinstance(name, str) or len(name) > 500:
                 raise ValueError("Invalid artist name")
             if name.strip():
                 artists.append(name)
                 artist_names.append(name)
-            artist = credit.get("artist") or {}
-            if not isinstance(artist, dict):
-                raise ValueError("Invalid artist")
+            names = [name]
             canonical = artist.get("name")
             if isinstance(canonical, str) and canonical.strip():
                 artist_names.append(canonical)
+                names.append(canonical)
             aliases = artist.get("aliases", [])
             if not isinstance(aliases, list) or len(aliases) > 100:
                 raise ValueError("Invalid artist aliases")
@@ -615,12 +751,19 @@ class MusicBrainzService:
                 if len(alias["name"]) > 500:
                     raise ValueError("Invalid artist alias")
                 artist_names.append(alias["name"])
+                names.append(alias["name"])
+            if name.strip():
+                credit_names.append(names)
         result["artists"] = artists
         result["artist_names"] = artist_names
+        result["credit_names"] = credit_names
         releases = value.get("releases", [])
         if not isinstance(releases, list) or len(releases) > 1000:
             raise ValueError("Invalid releases")
         albums = set()
+        release_names = set()
+        release_ids: list[tuple[str | None, str | None]] = []
+        dated_albums: list[tuple[str, str]] = []
         for release in releases:
             if not isinstance(release, dict) or not isinstance(release.get("title"), str):
                 raise ValueError("Invalid release")
@@ -629,8 +772,30 @@ class MusicBrainzService:
                 raise ValueError("Invalid release title")
             if album.strip():
                 albums.add(album)
+                release_names.add(album)
+                if release_date := _official_album_date(release):
+                    dated_albums.append((release_date, album))
+            group = release.get("release-group")
+            if isinstance(group, dict) and isinstance(group.get("title"), str):
+                release_names.add(group["title"][:500])
+            release_id = release.get("id")
+            group_id = group.get("id") if isinstance(group, dict) else None
+            release_ids.append(
+                (
+                    release_id.lower() if isinstance(release_id, str) else None,
+                    group_id.lower() if isinstance(group_id, str) else None,
+                )
+            )
         release_count = value.get("release-count")
         release_offset = value.get("release-offset", 0)
+        result["albums"] = sorted(release_names)
+        result["release_ids"] = release_ids
+        if dated_albums:
+            release_date, title = min(dated_albums)
+            result["earliest_album"] = {"title": title, "date": release_date}
+        result["albums_complete"] = type(release_count) is int and (
+            release_count == len(releases) and type(release_offset) is int and release_offset == 0
+        )
         if (
             len(albums) == 1
             and type(release_count) is int

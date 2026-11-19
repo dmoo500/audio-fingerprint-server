@@ -11,6 +11,7 @@ import httpx
 from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage, create_store
+from fingerprint_server.database.metrics import sample_history
 from fingerprint_server.settings import Settings
 from fingerprint_server.worker import Worker
 
@@ -27,6 +28,7 @@ async def runtime(
     await run_sync(ArtworkStore(store).initialize)
     owners = ExitStack()
     worker_task: asyncio.Task[None] | None = None
+    history_task: asyncio.Task[None] | None = None
     monitor: asyncio.Task[None] | None = None
     worker: Worker | None = None
     try:
@@ -56,6 +58,9 @@ async def runtime(
             if settings.service_role != "api":
                 worker = Worker(store, settings, client)
                 worker_task = asyncio.create_task(worker.run(), name="fingerprint-ingestion")
+                history_task = asyncio.create_task(
+                    sample_history(store), name="fingerprint-admin-history"
+                )
             if monitor is not None and worker_task is not None:
                 running_worker = worker_task
 
@@ -70,7 +75,10 @@ async def runtime(
                 try:
                     await stop_task(worker_task)
                 finally:
-                    await stop_task(monitor)
+                    try:
+                        await stop_task(history_task)
+                    finally:
+                        await stop_task(monitor)
     finally:
         await run_sync(owners.close)
 

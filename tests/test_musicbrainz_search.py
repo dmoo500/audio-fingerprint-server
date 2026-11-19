@@ -21,15 +21,53 @@ from fingerprint_server.musicbrainz import (
     EnrichmentError,
     MusicBrainzService,
     MusicBrainzUnavailable,
+    RecordingReviewRequired,
     VerificationPending,
 )
 from fingerprint_server.worker import Worker
 
 METADATA = {"title": "Title", "artists": ["Artist"], "duration": 12.0, "isrc": ISRC}
+RELEASE = "f2148a15-2589-4aa3-8db5-528950f44d20"
+GROUP = "e80e2732-0343-42af-92c7-da4bdf9c30d6"
 
 
 def candidate(mbid: str = MBID, **fields):
     return {**recording(mbid), "length": 12000, "isrcs": [], **fields}
+
+
+@pytest.mark.parametrize("scope_field", ["release_mbid", "release_group_mbid"])
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_release_scope_requires_recording_confirmation(tmp_path, scope_field, confirmed):
+    searches = []
+    release = {"id": RELEASE, "title": "Source album", "release-group": {"id": GROUP}}
+    hint = RELEASE if scope_field == "release_mbid" else GROUP
+    clause = "reid" if scope_field == "release_mbid" else "rgid"
+
+    def reply(request):
+        if query := request.url.params.get("query"):
+            searches.append(query)
+            recordings = [candidate()]
+            if f"{clause}:{hint}" not in query:
+                recordings.append(candidate(OTHER))
+            return httpx.Response(
+                200, json={"count": len(recordings), "offset": 0, "recordings": recordings}
+            )
+        assert request.url.path.endswith(f"/recording/{MBID}")
+        return httpx.Response(200, json=candidate(releases=[release] if confirmed else []))
+
+    metadata = {k: v for k, v in METADATA.items() if k != "isrc"}
+    metadata.update({scope_field: hint, "album": "Source album"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        service = MusicBrainzService(online_store(tmp_path), online_settings(tmp_path), client)
+        if confirmed:
+            result = await service.verify(metadata)
+            assert result["recording_mbid"] == MBID
+            assert result["album"] == "Source album"
+        else:
+            with pytest.raises(RecordingReviewRequired):
+                await service.verify(metadata)
+    assert f"{clause}:{hint}" in searches[0]
+    assert len(searches) == (1 if confirmed else 2)
 
 
 @pytest.mark.parametrize("with_isrc", [True, False])
@@ -116,6 +154,47 @@ async def test_hydrated_recording_must_still_match(tmp_path):
         service = MusicBrainzService(online_store(tmp_path), online_settings(tmp_path), client)
         with pytest.raises(VerificationPending, match="not confirmed"):
             await service.verify(dict(METADATA))
+
+
+async def test_earliest_official_album_is_only_a_review_hint(tmp_path):
+    def release(title, release_date, *, status="Official", primary_type="Album"):
+        return {
+            "title": title,
+            "date": release_date,
+            "status": status,
+            "release-group": {"title": title, "primary-type": primary_type},
+        }
+
+    releases = [
+        release("Reissue", "2013-01-01"),
+        release("Undated", ""),
+        release("Early bootleg", "1980", status="Bootleg"),
+        release("Early single", "1981", primary_type="Single"),
+        release("Invalid date", "1982-02-30"),
+        release("Original album", "1985-06"),
+    ]
+
+    def reply(request):
+        assert "query" in request.url.params
+        return httpx.Response(
+            200,
+            json={
+                "count": 2,
+                "offset": 0,
+                "recordings": [candidate(releases=releases), candidate(OTHER)],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        service = MusicBrainzService(online_store(tmp_path), online_settings(tmp_path), client)
+        metadata = {key: value for key, value in METADATA.items() if key != "isrc"}
+        with pytest.raises(RecordingReviewRequired) as review:
+            await service.verify(metadata)
+    candidates = {item["id"]: item for item in review.value.candidates}
+    assert candidates[MBID]["earliest_album"] == {"title": "Original album", "date": "1985-06"}
+    assert "Reissue" in candidates[MBID]["albums"]
+    assert candidates[OTHER]["earliest_album"] is None
+    assert "album" not in metadata and "recording_mbid" not in metadata
 
 
 @pytest.mark.parametrize("status", [429, 502, 503])

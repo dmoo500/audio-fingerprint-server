@@ -5,6 +5,13 @@ const { test } = require("node:test");
 const vm = require("node:vm");
 const script = readFileSync(join(__dirname, "../fingerprint_server/recognition/static/app.js"), "utf8");
 
+test("the public page names the app without claiming official affiliation", () => {
+  const html = readFileSync(join(__dirname, "../fingerprint_server/recognition/static/index.html"), "utf8");
+  assert.match(html, /<title>What's That Song\? \| Song recognition for Music Assistant<\/title>/);
+  assert.match(html, /Song recognition for Music Assistant<\/p>/);
+  assert.match(html, /Independent project · Not affiliated with Music Assistant/);
+});
+
 function page({ status = "matched", failure, captureFailure, countFailure = false, statistics, artwork, artworkResponse } = {}) {
   const elements = new Map();
   const requests = [];

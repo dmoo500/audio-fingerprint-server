@@ -55,6 +55,7 @@ class Capabilities(BaseModel):
     fingerprint_encodings: list[str]
     max_document_bytes: int
     availability_version: Literal[1] | None = None
+    release_hints_version: Literal[1] | None = None
     recognition_landmarks_version: Literal[1] | None = None
 
 
