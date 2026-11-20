@@ -27,8 +27,11 @@ ARG FP_INSTALL_EXTRAS=postgres
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir ".[${FP_INSTALL_EXTRAS}]"
-RUN useradd --uid 10001 --create-home fingerprint \
+RUN groupadd --gid 10001 fingerprint \
+    && useradd --uid 10001 --gid fingerprint --create-home fingerprint \
     && mkdir /data /recognition-data && chown fingerprint /data /recognition-data
+RUN install -d -o fingerprint -g 10001 -m 2770 /artwork-cache \
+    && install -o fingerprint -g 10001 -m 0660 /dev/null /artwork-cache/images.sqlite
 USER fingerprint
 ENV FP_DATABASE=/data/fingerprints.db
 EXPOSE 8097

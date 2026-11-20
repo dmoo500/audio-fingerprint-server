@@ -41,6 +41,7 @@ from fingerprint_server.admin.state import (
     SESSION_SECRET_KEY,
 )
 from fingerprint_server.aiohttp_support import error_responses
+from fingerprint_server.artwork_images import image_cache_context
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database.application_keys import validate as validate_application_keys
 
@@ -269,6 +270,7 @@ def create_admin(configuration: AdminSettings | None = None) -> web.Application:
         handler_args={"auto_decompress": False},
     )
     app.cleanup_ctx.append(lifespan)
+    app.cleanup_ctx.append(image_cache_context)
     app.add_routes(api_routes())
     app.router.add_get("/", root)
     app.router.add_get("/admin/events", events)

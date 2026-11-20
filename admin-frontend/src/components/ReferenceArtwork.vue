@@ -10,14 +10,22 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 
 async function load(attempt = 0) {
   try {
-    const result = await api<{ status: string; url: string | null }>(
-      `/references/${encodeURIComponent(props.reference)}/artwork`,
+    const path = `/references/${encodeURIComponent(props.reference)}/artwork`;
+    const result = await api<{
+      status: string;
+      url: string | null;
+      image?: string;
+    }>(
+      path,
       undefined,
       AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
     );
     if (controller.signal.aborted) return;
     if (result.status === "ready" && result.url) {
-      cover.value = result.url;
+      cover.value =
+        result.image === `/admin/api${path}?image=1`
+          ? result.image
+          : result.url;
     } else if (result.status === "missing") {
       status.value = "No matching album artwork available.";
     } else if (result.status === "pending") {

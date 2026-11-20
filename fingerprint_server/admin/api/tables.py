@@ -12,6 +12,7 @@ from fingerprint_server.admin.audit import ACTION
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.aiohttp_support import HTTPError
 from fingerprint_server.artwork import ArtworkStore
+from fingerprint_server.artwork_images import IMAGE_CACHE
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage
 from fingerprint_server.http_utils import trusted_image
@@ -67,7 +68,7 @@ async def table(request: web.Request) -> web.Response:
     assert isinstance(rows, list) and isinstance(total, int)
     items = [{field: row.get(field) for field in fields} for row in rows]
     reference_field = "id" if dataset == "references" else "reference_id"
-    await _add_cached_artwork(data.store, items, reference_field)
+    await _add_cached_artwork(data.store, items, reference_field, IMAGE_CACHE in request.app)
     return web.json_response(
         {
             "items": items,
@@ -88,7 +89,7 @@ async def detail(request: web.Request) -> web.Response:
     if not rows:
         raise HTTPError(404, "Entry not found")
     if dataset != "references":
-        await _add_cached_artwork(data.store, rows, "reference_id")
+        await _add_cached_artwork(data.store, rows, "reference_id", IMAGE_CACHE in request.app)
     return web.json_response(rows[0])
 
 
@@ -97,9 +98,19 @@ async def artwork(request: web.Request) -> web.Response:
     identifier = request.match_info["identifier"]
     if not re.fullmatch(r"[a-f0-9]{64}", identifier):
         raise HTTPError(404, "Reference not found")
-    result = await run_sync(ArtworkStore(data_for(request).store).request, identifier)
-    if result["status"] == "ready" and not trusted_image(result["url"]):
-        raise HTTPError(502, "Invalid album artwork address")
+    store = ArtworkStore(data_for(request).store)
+    cache = request.app.get(IMAGE_CACHE)
+    if request.query.get("image") == "1":
+        urls = await run_sync(store.ready_urls, [identifier])
+        if cache is None or identifier not in urls:
+            raise HTTPError(404, "Artwork not found")
+        return await cache.response(urls[identifier])
+    result = await run_sync(store.request, identifier)
+    if result["status"] == "ready":
+        if not isinstance(result["url"], str) or not trusted_image(result["url"]):
+            raise HTTPError(502, "Invalid album artwork address")
+        if cache is not None:
+            result["image"] = f"{request.path}?image=1"
     return web.json_response(result)
 
 
@@ -118,7 +129,7 @@ async def action(request: web.Request) -> web.Response:
 
 
 async def _add_cached_artwork(
-    store: Storage, rows: list[dict[str, Any]], reference_field: str
+    store: Storage, rows: list[dict[str, Any]], reference_field: str, local_images: bool
 ) -> None:
     references = {
         reference
@@ -128,4 +139,12 @@ async def _add_cached_artwork(
     covers = await run_sync(ArtworkStore(store).ready_urls, sorted(references))
     for row in rows:
         reference = row.get(reference_field)
-        row["artwork_url"] = covers.get(reference) if isinstance(reference, str) else None
+        url = covers.get(reference) if isinstance(reference, str) else None
+        row["artwork_url"] = url
+        if (
+            local_images
+            and url
+            and isinstance(reference, str)
+            and re.fullmatch(r"[a-f0-9]{64}", reference)
+        ):
+            row["artwork_url"] = f"/admin/api/references/{reference}/artwork?image=1"

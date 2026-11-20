@@ -10,11 +10,13 @@ import httpx
 import pytest
 from aiohttp_client import TestClient
 from test_admin import ORIGIN, configuration, create_admin, login
+from test_artwork_images import IMAGE
 
 from fingerprint_server.admin.app import AdminSettings
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.admin.sqlite_data import SQLiteAdminData
 from fingerprint_server.artwork import ArtworkStore
+from fingerprint_server.artwork_images import IMAGE_CACHE, ImageCache
 from fingerprint_server.database.application_keys import ApplicationKeys, initialize
 from fingerprint_server.database.metrics import capture_hour
 from fingerprint_server.database.sqlite import Store
@@ -202,7 +204,9 @@ def test_full_admin_starts_with_sqlite(data: SQLiteAdminData) -> None:
         assert response.json()["new_key"].startswith("fpapp_")
 
 
-def test_admin_artwork_requires_session_and_publication(data: SQLiteAdminData) -> None:
+def test_admin_artwork_requires_session_and_publication(
+    data: SQLiteAdminData, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     reference = "b" * 64
     image = "https://archive.org/download/example/cover-500.jpg"
     queue = ArtworkStore(data.store)
@@ -216,20 +220,33 @@ def test_admin_artwork_requires_session_and_publication(data: SQLiteAdminData) -
                 '{"recording_mbid":"4dc16a49-7330-4164-854b-b6a6d3a89a87","album":"Album"}',
             ),
         )
-    with TestClient(create_admin(data.settings)) as client:
+    monkeypatch.setenv("FP_ARTWORK_IMAGE_CACHE", str(tmp_path / "images.sqlite"))
+
+    async def download(self: ImageCache, url: str) -> tuple[str, bytes]:
+        assert url == image
+        return "image/jpeg", IMAGE
+
+    monkeypatch.setattr(ImageCache, "_download", download)
+    app = create_admin(data.settings)
+    with TestClient(app) as client:
+        assert IMAGE_CACHE in app
         path = f"/admin/api/references/{reference}/artwork"
+        image_path = path + "?image=1"
         assert client.get(path).status_code == 401
+        assert client.get(image_path).status_code == 401
         assert queue.next() is None
         assert login(client).status_code == 200
         assert client.get(path).json() == {"status": "pending", "url": None}
         queue.finish(reference, image)
-        assert client.get(path).json() == {"status": "ready", "url": image}
+        assert client.get(path).json() == {"status": "ready", "url": image, "image": image_path}
+        assert client.get(image_path).content == IMAGE
         queue.finish(reference, "https://other.example/cover")
         assert client.get(path).status_code == 502
         queue.finish(reference, image)
         with data.store.connect() as db:
             db.execute("UPDATE reference_tracks SET publication_ready=0")
         assert client.get(path).json() == {"status": "missing", "url": None}
+        assert client.get(image_path).status_code == 404
 
 
 def test_submission_list_sorts_text_and_only_reads_cached_artwork(data: SQLiteAdminData) -> None:

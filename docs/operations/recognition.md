@@ -58,8 +58,13 @@ The backend caches the count for up to 60 seconds. The browser loads it on page
 opening and refreshes every 60 seconds while visible, including after a failed
 request. Refreshes pause in hidden tabs and resume immediately when the page
 becomes visible again. Failed refreshes are explicit and are not displayed as zero.
-An initial loading animation is decorative and respects reduced-motion settings.
-Once a count is available, it stays visible during refresh.
+While the server is already refreshing the count, the browser honors its short
+retry delay up to five times before reporting that the count is unavailable.
+Rate-limited requests also keep the loading indicator while waiting for the
+server's retry delay (up to 60 seconds); switching tabs does not bypass this wait.
+While the first count is loading, the page shows four to ten rolling digits, or “Loading…”
+with reduced motion. A dash means no valid count is available. Once a count is
+available, it stays visible during refresh.
 
 The microphone button stays disabled until the recognition service is available.
 If the backend or database becomes unavailable, the page displays a temporary
@@ -84,6 +89,17 @@ the public cover URL, but no provider links, fingerprints, account data or dates
 The song appears immediately; the cover can arrive later. If no cover loads,
 the record illustration stays in place. The browser loads images directly from
 Cover Art Archive or archive.org, which receives the browser's IP address.
+
+For a local deployment with Admin and Recognition, append
+[compose.artwork-cache.yaml](../../compose.artwork-cache.yaml) after the other
+overlays and rebuild both services. They then share a separate, disposable
+image cache. The first view still fetches the image from the archive;
+subsequent views can serve it locally. When local delivery fails, the browser
+falls back to the public archive URL and the archive can see the browser's IP
+address. Share links keep the public archive URL. Up to 256 images (512 KiB
+each, about 128 MiB of image data plus SQLite overhead) are eligible to be
+served for seven days. The cache need not be backed up and does not change
+the fingerprint or history database.
 
 <details>
 <summary>How the worker finds and caches covers</summary>

@@ -1,0 +1,16 @@
+# Add after the Admin and Recognition overlays.
+services:
+  admin:
+    environment:
+      FP_ARTWORK_IMAGE_CACHE: /artwork-cache/images.sqlite
+    group_add: ["10001"]
+    volumes:
+      - artwork-cache:/artwork-cache
+  recognition:
+    environment:
+      FP_ARTWORK_IMAGE_CACHE: /artwork-cache/images.sqlite
+    group_add: ["10001"]
+    volumes:
+      - artwork-cache:/artwork-cache
+volumes:
+  artwork-cache:

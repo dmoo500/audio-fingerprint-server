@@ -150,27 +150,24 @@ const {
             </span>
             <div>
               <strong id="recordings" :aria-busy="countPending">
-                {{ count }}
-                <span
-                  v-if="countPending && count === '—'"
-                  class="count-loading"
-                  aria-hidden="true"
-                >
-                  <span
-                    >0<br />1<br />2<br />3<br />4<br />5<br />6<br />7<br />8<br />9</span
+                <template v-if="countPending && count === '—'">
+                  <span class="count-loading" aria-hidden="true">
+                    <span v-for="offset in 10" :key="offset">
+                      <span v-for="digit in 10" :key="digit">{{
+                        (offset * 3 + digit - 1) % 10
+                      }}</span>
+                    </span>
+                  </span>
+                  <span class="count-loading-static" aria-hidden="true"
+                    >Loading…</span
                   >
-                  <span
-                    >5<br />6<br />7<br />8<br />9<br />0<br />1<br />2<br />3<br />4</span
-                  >
-                  <span
-                    >8<br />9<br />0<br />1<br />2<br />3<br />4<br />5<br />6<br />7</span
-                  >
-                </span> </strong
+                </template>
+                <template v-else>{{ count }}</template> </strong
               ><span>searchable recordings, and growing</span>
             </div>
           </div>
           <p id="count-status" class="fine" role="status">
-            {{ countPending ? "Checking the collection…" : countMessage }}
+            {{ countMessage }}
           </p>
         </div>
         <ListenCard

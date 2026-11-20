@@ -7,14 +7,20 @@ const props = defineProps<{ hitId?: number }>();
 const thumbnail = ref<HTMLElement | null>(null);
 const requested = ref(false);
 let observer: IntersectionObserver | undefined;
-const { cover, coverVisible, coverStatus, coverLoaded, coverFailed } =
-  useArtwork(
-    () =>
-      requested.value && props.hitId !== undefined
-        ? `/api/account/history/${props.hitId}/artwork`
-        : undefined,
-    "same-origin",
-  );
+const {
+  cover,
+  publicCover,
+  coverVisible,
+  coverStatus,
+  coverLoaded,
+  coverFailed,
+} = useArtwork(
+  () =>
+    requested.value && props.hitId !== undefined
+      ? `/api/account/history/${props.hitId}/artwork`
+      : undefined,
+  "same-origin",
+);
 
 onMounted(() => {
   if (
@@ -48,5 +54,5 @@ onUnmounted(() => observer?.disconnect());
       @error="coverFailed"
     />
   </span>
-  <slot :cover-url="coverVisible ? cover : undefined"></slot>
+  <slot :cover-url="coverVisible ? publicCover : undefined"></slot>
 </template>

@@ -463,6 +463,10 @@ describe("recognition page", () => {
     expect(wrapper.get(".count-loading").attributes("aria-hidden")).toBe(
       "true",
     );
+    expect(wrapper.findAll(".count-loading > span")).toHaveLength(10);
+    expect(wrapper.findAll(".count-loading > span > span")).toHaveLength(100);
+    expect(wrapper.get(".count-loading-static").text()).toBe("Loading…");
+    expect(wrapper.get("#recordings").text()).not.toContain("—");
     vi.spyOn(document, "hidden", "get").mockReturnValue(true);
     document.dispatchEvent(new Event("visibilitychange"));
     await flushPromises();
@@ -474,6 +478,69 @@ describe("recognition page", () => {
     await flushPromises();
     expect(countRequests).toBe(2);
     expect(wrapper.get("#recordings").text()).toBe((1250).toLocaleString());
+    expect(wrapper.find(".count-loading").exists()).toBe(false);
+  });
+
+  it.each([false, true])(
+    "retries a refreshing count without showing a dash (recovers: %s)",
+    async (recovers) => {
+      vi.useFakeTimers();
+      let attempts = 0;
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url !== "/api/statistics") return json({ available: true });
+        if (++attempts === 3 && recovers) return json({ recordings: 1234 });
+        return new Response("refreshing", {
+          status: 503,
+          headers: { "Retry-After": "2" },
+        });
+      });
+      wrapper = mount(App);
+      await flushPromises();
+      expect(wrapper.find(".count-loading").exists()).toBe(true);
+      expect(wrapper.get("#recordings").text()).not.toContain("—");
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(2001);
+      expect(attempts).toBe(3);
+      if (recovers) {
+        expect(wrapper.get("#recordings").text()).toBe((1234).toLocaleString());
+      } else {
+        expect(wrapper.find(".count-loading").exists()).toBe(true);
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(attempts).toBe(6);
+        expect(wrapper.get("#recordings").text()).toBe("—");
+        expect(wrapper.get("#count-status").text()).toContain("unavailable");
+      }
+    },
+  );
+
+  it("keeps the animation during rate limiting and respects the wait across tab changes", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url !== "/api/statistics") return json({ available: true });
+      if (++attempts > 1) return json({ recordings: 1234 });
+      return new Response("limited", {
+        status: 429,
+        headers: { "Retry-After": "60" },
+      });
+    });
+    wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.find(".count-loading").exists()).toBe(true);
+    expect(wrapper.get("#count-status").text()).toContain("Too many requests");
+    await vi.advanceTimersByTimeAsync(30000);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(29999);
+    expect(attempts).toBe(1);
+    expect(wrapper.find(".count-loading").exists()).toBe(true);
+    expect(wrapper.get("#recordings").text()).not.toContain("—");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toBe(2);
+    expect(wrapper.get("#recordings").text()).toBe((1234).toLocaleString());
     expect(wrapper.find(".count-loading").exists()).toBe(false);
   });
 
@@ -553,58 +620,67 @@ describe("recognition page", () => {
       expect(view.get("#listen").attributes("disabled")).toBeDefined();
   });
 
-  it("loads trusted artwork without hiding the song and handles image errors", async () => {
-    recognitionResult = {
-      status: "matched",
-      match: {
-        title: "Song",
-        artists: ["Artist"],
-        album: "Album",
-        artwork: "/api/artwork/opaque",
-      },
-    };
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url === "/api/availability") return json({ available: true });
-      if (url === "/api/statistics") return json({ recordings: 1234 });
-      if (url.startsWith("/api/artwork/"))
-        return json({ status: "ready", url: "https://archive.org/cover.jpg" });
-      return json(recognitionResult);
-    });
-    const view = await open();
-    await view.get("#listen").trigger("click");
-    await flushPromises();
-    expect(view.get("#song-title").text()).toBe("Song");
-    expect(view.get("#result").attributes("aria-labelledby")).toBe(
-      "song-title",
-    );
-    const image = view.get("#song-cover");
-    expect(image.attributes("src")).toBe("https://archive.org/cover.jpg");
-    expect(image.attributes("referrerpolicy")).toBe("no-referrer");
-    expect(image.attributes("hidden")).toBeDefined();
-    const share = () =>
-      sharePayload(view.get("#result .song-share a").attributes("href"));
-    await vi.waitFor(() => expect(share()).not.toHaveProperty("art_url"));
-    await image.trigger("load");
-    expect(image.attributes("hidden")).toBeUndefined();
-    await vi.waitFor(() =>
-      expect(share()).toEqual({
-        type: "track",
-        title: "Song",
-        artist: "Artist",
-        artists: ["Artist"],
-        album: "Album",
-        art_url: "https://archive.org/cover.jpg",
-      }),
-    );
-    await image.trigger("error");
-    expect(view.get("#cover-status").text()).toContain("could not be loaded");
-    expect(image.attributes("hidden")).toBeDefined();
-    await vi.waitFor(() => expect(share()).not.toHaveProperty("art_url"));
-    window.dispatchEvent(new Event("pagehide"));
-    await image.trigger("load");
-    expect(image.attributes("hidden")).toBeDefined();
-    expect(view.get("#cover-status").text()).toContain("could not be loaded");
-  });
+  it.each([false, true])(
+    "loads artwork and shares the public URL (local: %s)",
+    async (local) => {
+      recognitionResult = {
+        status: "matched",
+        match: {
+          title: "Song",
+          artists: ["Artist"],
+          album: "Album",
+          artwork: "/api/artwork/opaque",
+        },
+      };
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url === "/api/availability") return json({ available: true });
+        if (url === "/api/statistics") return json({ recordings: 1234 });
+        if (url.startsWith("/api/artwork/"))
+          return json({
+            status: "ready",
+            url: "https://archive.org/cover.jpg",
+            ...(local ? { image: `${url}?image=1` } : {}),
+          });
+        return json(recognitionResult);
+      });
+      const view = await open();
+      await view.get("#listen").trigger("click");
+      await flushPromises();
+      expect(view.get("#song-title").text()).toBe("Song");
+      expect(view.get("#result").attributes("aria-labelledby")).toBe(
+        "song-title",
+      );
+      const image = view.get("#song-cover");
+      expect(image.attributes("src")).toBe(
+        local ? "/api/artwork/opaque?image=1" : "https://archive.org/cover.jpg",
+      );
+      expect(image.attributes("referrerpolicy")).toBe("no-referrer");
+      expect(image.attributes("hidden")).toBeDefined();
+      const share = () =>
+        sharePayload(view.get("#result .song-share a").attributes("href"));
+      await vi.waitFor(() => expect(share()).not.toHaveProperty("art_url"));
+      await image.trigger("load");
+      expect(image.attributes("hidden")).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(share()).toEqual({
+          type: "track",
+          title: "Song",
+          artist: "Artist",
+          artists: ["Artist"],
+          album: "Album",
+          art_url: "https://archive.org/cover.jpg",
+        }),
+      );
+      await image.trigger("error");
+      expect(view.get("#cover-status").text()).toContain("could not be loaded");
+      expect(image.attributes("hidden")).toBeDefined();
+      await vi.waitFor(() => expect(share()).not.toHaveProperty("art_url"));
+      window.dispatchEvent(new Event("pagehide"));
+      await image.trigger("load");
+      expect(image.attributes("hidden")).toBeDefined();
+      expect(view.get("#cover-status").text()).toContain("could not be loaded");
+    },
+  );
 
   it("polls pending artwork with the existing backoff and aborts on a new capture", async () => {
     vi.useFakeTimers();

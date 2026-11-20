@@ -9,6 +9,8 @@ export function useServiceStatus() {
   let active = true;
   let generation = 0;
   let countLoading = false;
+  let countRetries = 0;
+  let countRetryAt = 0;
   let availabilityLoading = false;
   let countTimer: ReturnType<typeof setTimeout> | undefined;
   let availabilityTimer: ReturnType<typeof setTimeout> | undefined;
@@ -23,15 +25,40 @@ export function useServiceStatus() {
   async function loadCount() {
     clearTimeout(countTimer);
     if (!active || document.hidden || countLoading) return;
+    if (Date.now() < countRetryAt) {
+      countPending.value = true;
+      countTimer = setTimeout(loadCount, countRetryAt - Date.now());
+      return;
+    }
     countLoading = true;
     countPending.value = true;
+    countMessage.value = "Checking the collection…";
     const requestGeneration = generation;
+    let retryDelay: number | undefined;
     try {
       const response = await fetch("/api/statistics", {
         credentials: "omit",
         cache: "no-store",
         signal: AbortSignal.timeout(10000),
       });
+      if (requestGeneration !== generation) return;
+      const retryAfter = Number(response.headers.get("Retry-After"));
+      if (
+        (response.status === 429 || response.status === 503) &&
+        Number.isInteger(retryAfter) &&
+        retryAfter >= 1 &&
+        retryAfter <= (response.status === 429 ? 60 : 5) &&
+        countRetries < 5
+      ) {
+        countRetries++;
+        retryDelay = retryAfter * 1000;
+        countRetryAt = Date.now() + retryDelay;
+        countMessage.value =
+          response.status === 429
+            ? "Too many requests. Waiting before checking the collection again…"
+            : "The collection count is refreshing. Trying again shortly…";
+        return;
+      }
       const data: unknown = await response.json();
       if (requestGeneration !== generation) return;
       if (!response.ok || !isCount(data))
@@ -51,10 +78,13 @@ export function useServiceStatus() {
       );
     } finally {
       countLoading = false;
-      countPending.value = false;
+      if (retryDelay === undefined) {
+        countRetries = 0;
+        countPending.value = false;
+      }
       if (active && !document.hidden) {
         if (requestGeneration !== generation) void loadCount();
-        else countTimer = setTimeout(loadCount, 60000);
+        else countTimer = setTimeout(loadCount, retryDelay ?? 60000);
       }
     }
   }
@@ -90,6 +120,7 @@ export function useServiceStatus() {
 
   function refresh() {
     generation++;
+    countRetries = 0;
     if (document.hidden) countPending.value = false;
     setAvailable(false);
     void loadCount();
@@ -98,6 +129,7 @@ export function useServiceStatus() {
 
   function hide() {
     active = false;
+    countRetries = 0;
     countPending.value = false;
     generation++;
     setAvailable(false);

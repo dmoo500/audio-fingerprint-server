@@ -4,13 +4,19 @@ import type { Song } from "./types";
 import { useArtwork } from "./useArtwork";
 
 const props = defineProps<{ song: Song }>();
-const { cover, coverVisible, coverStatus, coverLoaded, coverFailed } =
-  useArtwork(() => {
-    const path = props.song.artwork;
-    return path && /^\/api\/artwork\/[A-Za-z0-9_-]+$/.test(path)
-      ? path
-      : undefined;
-  }, "omit");
+const {
+  cover,
+  publicCover,
+  coverVisible,
+  coverStatus,
+  coverLoaded,
+  coverFailed,
+} = useArtwork(() => {
+  const path = props.song.artwork;
+  return path && /^\/api\/artwork\/[A-Za-z0-9_-]+$/.test(path)
+    ? path
+    : undefined;
+}, "omit");
 </script>
 
 <template>
@@ -53,7 +59,7 @@ const { cover, coverVisible, coverStatus, coverLoaded, coverFailed } =
       :title="song.title"
       :artists="song.artists"
       :album="song.album"
-      :cover-url="coverVisible ? cover : undefined"
+      :cover-url="coverVisible ? publicCover : undefined"
     />
     <p id="cover-status" class="fine" role="status">{{ coverStatus }}</p>
   </article>

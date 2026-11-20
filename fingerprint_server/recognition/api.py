@@ -17,6 +17,7 @@ from aiohttp import web
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from fingerprint_server.aiohttp_support import HTTPError, bounded_body
+from fingerprint_server.artwork_images import IMAGE_CACHE
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.http_utils import trusted_image
 from fingerprint_server.recognition.accounts import account_routes
@@ -183,7 +184,15 @@ def create_routes(application: web.Application) -> None:
         except (ValueError, KeyError, TypeError) as err:
             LOGGER.error("Recognition upstream returned invalid artwork")
             raise HTTPError(502, "Album artwork is temporarily unavailable.") from err
-        return web.json_response({"status": status, "url": url})
+        cache = request.app.get(IMAGE_CACHE)
+        if request.query.get("image") == "1":
+            if cache is None or status != "ready" or not isinstance(url, str):
+                raise HTTPError(404, "Artwork not found.")
+            return await cache.response(url)
+        result = {"status": status, "url": url}
+        if cache is not None and status == "ready":
+            result["image"] = f"{request.path}?image=1"
+        return web.json_response(result)
 
     async def recognize(request: web.Request) -> web.Response:
         values = request.query.getall("sample_rate", [])

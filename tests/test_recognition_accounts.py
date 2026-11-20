@@ -6,8 +6,10 @@ from pathlib import Path
 import httpx
 import pytest
 from aiohttp_client import AsyncClient
+from test_artwork_images import IMAGE, ImageStream
 from test_recognition import HEADERS, ORIGIN, PCM, matched, settings
 
+from fingerprint_server.artwork_images import IMAGE_CACHE, ImageCache
 from fingerprint_server.recognition.app import create_app
 from fingerprint_server.recognition.history import APPLICATION_ID, History
 
@@ -35,7 +37,19 @@ async def test_history_is_private_and_anonymous_recognition_is_not_saved(tmp_pat
 
     transport = httpx.MockTransport(upstream)
     headers = {"Origin": ORIGIN}
-    async with AsyncClient(create_app(config, transport=transport), base_url=ORIGIN) as client:
+
+    def download(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == cover["url"]
+        assert "Cookie" not in request.headers
+        assert "X-API-Key" not in request.headers
+        return httpx.Response(200, stream=ImageStream(IMAGE))
+
+    app = create_app(config, transport=transport)
+    image_client = httpx.AsyncClient(transport=httpx.MockTransport(download))
+    cache = ImageCache(tmp_path / "images.sqlite", image_client)
+    cache.initialize()
+    app[IMAGE_CACHE] = cache
+    async with image_client, AsyncClient(app, base_url=ORIGIN) as client:
         assert (await client.get(f"{ACCOUNT}/session")).json() == {
             "enabled": True,
             "username": None,
@@ -47,7 +61,11 @@ async def test_history_is_private_and_anonymous_recognition_is_not_saved(tmp_pat
                 "/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM
             )
 
-        assert (await recognize()).json()["status"] == "matched"
+        anonymous = (await recognize()).json()
+        assert anonymous["status"] == "matched"
+        live_image = anonymous["match"]["artwork"] + "?image=1"
+        assert (await client.get(live_image)).content == IMAGE
+        assert (await client.get("/api/artwork/invalid?image=1")).status_code == 404
         registration = {"username": "Listener", "password": PASSWORD, "invite": invite}
         assert (await client.post(f"{ACCOUNT}/register", json=registration)).status_code == 403
         assert (
@@ -73,13 +91,20 @@ async def test_history_is_private_and_anonymous_recognition_is_not_saved(tmp_pat
         assert set(hit) == {"id", "title", "artists", "recognized_at", "has_artwork"}
         assert hit["has_artwork"] is True
         artwork_path = f"{ACCOUNT}/history/{hit['id']}/artwork"
-        assert (await client.get(artwork_path)).json() == cover
+        history_image = artwork_path + "?image=1"
+        assert (await client.get(artwork_path)).json() == {**cover, "image": history_image}
+        image = await client.get(history_image)
+        assert image.content == IMAGE
+        assert image.headers["content-type"] == "image/jpeg"
+        assert image.headers["cache-control"] == "no-store"
+        assert image.headers["x-content-type-options"] == "nosniff"
         assert isinstance(hit["recognized_at"], int)
         assert response.headers["cache-control"] == "no-store"
         session = client.cookies.get("fp_recognition")
         assert (await client.post(f"{ACCOUNT}/logout", headers=headers)).status_code == 200
         assert (await client.get(f"{ACCOUNT}/history")).status_code == 401
         assert (await client.get(artwork_path)).status_code == 404
+        assert (await client.get(history_image)).status_code == 404
         assert history.username(session or "") is None
 
         other = {"username": "other", "password": PASSWORD}
@@ -93,6 +118,7 @@ async def test_history_is_private_and_anonymous_recognition_is_not_saved(tmp_pat
         ).status_code == 200
         assert (await client.get(f"{ACCOUNT}/history")).json() == {"items": []}
         assert (await client.get(artwork_path)).status_code == 404
+        assert (await client.get(history_image)).status_code == 404
         assert (await client.post(f"{ACCOUNT}/history/clear")).status_code == 403
         assert (await client.post(f"{ACCOUNT}/history/clear", headers=headers)).status_code == 200
 

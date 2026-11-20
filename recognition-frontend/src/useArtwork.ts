@@ -5,6 +5,7 @@ export function useArtwork(
   credentials: RequestCredentials,
 ) {
   const cover = ref("");
+  const publicCover = ref("");
   const coverVisible = ref(false);
   const coverStatus = ref("");
   let controller: AbortController | undefined;
@@ -16,6 +17,7 @@ export function useArtwork(
       controller = request;
       onCleanup(() => request.abort());
       cover.value = "";
+      publicCover.value = "";
       coverVisible.value = false;
       coverStatus.value = "";
       if (url) void loadCover(url, request.signal);
@@ -59,7 +61,11 @@ export function useArtwork(
             )
           )
             throw new Error("Invalid album artwork address.");
-          cover.value = url.href;
+          publicCover.value = url.href;
+          cover.value =
+            "image" in data && data.image === `${path}?image=1`
+              ? data.image
+              : url.href;
           return;
         }
         if (data.status === "missing") {
@@ -115,5 +121,12 @@ export function useArtwork(
   }
   onMounted(() => window.addEventListener("pagehide", stopArtwork));
   onUnmounted(() => window.removeEventListener("pagehide", stopArtwork));
-  return { cover, coverVisible, coverStatus, coverLoaded, coverFailed };
+  return {
+    cover,
+    publicCover,
+    coverVisible,
+    coverStatus,
+    coverLoaded,
+    coverFailed,
+  };
 }

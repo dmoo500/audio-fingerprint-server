@@ -10,6 +10,7 @@ import httpx
 from aiohttp import web
 
 from fingerprint_server.aiohttp_support import error_responses
+from fingerprint_server.artwork_images import image_cache_context
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.recognition.api import Admission as Admission
 from fingerprint_server.recognition.api import create_routes
@@ -80,6 +81,7 @@ def create_app(
         raise web.HTTPNotFound()
 
     application.cleanup_ctx.append(lifespan)
+    application.cleanup_ctx.append(image_cache_context)
     application.on_response_prepare.append(browser_headers)
     application.router.add_get("/health", health, allow_head=False)
     application.router.add_get("/", index, allow_head=False)
