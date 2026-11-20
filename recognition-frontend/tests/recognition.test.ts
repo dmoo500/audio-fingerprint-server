@@ -435,15 +435,16 @@ describe("recognition page", () => {
     expect(wrapper.get("#listen").attributes("disabled")).toBeDefined();
   });
 
-  it("reports invalid counts instead of showing zero", async () => {
+  it("keeps loading for invalid counts instead of showing zero or a dash", async () => {
     fetchMock.mockImplementation(async (url: string) =>
       url === "/api/statistics"
         ? json({ recordings: -1 })
         : json({ available: true }),
     );
     const view = await open();
-    expect(view.get("#recordings").text()).toBe("—");
-    expect(view.get("#count-status").text()).toContain("unavailable");
+    expect(view.find(".count-loading").exists()).toBe(true);
+    expect(view.get("#recordings").text()).not.toContain("—");
+    expect(view.get("#count-status").text()).toBe("Checking the collection…");
   });
 
   it("shows a decorative loader and refreshes after an obsolete request finishes", async () => {
@@ -508,8 +509,11 @@ describe("recognition page", () => {
         expect(wrapper.find(".count-loading").exists()).toBe(true);
         await vi.advanceTimersByTimeAsync(6000);
         expect(attempts).toBe(6);
-        expect(wrapper.get("#recordings").text()).toBe("—");
-        expect(wrapper.get("#count-status").text()).toContain("unavailable");
+        expect(wrapper.find(".count-loading").exists()).toBe(true);
+        expect(wrapper.get("#recordings").text()).not.toContain("—");
+        expect(wrapper.get("#count-status").text()).toBe(
+          "Checking the collection…",
+        );
       }
     },
   );

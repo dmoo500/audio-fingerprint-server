@@ -5,7 +5,7 @@ export function useServiceStatus() {
   const availabilityMessage = ref("Checking recognition availability…");
   const count = ref("—");
   const countMessage = ref("Checking the collection…");
-  const countPending = ref(false);
+  const countPending = ref(true);
   let active = true;
   let generation = 0;
   let countLoading = false;
@@ -70,7 +70,7 @@ export function useServiceStatus() {
       if (requestGeneration !== generation) return;
       countMessage.value =
         count.value === "—"
-          ? "Collection count unavailable right now."
+          ? "Checking the collection…"
           : "Showing the last known count. The update is temporarily unavailable.";
       console.error(
         "Collection count failed",
@@ -80,7 +80,7 @@ export function useServiceStatus() {
       countLoading = false;
       if (retryDelay === undefined) {
         countRetries = 0;
-        countPending.value = false;
+        countPending.value = count.value === "—" && active && !document.hidden;
       }
       if (active && !document.hidden) {
         if (requestGeneration !== generation) void loadCount();

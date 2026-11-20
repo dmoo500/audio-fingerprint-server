@@ -57,14 +57,15 @@ It is not a promise that every passage or every song will be recognized.
 The backend caches the count for up to 60 seconds. The browser loads it on page
 opening and refreshes every 60 seconds while visible, including after a failed
 request. Refreshes pause in hidden tabs and resume immediately when the page
-becomes visible again. Failed refreshes are explicit and are not displayed as zero.
+becomes visible again. Failed refreshes are never displayed as zero.
 While the server is already refreshing the count, the browser honors its short
-retry delay up to five times before reporting that the count is unavailable.
+retry delay up to five times before returning to the regular refresh interval.
 Rate-limited requests also keep the loading indicator while waiting for the
 server's retry delay (up to 60 seconds); switching tabs does not bypass this wait.
 While the first count is loading, the page shows four to ten rolling digits, or “Loading…”
-with reduced motion. A dash means no valid count is available. Once a count is
-available, it stays visible during refresh.
+with reduced motion. This indicator stays visible until a valid count arrives,
+including between failed requests. Once a count is available, it stays visible
+during refresh; failed refreshes label that value as the last known count.
 
 The microphone button stays disabled until the recognition service is available.
 If the backend or database becomes unavailable, the page displays a temporary
