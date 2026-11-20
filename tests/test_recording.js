@@ -1,9 +1,12 @@
-const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
-const { join } = require("node:path");
-const { test } = require("node:test");
-const vm = require("node:vm");
-const script = readFileSync(join(__dirname, "../fingerprint_server/recognition/static/recording.js"), "utf8");
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import vm from "node:vm";
+
+const script = readFileSync(
+  new URL("../fingerprint_server/recognition/static/recording.js", import.meta.url),
+  "utf8",
+);
 
 function recorder({ mode = "complete" } = {}) {
   let node;
