@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SongShareLink from "./SongShareLink.vue";
 import type { Song } from "./types";
 import { useArtwork } from "./useArtwork";
 
@@ -13,7 +14,7 @@ const { cover, coverVisible, coverStatus, coverLoaded, coverFailed } =
 </script>
 
 <template>
-  <article id="result" class="result" aria-label="Recognized song">
+  <article id="result" class="result" aria-labelledby="song-title">
     <div class="cover-frame">
       <div class="cover-placeholder" aria-hidden="true">
         <div class="cover-record">
@@ -45,10 +46,15 @@ const { cover, coverVisible, coverStatus, coverLoaded, coverFailed } =
         @error="coverFailed"
       />
     </div>
-    <p class="eyebrow">FOUND YOUR SOUND</p>
     <h3 id="song-title">{{ song.title }}</h3>
     <p id="song-artists">{{ song.artists.join(", ") }}</p>
     <p id="song-album" class="fine">{{ song.album }}</p>
+    <SongShareLink
+      :title="song.title"
+      :artists="song.artists"
+      :album="song.album"
+      :cover-url="coverVisible ? cover : undefined"
+    />
     <p id="cover-status" class="fine" role="status">{{ coverStatus }}</p>
   </article>
 </template>

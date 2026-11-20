@@ -31,6 +31,15 @@ SELECT count(*) AS count FROM musicbrainz_reviews r
 JOIN submissions s ON s.id=r.submission_id
 WHERE s.state='pending_metadata' AND r.selected_mbid IS NULL
 """
+SEARCHABLE_RECORDINGS_COUNT = """
+count(DISTINCT coalesce(nullif(recording_key,''), 'reference:' || id))
+FILTER (WHERE publication_ready=1)
+"""
+REFERENCE_COUNTS = f"""
+SELECT count(*) AS stored,count(*) FILTER (WHERE publication_ready=1) AS published,
+       {SEARCHABLE_RECORDINGS_COUNT} AS searchable_recordings
+FROM reference_tracks
+"""
 
 
 def capture_hour(store: Storage, hour: int) -> None:
@@ -47,8 +56,7 @@ def capture_hour(store: Storage, hour: int) -> None:
             f"""
             INSERT INTO admin_hourly_metrics
             SELECT {marker},
-                (SELECT count(DISTINCT coalesce(nullif(recording_key,''), 'reference:' || id))
-                 FROM reference_tracks WHERE publication_ready=1),
+                (SELECT {SEARCHABLE_RECORDINGS_COUNT} FROM reference_tracks),
                 count(*) FILTER (WHERE state='queued'),
                 count(*) FILTER (WHERE state='processing'),
                 count(*) FILTER (WHERE state='pending_metadata'),

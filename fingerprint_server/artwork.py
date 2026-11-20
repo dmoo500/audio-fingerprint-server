@@ -1,4 +1,4 @@
-"""Durable, on-demand album artwork resolved only by the ingestion worker."""
+"""Durable album artwork resolved only by the ingestion worker."""
 
 from __future__ import annotations
 
@@ -27,6 +27,11 @@ from fingerprint_server.musicbrainz import (
 
 LOGGER = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
+QUEUE_LIMIT = 4096
+PREWARM_LIMIT = 3072
+PREWARM_INTERVAL = 15
+PREWARM_RETRY_DELAY = 3600
+RELEASE_FALLBACK_LIMIT = 3
 TABLE = (
     "CREATE TABLE IF NOT EXISTS artwork_requests ("
     "reference_key text PRIMARY KEY, state text NOT NULL, url text, "
@@ -98,33 +103,74 @@ class ArtworkStore:
             ).fetchone()
             if row is not None and row["expires_at"] > now:
                 return {"status": row["state"], "url": row["url"]}
-            db.execute(self.sql("DELETE FROM artwork_requests WHERE expires_at<=?"), (now,))
-            count = db.execute("SELECT count(*) AS total FROM artwork_requests").fetchone()["total"]
-            if row is None and count >= 4096:
+            if not self._enqueue(db, reference, now, QUEUE_LIMIT):
                 return {"status": "busy", "url": None}
-            db.execute(
-                self.sql(
-                    "INSERT INTO artwork_requests VALUES(?,'pending',NULL,?,?) "
-                    "ON CONFLICT(reference_key) DO UPDATE SET state='pending',url=NULL,"
-                    "due_at=excluded.due_at,expires_at=excluded.expires_at"
-                ),
-                (reference, now, now + 86400),
-            )
             return {"status": "pending", "url": None}
 
-    def next(self) -> dict[str, Any] | None:
-        """Read one due job; exclusive worker ownership prevents duplicate execution."""
+    def ready_urls(self, references: list[str]) -> dict[str, str]:
+        """Read current trusted covers for the references on one page without enqueuing jobs."""
+        if not references:
+            return {}
+        with self.store.connect() as db:
+            installed = db.execute(
+                "SELECT 1 FROM service_state WHERE key='artwork_schema'"
+            ).fetchone()
+            if installed is None:
+                return {}
+            placeholders = ",".join("?" for _ in references)
+            rows = db.execute(
+                self.sql(
+                    "SELECT a.reference_key,a.url FROM artwork_requests a "
+                    "JOIN reference_tracks t ON t.reference_key=a.reference_key "
+                    "WHERE t.publication_ready=1 AND a.state='ready' AND a.expires_at>? "
+                    f"AND a.reference_key IN ({placeholders})"
+                ),
+                [time.time(), *references],
+            ).fetchall()
+        return {
+            row["reference_key"]: row["url"]
+            for row in rows
+            if row["url"] and trusted_image(row["url"])
+        }
+
+    def next(self, *, prewarm: bool = False) -> dict[str, Any] | None:
+        """Return a due request, or reserve one uncached published reference when idle."""
+        now = time.time()
+        sqlite = isinstance(self.store, Store)
+        album = "json_extract(t.metadata,'$.album')" if sqlite else "t.metadata::jsonb->>'album'"
+        mbid = (
+            "json_extract(t.metadata,'$.recording_mbid')"
+            if sqlite
+            else "t.metadata::jsonb->>'recording_mbid'"
+        )
         with self.connection() as db:
             row = db.execute(
                 self.sql(
                     "SELECT a.reference_key,t.metadata FROM artwork_requests a "
                     "JOIN reference_tracks t ON t.reference_key=a.reference_key "
-                    "WHERE a.state='pending' AND a.due_at<=? AND t.publication_ready=1 "
+                    "WHERE a.state='pending' AND a.due_at<=? AND a.expires_at>? "
+                    "AND t.publication_ready=1 "
                     "ORDER BY a.due_at LIMIT 1"
                 ),
-                (time.time(),),
+                (now, now),
             ).fetchone()
-            return dict(row) if row is not None else None
+            if row is not None or not prewarm:
+                return dict(row) if row is not None else None
+            row = db.execute(
+                self.sql(
+                    "SELECT t.reference_key,t.metadata FROM reference_tracks t "
+                    "LEFT JOIN artwork_requests a ON a.reference_key=t.reference_key "
+                    f"WHERE t.publication_ready=1 AND trim({album})<>'' AND trim({mbid})<>'' "
+                    "AND (a.reference_key IS NULL OR "
+                    "(a.expires_at<=? AND a.state<>'unavailable') OR a.expires_at<=?) "
+                    "ORDER BY CASE WHEN a.reference_key IS NULL THEN 0 ELSE 1 END, "
+                    "t.id DESC LIMIT 1"
+                ),
+                (now, now - PREWARM_RETRY_DELAY),
+            ).fetchone()
+            if row is not None and self._enqueue(db, row["reference_key"], now, PREWARM_LIMIT):
+                return dict(row)
+            return None
 
     def finish(self, reference: str, url: str | None, *, failed: bool = False) -> None:
         """Cache absence separately from transient failure, which retries on later demand."""
@@ -136,7 +182,7 @@ class ArtworkStore:
                 (
                     "unavailable" if failed else "ready" if url else "missing",
                     url,
-                    time.time() + (60 if failed else 30 * 86400),
+                    time.time() + (60 if failed else (30 if url else 7) * 86400),
                     reference,
                 ),
             )
@@ -145,6 +191,27 @@ class ArtworkStore:
         """Discard one cached lookup so a corrected album association can be resolved again."""
         with self.connection() as db:
             db.execute(self.sql("DELETE FROM artwork_requests WHERE reference_key=?"), (reference,))
+
+    def _enqueue(self, db: Any, reference: str, now: float, limit: int) -> bool:
+        db.execute(
+            self.sql(
+                "DELETE FROM artwork_requests WHERE expires_at<=? AND "
+                "(state<>'unavailable' OR expires_at<=? OR reference_key=?)"
+            ),
+            (now, now - PREWARM_RETRY_DELAY, reference),
+        )
+        count = db.execute("SELECT count(*) AS total FROM artwork_requests").fetchone()["total"]
+        if count >= limit:
+            return False
+        db.execute(
+            self.sql(
+                "INSERT INTO artwork_requests VALUES(?,'pending',NULL,?,?) "
+                "ON CONFLICT(reference_key) DO UPDATE SET state='pending',url=NULL,"
+                "due_at=excluded.due_at,expires_at=excluded.expires_at"
+            ),
+            (reference, now, now + 86400),
+        )
+        return True
 
 
 def normalized(value: str) -> str:
@@ -166,10 +233,16 @@ class ArtworkResolver:
         self.queue = ArtworkStore(store)
         self.musicbrainz = musicbrainz
         self.next_cover = 0.0
+        self.next_prewarm = 0.0
 
-    async def process_one(self) -> None:
-        """Complete one bounded background lookup without delaying recognition responses."""
-        job = await run_sync(self.queue.next)
+    async def process_one(self, *, prewarm: bool = False) -> None:
+        """Complete one lookup, respecting archive backoff and the idle work budget."""
+        now = time.monotonic()
+        if self.next_cover > now or (prewarm and self.next_prewarm > now):
+            return
+        if prewarm:
+            self.next_prewarm = now + PREWARM_INTERVAL
+        job = await run_sync(self.queue.next, prewarm=prewarm)
         if job is None:
             return
         reference = job["reference_key"]
@@ -179,12 +252,7 @@ class ArtworkResolver:
             album = normalized(metadata["album"])
             result = await self.musicbrainz.lookup("artwork", mbid)
             releases = result.get("releases", [])
-            candidates = {
-                release["group"] for release in releases if normalized(release["title"]) == album
-            }
-            url = None
-            if len(candidates) == 1:
-                url = await self.cover(next(iter(candidates)))
+            url = await self.album_cover(album, releases)
         except MusicBrainzUnavailable as err:
             LOGGER.warning("Artwork lookup deferred by MusicBrainz: HTTP %s", err.status)
             await run_sync(self.queue.finish, reference, None, failed=True)
@@ -195,16 +263,39 @@ class ArtworkResolver:
             return
         await run_sync(self.queue.finish, reference, url)
 
-    async def cover(self, group: str) -> str | None:
+    async def album_cover(self, album: str, releases: list[dict[str, str]]) -> str | None:
+        """Find a cover only when the album maps to an unambiguous release group."""
+        if not album:
+            return None
+        matching = [release for release in releases if normalized(release["title"]) == album]
+        candidates = {release["group"] for release in matching}
+        candidates.update(
+            release["group"]
+            for release in releases
+            if normalized(release.get("group_title", "")) == album
+        )
+        if len(candidates) != 1:
+            return None
+        if url := await self.cover(next(iter(candidates))):
+            return url
+        for release_id in sorted({release["id"] for release in matching if "id" in release})[
+            :RELEASE_FALLBACK_LIMIT
+        ]:
+            if url := await self.cover(release_id, release=True):
+                return url
+        return None
+
+    async def cover(self, identifier: str, *, release: bool = False) -> str | None:
         """Resolve the archive redirect without downloading the image."""
-        key = f"coverart:v1:release-group:{group}"
+        kind = "release" if release else "release-group"
+        key = f"coverart:v1:{kind}:{identifier}"
         cached = await run_sync(self.queue.store.cached_enrichment, key)
         if cached is not None:
             return cached["url"]
         await asyncio.sleep(max(0, self.next_cover - time.monotonic()))
         self.next_cover = time.monotonic() + 1.1
         response = await self.musicbrainz.client.head(
-            f"https://coverartarchive.org/release-group/{group}/front-500",
+            f"https://coverartarchive.org/{kind}/{identifier}/front-500",
             headers={
                 "User-Agent": f"MA-Fingerprint/0.1 "
                 f"({self.musicbrainz.settings.musicbrainz_contact})"

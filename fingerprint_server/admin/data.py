@@ -8,7 +8,7 @@ import time
 from typing import Any, Literal
 
 from fingerprint_server.admin.errors import ActionFailed
-from fingerprint_server.database.metrics import HISTORY_HOURS, REVIEW_COUNT
+from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
 from fingerprint_server.database.postgres import PostgresStore
 from fingerprint_server.settings import Settings
 
@@ -57,6 +57,24 @@ class AdminFilters:
             else ("attempts", "pending_rechecks")
         )
         return (*self.fields(dataset), "created_at", *extra)
+
+    def sort_clause(self, dataset: Dataset, order_by: list[str] | None) -> str:
+        """Validate sorting and keep missing values last in either direction."""
+        order = []
+        for item in order_by or ["created_at desc"]:
+            parts = item.split()
+            if len(parts) != 2 or parts[0] not in self.sortable_fields(dataset):
+                raise ActionFailed("Unsupported sorting field")
+            field, direction = parts
+            if direction not in ("asc", "desc"):
+                raise ActionFailed("Unsupported sorting direction")
+            expression = (
+                f"NULLIF(lower(trim(coalesce({field}, ''))), '')"
+                if field in self.fields(dataset) and field != "id"
+                else field
+            )
+            order.append(f"{expression} {direction} NULLS LAST")
+        return ",".join([*order, "id asc"])
 
     def predicate(self, dataset: Dataset, where: Filter) -> tuple[str, list[Any]]:
         """Validate bounded filters and return a parameterized SQL predicate."""
@@ -155,15 +173,7 @@ class AdminData(AdminFilters):
                 raise ActionFailed("Select at most 100 entries")
             clause += " AND id=ANY(%s)"
             args.append(pks)
-        order = []
-        for item in order_by or ["created_at desc"]:
-            parts = item.split()
-            if len(parts) != 2 or parts[0] not in self.sortable_fields(dataset):
-                raise ActionFailed("Unsupported sorting field")
-            if parts[1] not in ("asc", "desc"):
-                raise ActionFailed("Unsupported sorting direction")
-            order.append(" ".join(parts))
-        order.append("id asc")
+        order = self.sort_clause(dataset, order_by)
         with self.store.connect() as db:
             db.execute("SET LOCAL statement_timeout='15s'")
             source = self.source(dataset)
@@ -181,7 +191,7 @@ class AdminData(AdminFilters):
             # Project metadata once rather than parsing the large document for each UI column.
             rows = db.execute(
                 f"SELECT id,created_at,metadata,{columns} FROM ({source}) entries WHERE {clause} "
-                f"ORDER BY {','.join(order)} LIMIT %s OFFSET %s",
+                f"ORDER BY {order} LIMIT %s OFFSET %s",
                 [*args, limit, skip],
             ).fetchall()
             for row in rows:
@@ -202,10 +212,8 @@ class AdminData(AdminFilters):
             states = db.execute("SELECT state,count(*) AS count FROM submissions GROUP BY state")
             uploads = dict.fromkeys(STATES, 0)
             uploads.update({row["state"]: row["count"] for row in states})
-            references = db.execute(
-                "SELECT count(*) AS stored,count(*) FILTER (WHERE publication_ready=1) "
-                "AS published FROM reference_tracks"
-            ).fetchone()
+            counts = db.execute(REFERENCE_COUNTS).fetchone()
+            assert counts is not None
             sizes = db.execute(
                 "SELECT pg_database_size(current_database()) AS database_bytes,"
                 "(SELECT format_version FROM migration_info) AS format_version"
@@ -218,7 +226,8 @@ class AdminData(AdminFilters):
             review = db.execute(REVIEW_COUNT).fetchone() if review_table["installed"] else None
         return {
             "submissions": uploads,
-            "references": references,
+            "references": {"published": counts["published"], "stored": counts["stored"]},
+            "searchable_recordings": counts["searchable_recordings"],
             "manual_review": review["count"] if review is not None else None,
             **sizes,
             "worker_available": self.store.worker_available(),

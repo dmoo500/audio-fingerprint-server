@@ -1,8 +1,11 @@
 // @vitest-environment happy-dom
+import { inflateRawSync } from "node:zlib";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { h } from "vue";
 import App from "../src/App.vue";
 import HistoryArtwork from "../src/HistoryArtwork.vue";
+import SongShareLink from "../src/SongShareLink.vue";
 
 const json = (body: unknown, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -14,6 +17,18 @@ let wrapper: VueWrapper | undefined;
 let fetchMock: ReturnType<typeof vi.fn>;
 let capture: ReturnType<typeof vi.fn>;
 let recognitionResult: unknown;
+
+function sharePayload(href: string) {
+  const url = new URL(href);
+  expect(url.origin).toBe("https://share.music-assistant.io");
+  expect(url.pathname + url.search).toBe("/");
+  expect(url.hash).toMatch(/^#1[A-Za-z0-9_-]+$/);
+  return JSON.parse(
+    inflateRawSync(Buffer.from(url.hash.slice(2), "base64url")).toString(
+      "utf8",
+    ),
+  );
+}
 
 beforeEach(() => {
   recognitionResult = {
@@ -81,7 +96,13 @@ it("loads private artwork only when its thumbnail becomes visible", async () => 
   );
   const url = "https://coverartarchive.org/fixture";
   fetchMock.mockResolvedValue(json({ status: "ready", url }));
-  wrapper = mount(HistoryArtwork, { props: { hitId: 7 } });
+  wrapper = mount(HistoryArtwork, {
+    props: { hitId: 7 },
+    slots: {
+      default: ({ coverUrl }) =>
+        h(SongShareLink, { title: "Test track", artists: [], coverUrl }),
+    },
+  });
   expect(fetchMock).not.toHaveBeenCalled();
   intersect?.();
   await flushPromises();
@@ -94,6 +115,15 @@ it("loads private artwork only when its thumbnail becomes visible", async () => 
   expect(image.attributes("hidden")).toBeDefined();
   await image.trigger("load");
   expect(image.attributes("hidden")).toBeUndefined();
+  await vi.waitFor(() =>
+    expect(
+      sharePayload(wrapper!.get(".song-share a").attributes("href")),
+    ).toEqual({
+      type: "track",
+      title: "Test track",
+      art_url: url,
+    }),
+  );
 });
 
 describe("recognition page", () => {
@@ -159,6 +189,24 @@ describe("recognition page", () => {
     expect(options.credentials).toBe("same-origin");
     expect(options.body.byteLength).toBe(16);
     expect(options.headers["X-Recognition-Request"]).toBe("microphone");
+    const share = await vi.waitFor(() => view.get("#result .song-share a"));
+    expect(share.attributes("target")).toBe("_blank");
+    expect(share.attributes("rel")).toBe("noopener noreferrer");
+    expect(share.attributes("title")).toBe(
+      "Open in Music Assistant Share (new tab)",
+    );
+    expect(share.attributes("aria-label")).toBe(
+      "<img onerror=alert(1)>: Open in Music Assistant Share (new tab)",
+    );
+    expect(share.text()).toBe("Open in Music Assistant Share");
+    expect(share.get(".ma-mark").attributes("aria-hidden")).toBe("true");
+    expect(sharePayload(share.attributes("href"))).toEqual({
+      type: "track",
+      title: "<img onerror=alert(1)>",
+      artist: "Example artist",
+      artists: ["Example artist"],
+      album: "Example album",
+    });
   });
 
   it("explains optional accounts without opening registration", async () => {
@@ -185,6 +233,7 @@ describe("recognition page", () => {
   });
 
   it("starts recognition anonymously and refreshes private history after a signed-in match", async () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
     const original = fetchMock.getMockImplementation();
     let items: object[] = [];
     let recognizedAt = 1699999999;
@@ -204,7 +253,7 @@ describe("recognition page", () => {
             id: 1,
             has_artwork: false,
             title: "Test track",
-            artists: ["Test artist"],
+            artists: ["Beyoncé"],
             recognized_at: ++recognizedAt,
           },
         ];
@@ -241,6 +290,22 @@ describe("recognition page", () => {
     await view.get("#listen").trigger("click");
     await flushPromises();
     expect(view.get(`${history} li`).text()).toContain("Test track");
+    const share = await vi.waitFor(() => view.get(`${history} .song-share a`));
+    expect(view.get(`${history} li`).element.lastElementChild).toBe(
+      share.element.parentElement,
+    );
+    expect(share.attributes("target")).toBe("_blank");
+    expect(share.text()).toBe("");
+    expect(share.find(".ma-mark").exists()).toBe(true);
+    expect(share.attributes("aria-label")).toBe(
+      "Test track: Open in Music Assistant Share (new tab)",
+    );
+    expect(sharePayload(share.attributes("href"))).toEqual({
+      type: "track",
+      title: "Test track",
+      artist: "Beyoncé",
+      artists: ["Beyoncé"],
+    });
     expect(view.get(`${history} .history-date`).text()).toContain(
       "Recognized on",
     );
@@ -381,6 +446,37 @@ describe("recognition page", () => {
     expect(view.get("#count-status").text()).toContain("unavailable");
   });
 
+  it("shows a decorative loader and refreshes after an obsolete request finishes", async () => {
+    let finishInitialCount: (() => void) | undefined;
+    let countRequests = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url !== "/api/statistics") return json({ available: true });
+      if (++countRequests > 1) return json({ recordings: 1250 });
+      await new Promise<void>((resolve) => {
+        finishInitialCount = resolve;
+      });
+      return json({ recordings: 1234 });
+    });
+    wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.get("#recordings").attributes("aria-busy")).toBe("true");
+    expect(wrapper.get(".count-loading").attributes("aria-hidden")).toBe(
+      "true",
+    );
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    expect(wrapper.find(".count-loading").exists()).toBe(false);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(countRequests).toBe(1);
+    finishInitialCount?.();
+    await flushPromises();
+    expect(countRequests).toBe(2);
+    expect(wrapper.get("#recordings").text()).toBe((1250).toLocaleString());
+    expect(wrapper.find(".count-loading").exists()).toBe(false);
+  });
+
   it("refreshes the count once a minute and stops while hidden", async () => {
     vi.useFakeTimers();
     let recordings = 1234;
@@ -478,15 +574,32 @@ describe("recognition page", () => {
     await view.get("#listen").trigger("click");
     await flushPromises();
     expect(view.get("#song-title").text()).toBe("Song");
+    expect(view.get("#result").attributes("aria-labelledby")).toBe(
+      "song-title",
+    );
     const image = view.get("#song-cover");
     expect(image.attributes("src")).toBe("https://archive.org/cover.jpg");
     expect(image.attributes("referrerpolicy")).toBe("no-referrer");
     expect(image.attributes("hidden")).toBeDefined();
+    const share = () =>
+      sharePayload(view.get("#result .song-share a").attributes("href"));
+    await vi.waitFor(() => expect(share()).not.toHaveProperty("art_url"));
     await image.trigger("load");
     expect(image.attributes("hidden")).toBeUndefined();
+    await vi.waitFor(() =>
+      expect(share()).toEqual({
+        type: "track",
+        title: "Song",
+        artist: "Artist",
+        artists: ["Artist"],
+        album: "Album",
+        art_url: "https://archive.org/cover.jpg",
+      }),
+    );
     await image.trigger("error");
     expect(view.get("#cover-status").text()).toContain("could not be loaded");
     expect(image.attributes("hidden")).toBeDefined();
+    await vi.waitFor(() => expect(share()).not.toHaveProperty("art_url"));
     window.dispatchEvent(new Event("pagehide"));
     await image.trigger("load");
     expect(image.attributes("hidden")).toBeDefined();

@@ -144,6 +144,13 @@ onMounted(() => {
         ><small>{{ current.overview.references.stored }} stored</small>
       </div>
       <div class="card">
+        <span class="subheader">Searchable recordings</span>
+        <strong>{{
+          current.overview.searchable_recordings.toLocaleString()
+        }}</strong>
+        <small>Verified variants counted once</small>
+      </div>
+      <div class="card">
         <span class="subheader">Database layout</span
         ><strong>Version {{ current.overview.format_version }}</strong
         ><small>Admin does not migrate the database</small>

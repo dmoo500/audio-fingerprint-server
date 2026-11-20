@@ -48,4 +48,5 @@ onUnmounted(() => observer?.disconnect());
       @error="coverFailed"
     />
   </span>
+  <slot :cover-url="coverVisible ? cover : undefined"></slot>
 </template>

@@ -26,7 +26,8 @@ const snapshot = {
     database_backend: "sqlite",
     database_bytes: 0,
     format_version: 1,
-    references: { published: 1, stored: 1 },
+    references: { published: 3, stored: 4 },
+    searchable_recordings: 2,
     submissions: { queued: 1 },
     manual_review: 0,
   },
@@ -66,6 +67,38 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("shows artwork for a published reference on its detail page only", async () => {
+  const image = "https://archive.org/download/example/cover-500.jpg";
+  const fetch = vi.mocked(globalThis.fetch);
+  fetch.mockResolvedValueOnce(
+    response({ id: "one", publication_ready: 1 }) as Response,
+  );
+  fetch.mockResolvedValueOnce(
+    response({ status: "ready", url: image }) as Response,
+  );
+  const detail = mount(DataTable, {
+    props: { dataset: "references", id: "one", snapshot },
+  });
+  await flushPromises();
+  expect(fetch.mock.calls[1]?.[0]).toBe("/admin/api/references/one/artwork");
+  expect(detail.get('img[alt="Album cover"]').attributes("src")).toBe(image);
+  await detail.get('img[alt="Album cover"]').trigger("error");
+  expect(detail.get('[role="status"]').text()).toContain("could not be loaded");
+  detail.unmount();
+
+  fetch.mockClear();
+  fetch.mockResolvedValueOnce(
+    response({ id: "one", publication_ready: 0 }) as Response,
+  );
+  const unpublished = mount(DataTable, {
+    props: { dataset: "references", id: "one", snapshot },
+  });
+  await flushPromises();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(unpublished.find('[aria-label="Album artwork"]').exists()).toBe(false);
+  unpublished.unmount();
 });
 
 it("follows system changes and remembers a manual override on the login screen", async () => {
@@ -180,7 +213,87 @@ describe("notifications", () => {
   });
 });
 
+describe("overview", () => {
+  it("shows searchable recordings separately from acoustic references", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : String(input).endsWith("/overview")
+              ? snapshot
+              : { charts: [] },
+        ) as Response,
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    const cards = wrapper.findAll(".stats .card");
+    const recordings = cards.find(
+      (card) => card.get(".subheader").text() === "Searchable recordings",
+    );
+    const references = cards.find(
+      (card) => card.get(".subheader").text() === "Acoustic references",
+    );
+    expect(recordings?.get("strong").text()).toBe("2");
+    expect(references?.get("strong").text()).toBe("3 published");
+    expect(references?.get("small").text()).toBe("4 stored");
+    wrapper.unmount();
+  });
+});
+
 describe("table", () => {
+  it("navigates submissions in list order across pages and restores the original list", async () => {
+    history.replaceState(
+      null,
+      "",
+      "/admin/submissions/list?state=pending_metadata",
+    );
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockImplementation(async (input) => {
+      const request = new URL(String(input), location.origin);
+      if (request.pathname.endsWith("/session"))
+        return response({ authenticated: true }) as Response;
+      if (request.pathname.endsWith("/overview"))
+        return response(snapshot) as Response;
+      if (request.pathname === "/admin/api/tables/submissions") {
+        expect(JSON.parse(request.searchParams.get("where")!)).toEqual({
+          state: { eq: "pending_metadata" },
+        });
+        const skip = Number(request.searchParams.get("skip"));
+        const limit = Number(request.searchParams.get("limit"));
+        const items = Array.from({ length: 51 }, (_, n) => ({
+          id: String(n + 1),
+          title: `Title ${n + 1}`,
+        }));
+        return response({
+          ...rows,
+          total: items.length,
+          items: items.slice(skip, skip + limit),
+        }) as Response;
+      }
+      return response({ id: request.pathname.split("/").at(-1) }) as Response;
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[aria-label="View 50"]').trigger("click");
+    await flushPromises();
+    expect(location.pathname).toBe("/admin/submissions/detail/50");
+    const buttons = () =>
+      wrapper.get('nav[aria-label="Detail navigation"]').findAll("button");
+    await buttons()[1]!.trigger("click");
+    await flushPromises();
+    expect(location.pathname).toBe("/admin/submissions/detail/51");
+    expect(buttons()[1]!.attributes("disabled")).toBeDefined();
+    await buttons()[0]!.trigger("click");
+    await flushPromises();
+    expect(location.pathname).toBe("/admin/submissions/detail/50");
+    await wrapper.get('nav[aria-label="Detail navigation"] a').trigger("click");
+    await flushPromises();
+    expect(location.search).toBe("?state=pending_metadata");
+    expect(wrapper.get(".table-footer").text()).toContain("Showing 1 to 50");
+    wrapper.unmount();
+  });
+
   it("opens Pending metadata from the overview with an exact state filter", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     fetch.mockImplementation(async (input) => {
@@ -338,6 +451,13 @@ describe("table", () => {
       "title:asc",
       "created_at:asc",
     ]);
+    await sort[0]!.trigger("click", { shiftKey: true });
+    await flushPromises();
+    url = new URL(String(fetch.mock.lastCall?.[0]), "http://localhost");
+    expect(url.searchParams.getAll("order_by")).toEqual([
+      "title:desc",
+      "created_at:asc",
+    ]);
     await search.setValue("another search");
     const calls = fetch.mock.calls.length;
     await wrapper.get('button[aria-label="Clear search"]').trigger("click");
@@ -353,9 +473,50 @@ describe("table", () => {
     });
     expect(url.searchParams.get("skip")).toBe("0");
     expect(url.searchParams.getAll("order_by")).toEqual([
-      "title:asc",
+      "title:desc",
       "created_at:asc",
     ]);
+    wrapper.unmount();
+  });
+
+  it.each(["submissions", "references"])(
+    "shows cached artwork in %s without extra requests",
+    async (dataset) => {
+      const fetch = vi.mocked(globalThis.fetch);
+      const image = "https://archive.org/download/example/cover-500.jpg";
+      fetch.mockResolvedValue(
+        response({
+          ...rows,
+          items: [{ ...rows.items[0], artwork_url: image }],
+        }) as Response,
+      );
+      const wrapper = mount(DataTable, {
+        props: { dataset, snapshot },
+      });
+
+      await flushPromises();
+      const heading = wrapper.get("th.artwork-cell");
+      expect(heading.text()).toBe("Artwork");
+      expect(heading.find("button").exists()).toBe(false);
+      expect(wrapper.get("td.artwork-cell img").attributes("src")).toBe(image);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    },
+  );
+
+  it("shows the cached cover in submission details without an artwork request", async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    const image = "https://archive.org/download/example/cover-500.jpg";
+    fetch.mockResolvedValue(
+      response({ id: "one", artwork_url: image }) as Response,
+    );
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", id: "one", snapshot },
+    });
+    await flushPromises();
+    expect(wrapper.get("img.detail-cover").attributes("src")).toBe(image);
+    expect(wrapper.text()).not.toContain("artwork_url");
+    expect(fetch).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 

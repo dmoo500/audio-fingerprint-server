@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ReferenceArtwork from "./ReferenceArtwork.vue";
 import {
   ChevronDown,
   Eye,
@@ -8,18 +9,38 @@ import {
   Trash2,
   X,
 } from "@lucide/vue";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  computed,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowRef,
+  toRaw,
+  watch,
+} from "vue";
 import { api, display, errorMessage, type Row, type Snapshot } from "../api";
 import { useToast } from "../composables/useToast";
+import type { ListView, SubmissionNavigation } from "../submissionNavigation";
 
 const props = defineProps<{
   dataset: string;
   id?: string;
   pendingMetadataOnly?: boolean;
+  listPath?: string;
+  submissionNavigation?: SubmissionNavigation | null;
   snapshot: Snapshot | null;
 }>();
-const emit = defineEmits<{ navigate: [path: string] }>();
+const emit = defineEmits<{
+  navigate: [path: string];
+  browse: [path: string, context: SubmissionNavigation];
+}>();
 const notify = useToast();
+const context = computed(() =>
+  props.submissionNavigation?.dataset === props.dataset
+    ? props.submissionNavigation
+    : undefined,
+);
+const restored = !props.id ? context.value?.view : undefined;
 type TableResult = {
   items: Row[];
   total: number;
@@ -69,7 +90,7 @@ const result = ref<TableResult>({
   searchable: [],
 });
 const detail = ref<Row | null>(null);
-const hiddenFields = ref<string[]>([]);
+const hiddenFields = ref<string[]>([...(restored?.hiddenFields ?? [])]);
 const visibleFields = computed(() =>
   result.value.fields.filter((field) => !hiddenFields.value.includes(field)),
 );
@@ -81,26 +102,44 @@ function visibleCells(row: Row) {
 }
 const sortDirection = computed(() =>
   Object.fromEntries(
-    order.value.map(({ field, direction }) => [field, direction]),
+    displayedOrder.value.map(({ field, direction }) => [field, direction]),
   ),
 );
-const search = ref("");
+const search = ref(restored?.search ?? "");
 const searchInput = ref<HTMLInputElement | null>(null);
-const filterField = ref(props.pendingMetadataOnly ? "state" : "");
-const operator = ref(props.pendingMetadataOnly ? "eq" : "contains");
-const filterValue = ref(props.pendingMetadataOnly ? "pending_metadata" : "");
-const appliedFilter = ref<Record<string, unknown> | null>(
-  props.pendingMetadataOnly ? { state: { eq: "pending_metadata" } } : null,
+const filterField = ref(
+  restored?.filterField ?? (props.pendingMetadataOnly ? "state" : ""),
 );
-const skip = ref(0);
-const limit = ref(50);
+const operator = ref(
+  restored?.operator ?? (props.pendingMetadataOnly ? "eq" : "contains"),
+);
+const filterValue = ref(
+  restored?.filterValue ??
+    (props.pendingMetadataOnly ? "pending_metadata" : ""),
+);
+const appliedFilter = ref<Record<string, unknown> | null>(
+  restored
+    ? restored.appliedFilter
+    : props.pendingMetadataOnly
+      ? { state: { eq: "pending_metadata" } }
+      : null,
+);
+const skip = ref(restored?.skip ?? 0);
+const limit = ref(restored?.limit ?? 50);
 const lastOffset = computed(
   () =>
     Math.floor(Math.max(0, result.value.total - 1) / limit.value) * limit.value,
 );
 const displayedOffset = ref(0);
 const displayedLimit = ref(limit.value);
-const order = ref<{ field: string; direction: "asc" | "desc" }[]>([]);
+const order = ref<ListView["order"]>(
+  (restored?.order ?? []).map((item) => ({ ...item })),
+);
+const displayedOrder = computed<ListView["order"]>(() =>
+  displayedView.value?.order.length
+    ? displayedView.value.order
+    : [{ field: "created_at", direction: "desc" }],
+);
 const selected = ref<string[]>([]);
 const status = ref("Loading table…");
 const failed = ref(false);
@@ -108,6 +147,11 @@ const busy = ref(false);
 const loadedRevision = ref<string | undefined>();
 let sequence = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let displayedQuery = "";
+const displayedView = shallowRef<ListView>();
+const neighborRequest = new AbortController();
+const navigating = ref(false);
+const navigationError = ref("");
 const latestRevision = computed(() => props.snapshot?.revisions[props.dataset]);
 const changed = computed(
   () =>
@@ -135,10 +179,23 @@ async function load() {
   order.value.forEach((item) =>
     params.append("order_by", `${item.field}:${item.direction}`),
   );
+  const view: ListView = {
+    search: search.value,
+    filterField: filterField.value,
+    operator: operator.value,
+    filterValue: filterValue.value,
+    appliedFilter: toRaw(appliedFilter.value),
+    order: order.value.map((item) => ({ ...item })),
+    skip: skip.value,
+    limit: limit.value,
+    hiddenFields: [],
+  };
   try {
     const data = await api<TableResult>(`/tables/${props.dataset}?${params}`);
     if (request !== sequence) return;
     result.value = data;
+    displayedQuery = params.toString();
+    displayedView.value = view;
     displayedOffset.value = Number(params.get("skip"));
     displayedLimit.value = Number(params.get("limit"));
     selected.value = [];
@@ -207,10 +264,16 @@ function clearFilter() {
 }
 function sort(field: string, multi: boolean) {
   const existing = order.value.find((item) => item.field === field);
-  const direction = existing?.direction === "asc" ? "desc" : "asc";
-  if (!multi) order.value = [];
-  else order.value = order.value.filter((item) => item.field !== field);
-  order.value.push({ field, direction });
+  const entry = {
+    field,
+    direction: existing?.direction === "asc" ? "desc" : "asc",
+  } as const;
+  order.value = !multi
+    ? [entry]
+    : existing
+      ? order.value.map((item) => (item.field === field ? entry : item))
+      : [...order.value, entry];
+  if (timer) clearTimeout(timer);
   skip.value = 0;
   void load();
 }
@@ -218,8 +281,90 @@ function page(delta: number) {
   skip.value = Math.max(0, skip.value + delta);
   void load();
 }
-function detailPath(row: Row) {
-  return `/admin/${props.dataset}/detail/${encodeURIComponent(String(row.id))}`;
+function detailPath(id: string) {
+  return `/admin/${props.dataset}/detail/${encodeURIComponent(id)}`;
+}
+function openDetail(id: string) {
+  const path = detailPath(id);
+  if (!displayedView.value) {
+    emit("navigate", path);
+    return;
+  }
+  const listPath = props.listPath ?? `/admin/${props.dataset}/list`;
+  const current: SubmissionNavigation = {
+    dataset: props.dataset,
+    listPath,
+    view: { ...displayedView.value, hiddenFields: [...hiddenFields.value] },
+    query: displayedQuery,
+    offset: displayedOffset.value,
+    ids: result.value.items.map((row) => String(row.id)),
+    total: result.value.total,
+  };
+  emit("browse", path, current);
+}
+const detailIndex = computed(
+  () => context.value?.ids.indexOf(props.id ?? "") ?? -1,
+);
+const position = computed(() =>
+  context.value && detailIndex.value >= 0
+    ? context.value.offset + detailIndex.value
+    : -1,
+);
+const backPath = computed(
+  () => context.value?.listPath ?? `/admin/${props.dataset}/list`,
+);
+function backToList() {
+  if (context.value) emit("browse", backPath.value, toRaw(context.value));
+  else emit("navigate", backPath.value);
+}
+async function openNeighbor(direction: -1 | 1) {
+  const current = context.value;
+  const target = position.value + direction;
+  if (
+    !current ||
+    position.value < 0 ||
+    target < 0 ||
+    target >= current.total ||
+    navigating.value ||
+    busy.value
+  )
+    return;
+  navigationError.value = "";
+  const nearby = current.ids[detailIndex.value + direction];
+  if (nearby !== undefined) {
+    emit("browse", detailPath(nearby), toRaw(current));
+    return;
+  }
+  const offset = Math.min(target, position.value);
+  const params = new URLSearchParams(current.query);
+  params.set("skip", String(offset));
+  params.set("limit", "2");
+  navigating.value = true;
+  try {
+    const data = await api<TableResult>(
+      `/tables/${props.dataset}?${params}`,
+      undefined,
+      neighborRequest.signal,
+    );
+    const ids = data.items.map((row) => String(row.id));
+    const id = ids[target - offset];
+    if (ids[position.value - offset] !== props.id || !id) {
+      navigationError.value =
+        "The list changed. Return to the list to continue.";
+      return;
+    }
+    emit("browse", detailPath(id), {
+      ...toRaw(current),
+      offset,
+      ids,
+      total: data.total,
+    });
+  } catch (error) {
+    if (!neighborRequest.signal.aborted)
+      navigationError.value = `Could not load adjacent entry: ${errorMessage(error)}`;
+  } finally {
+    navigating.value = false;
+  }
 }
 function toggleColumn(field: string) {
   if (field === "id") return;
@@ -246,8 +391,7 @@ async function action(operation: "retry" | "delete", ids: string[]) {
         ? "Selected submissions deleted."
         : "Selected submissions queued for retry.",
     );
-    if (props.id && operation === "delete")
-      emit("navigate", `/admin/${props.dataset}/list`);
+    if (props.id && operation === "delete") backToList();
     else if (props.id) await loadDetail();
     else await load();
   } catch (e) {
@@ -262,6 +406,7 @@ onMounted(() => {
   else void load();
 });
 onUnmounted(() => {
+  neighborRequest.abort();
   sequence++;
   if (timer) clearTimeout(timer);
 });
@@ -273,21 +418,64 @@ onUnmounted(() => {
     {{ status }}
   </p>
   <template v-if="id">
-    <p>
-      <a
-        :href="`/admin/${dataset}/list`"
-        @click.prevent="$emit('navigate', `/admin/${dataset}/list`)"
+    <nav class="actions" aria-label="Detail navigation">
+      <a :href="backPath" @click.exact.prevent="backToList"
         >← Back to {{ title }}</a
       >
+      <template v-if="context && position >= 0">
+        <button
+          type="button"
+          class="secondary"
+          :disabled="position === 0 || busy || navigating"
+          @click="openNeighbor(-1)"
+        >
+          Previous
+        </button>
+        <span>{{ position + 1 }} / {{ context.total }}</span>
+        <button
+          type="button"
+          class="secondary"
+          :disabled="
+            position + 1 >= context.total ||
+            busy ||
+            navigating ||
+            position + 1 > 1_000_000
+          "
+          @click="openNeighbor(1)"
+        >
+          Next
+        </button>
+      </template>
+    </nav>
+    <p v-if="navigationError" class="alert error" role="alert">
+      {{ navigationError }}
     </p>
     <div v-if="detail" class="card">
+      <ReferenceArtwork
+        v-if="
+          dataset === 'references' && Number(detail.publication_ready) === 1
+        "
+        :key="id"
+        :reference="id"
+      />
+      <img
+        v-else-if="typeof detail.artwork_url === 'string'"
+        class="detail-cover"
+        :src="detail.artwork_url"
+        alt="Album cover"
+        width="120"
+        height="120"
+        referrerpolicy="no-referrer"
+      />
       <dl class="details">
-        <template v-for="(value, field) in detail" :key="field"
-          ><dt>{{ field }}</dt>
-          <dd>
-            <pre>{{ display(value, String(field)) }}</pre>
-          </dd></template
-        >
+        <template v-for="(value, field) in detail" :key="field">
+          <template v-if="field !== 'artwork_url'">
+            <dt>{{ field }}</dt>
+            <dd>
+              <pre>{{ display(value, String(field)) }}</pre>
+            </dd>
+          </template>
+        </template>
       </dl>
       <div v-if="dataset !== 'references'" class="actions">
         <button
@@ -488,13 +676,14 @@ onUnmounted(() => {
                 class="row-actions-heading"
                 aria-label="Row actions"
               ></th>
+              <th scope="col" class="artwork-cell">Artwork</th>
               <th
                 v-for="field in visibleFields"
                 :key="field"
                 scope="col"
                 :aria-sort="
-                  order[0]?.field === field
-                    ? order[0].direction === 'asc'
+                  displayedOrder[0]?.field === field
+                    ? displayedOrder[0].direction === 'asc'
                       ? 'ascending'
                       : 'descending'
                     : undefined
@@ -535,10 +724,10 @@ onUnmounted(() => {
               <td class="row-actions-cell">
                 <div class="row-actions">
                   <a
-                    :href="detailPath(row)"
+                    :href="detailPath(String(row.id))"
                     :aria-label="`View ${row.id}`"
                     title="View details"
-                    @click.exact.prevent="emit('navigate', detailPath(row))"
+                    @click.exact.prevent="openDetail(String(row.id))"
                   >
                     <Eye :size="16" aria-hidden="true" />
                   </a>
@@ -564,6 +753,18 @@ onUnmounted(() => {
                   </template>
                 </div>
               </td>
+              <td class="artwork-cell">
+                <img
+                  v-if="typeof row.artwork_url === 'string'"
+                  :key="row.artwork_url"
+                  :src="row.artwork_url"
+                  alt="Album cover"
+                  width="28"
+                  height="28"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                />
+              </td>
               <td
                 v-for="{ field, value, preview } in visibleCells(row)"
                 :key="field"
@@ -574,14 +775,9 @@ onUnmounted(() => {
               >
                 <a
                   v-if="field === 'id'"
-                  :href="`/admin/${dataset}/detail/${encodeURIComponent(String(row.id))}`"
+                  :href="detailPath(String(row.id))"
                   :aria-label="value"
-                  @click.prevent="
-                    $emit(
-                      'navigate',
-                      `/admin/${dataset}/detail/${encodeURIComponent(String(row.id))}`,
-                    )
-                  "
+                  @click.exact.prevent="openDetail(String(row.id))"
                   >{{ preview }}</a
                 >
                 <button
@@ -602,7 +798,7 @@ onUnmounted(() => {
                 :colspan="
                   Math.max(
                     1,
-                    visibleFields.length + 1 + Number(dataset !== 'references'),
+                    visibleFields.length + 2 + Number(dataset !== 'references'),
                   )
                 "
               >

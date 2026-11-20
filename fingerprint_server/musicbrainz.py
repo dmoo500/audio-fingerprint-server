@@ -561,7 +561,8 @@ class MusicBrainzService:
             if kind in ("search", "batch")
             else identifier
         )
-        key = f"musicbrainz:v{MUSICBRAINZ_CACHE_VERSION}:{endpoint}:{kind}:{cache_identifier}"
+        cache_kind = "artwork-v2" if kind == "artwork" else kind
+        key = f"musicbrainz:v{MUSICBRAINZ_CACHE_VERSION}:{endpoint}:{cache_kind}:{cache_identifier}"
         if (cached := await run_sync(self.store.cached_enrichment, key)) is not None:
             return cached
         await self._wait_until(self.next_lookup)
@@ -631,6 +632,16 @@ class MusicBrainzService:
                                 {
                                     "title": item["title"],
                                     "group": str(UUID(item["release-group"]["id"])),
+                                    **(
+                                        {"id": str(UUID(item["id"]))}
+                                        if isinstance(item.get("id"), str)
+                                        else {}
+                                    ),
+                                    **(
+                                        {"group_title": item["release-group"]["title"]}
+                                        if isinstance(item["release-group"].get("title"), str)
+                                        else {}
+                                    ),
                                 }
                                 for item in releases
                                 if isinstance(item.get("title"), str)

@@ -32,8 +32,14 @@ function toggleTheme() {
     : "Theme preference could not be saved in this browser.";
 }
 
-const { available, availabilityMessage, count, countMessage, setAvailable } =
-  useServiceStatus();
+const {
+  available,
+  availabilityMessage,
+  count,
+  countMessage,
+  countPending,
+  setAvailable,
+} = useServiceStatus();
 </script>
 
 <template>
@@ -143,11 +149,29 @@ const { available, availabilityMessage, count, countMessage, setAvailable } =
               </svg>
             </span>
             <div>
-              <strong id="recordings">{{ count }}</strong
+              <strong id="recordings" :aria-busy="countPending">
+                {{ count }}
+                <span
+                  v-if="countPending && count === '—'"
+                  class="count-loading"
+                  aria-hidden="true"
+                >
+                  <span
+                    >0<br />1<br />2<br />3<br />4<br />5<br />6<br />7<br />8<br />9</span
+                  >
+                  <span
+                    >5<br />6<br />7<br />8<br />9<br />0<br />1<br />2<br />3<br />4</span
+                  >
+                  <span
+                    >8<br />9<br />0<br />1<br />2<br />3<br />4<br />5<br />6<br />7</span
+                  >
+                </span> </strong
               ><span>searchable recordings, and growing</span>
             </div>
           </div>
-          <p id="count-status" class="fine" role="status">{{ countMessage }}</p>
+          <p id="count-status" class="fine" role="status">
+            {{ countPending ? "Checking the collection…" : countMessage }}
+          </p>
         </div>
         <ListenCard
           :available="available"
@@ -177,6 +201,11 @@ const { available, availabilityMessage, count, countMessage, setAvailable } =
     </main>
     <footer>
       <span>Built for the curious listener.</span>
+      <a
+        href="https://github.com/dmoo500/audio-fingerprint-server/blob/main/docs/operations/recognition.md"
+      >
+        Recognition guide on GitHub
+      </a>
       <p>
         Experimental recognition. Results depend on the recording and indexed
         song sections. Collection counts group verified recording IDs;

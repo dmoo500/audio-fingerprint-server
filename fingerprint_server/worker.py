@@ -74,6 +74,8 @@ class Worker:
                     pending_ids = None
                     self.manual_pending_pass = False
                     continue
+                if self.settings.musicbrainz_enabled and not self.wakeup.is_set():
+                    await self.artwork.process_one(prewarm=True)
                 try:
                     await asyncio.wait_for(
                         self.wakeup.wait(),

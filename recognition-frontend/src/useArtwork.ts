@@ -51,6 +51,7 @@ export function useArtwork(
             url.protocol !== "https:" ||
             url.username ||
             url.password ||
+            url.port ||
             !(
               url.hostname === "archive.org" ||
               url.hostname.endsWith(".archive.org") ||

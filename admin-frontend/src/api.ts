@@ -59,6 +59,7 @@ export type Snapshot = {
     database_bytes: number;
     format_version: number;
     references: { published: number; stored: number };
+    searchable_recordings: number;
     submissions: Record<string, number>;
     manual_review: number | null;
   };

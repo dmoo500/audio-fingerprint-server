@@ -5,6 +5,7 @@ export function useServiceStatus() {
   const availabilityMessage = ref("Checking recognition availability…");
   const count = ref("—");
   const countMessage = ref("Checking the collection…");
+  const countPending = ref(false);
   let active = true;
   let generation = 0;
   let countLoading = false;
@@ -23,18 +24,23 @@ export function useServiceStatus() {
     clearTimeout(countTimer);
     if (!active || document.hidden || countLoading) return;
     countLoading = true;
+    countPending.value = true;
+    const requestGeneration = generation;
     try {
       const response = await fetch("/api/statistics", {
         credentials: "omit",
+        cache: "no-store",
         signal: AbortSignal.timeout(10000),
       });
       const data: unknown = await response.json();
+      if (requestGeneration !== generation) return;
       if (!response.ok || !isCount(data))
         throw new Error("Invalid collection count.");
       count.value = data.recordings.toLocaleString();
       countMessage.value =
         "Only searchable recordings are counted. Not every song or passage is covered.";
     } catch (error) {
+      if (requestGeneration !== generation) return;
       countMessage.value =
         count.value === "—"
           ? "Collection count unavailable right now."
@@ -45,7 +51,11 @@ export function useServiceStatus() {
       );
     } finally {
       countLoading = false;
-      if (active && !document.hidden) countTimer = setTimeout(loadCount, 60000);
+      countPending.value = false;
+      if (active && !document.hidden) {
+        if (requestGeneration !== generation) void loadCount();
+        else countTimer = setTimeout(loadCount, 60000);
+      }
     }
   }
 
@@ -80,6 +90,7 @@ export function useServiceStatus() {
 
   function refresh() {
     generation++;
+    if (document.hidden) countPending.value = false;
     setAvailable(false);
     void loadCount();
     void loadAvailability();
@@ -87,6 +98,7 @@ export function useServiceStatus() {
 
   function hide() {
     active = false;
+    countPending.value = false;
     generation++;
     setAvailable(false);
     clearTimeout(countTimer);
@@ -112,7 +124,14 @@ export function useServiceStatus() {
     document.removeEventListener("visibilitychange", refresh);
   });
 
-  return { available, availabilityMessage, count, countMessage, setAvailable };
+  return {
+    available,
+    availabilityMessage,
+    count,
+    countMessage,
+    countPending,
+    setAvailable,
+  };
 }
 
 function isCount(value: unknown): value is { recordings: number } {

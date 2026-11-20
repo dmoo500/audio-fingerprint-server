@@ -2,20 +2,33 @@
 
 [Home](../../README.md) · [Documentation](../README.md)
 
-What's That Song? is an independent song recognition app for Music Assistant. Its
-optional `fingerprint_server.recognition` service is a standalone public website
-in this repository. Visitors need no account or API keys. It shows a microphone
-button, a song result and one collection counter, not the upload queue,
-reference variants or administrator tools. It replaces the former browser
-microphone test page on the API port.
+What's That Song? is an independent song recognition app for Music Assistant.
+You don't need an account or API key to identify a song.
 
-Use the theme icon in the header to switch between System, Light and Dark.
-The site follows your device by default and remembers manual choices without
-requiring an account.
+**Jump to:** [Sharing](#open-in-music-assistant-share) · [Artwork](#album-artwork) ·
+[Private history](#optional-private-history) · [Setup](#configuration-and-local-development)
 
-![Recognition in dark mode with the account menu and a private history populated with example matches](images/recognition-history.png)
+```mermaid
+flowchart LR
+    Listen["Select Find this song"] --> Capture["Allow the microphone: 10 seconds"]
+    Capture --> Result["See the song and cover, if available"]
+    Result --> Share["Open in Music Assistant Share"]
+    Result --> History["Signed in? Match saved to private history"]
+```
+
+![Example song result and private recognition history in dark mode](images/recognition-history.png)
+
+The theme icon switches between System, Light and Dark. The footer links back
+to this guide.
 
 ## What stays on the server
+
+**Microphone audio is not saved or added to the collection.** The device name
+stays in your browser. The collection counter shows searchable recordings,
+not the number of submitted fingerprints.
+
+<details>
+<summary>Audio processing, privacy and availability checks</summary>
 
 The browser records ten seconds of mono PCM, stops the microphone and sends the
 recording to this website's own backend. The backend attaches a dedicated read-only
@@ -45,6 +58,8 @@ The backend caches the count for up to 60 seconds. The browser loads it on page
 opening and refreshes every 60 seconds while visible, including after a failed
 request. Refreshes pause in hidden tabs and resume immediately when the page
 becomes visible again. Failed refreshes are explicit and are not displayed as zero.
+An initial loading animation is decorative and respects reduced-motion settings.
+Once a count is available, it stays visible during refresh.
 
 The microphone button stays disabled until the recognition service is available.
 If the backend or database becomes unavailable, the page displays a temporary
@@ -53,7 +68,25 @@ visible. It enables the button automatically when service returns. The backend
 shares a ten-second health-check cache between visitors; neither credentials nor
 database details are exposed to the browser.
 
+</details>
+
+## Open in Music Assistant Share
+
+The current match offers a labeled **Open in Music Assistant Share** link. History
+entries with a title show the [Music Assistant logomark](https://brands.openhomefoundation.org/music-assistant/#logomark)
+at the right of each row. Hover or focus it to see the link label. Both links
+open Music Assistant Share in a new tab.
+Sharing works without a cover. Links carry the song details and, when loaded,
+the public cover URL, but no provider links, fingerprints, account data or dates.
+
 ## Album artwork
+
+The song appears immediately; the cover can arrive later. If no cover loads,
+the record illustration stays in place. The browser loads images directly from
+Cover Art Archive or archive.org, which receives the browser's IP address.
+
+<details>
+<summary>How the worker finds and caches covers</summary>
 
 Successful matches offer a separate, short-lived artwork URL on this service.
 The song card appears immediately, with a decorative record placeholder in the
@@ -67,8 +100,9 @@ pending responses use three-second intervals to limit backend traffic.
 The public token expires after ten minutes and does not reveal the reference ID.
 
 The existing ingestion worker resolves the recording's releases through its
-shared, throttled MusicBrainz client. It selects a release group only when releases
-matching the supplied album name identify one unique group. This is representative
+shared, throttled MusicBrainz client. It compares the supplied album name with
+release and release-group titles and requires one unique group. If that group
+has no front cover, it checks up to three matching releases in the group. This is representative
 album art; known parenthesized edition labels such as "Deluxe Edition" and
 "Deluxe Version" are ignored
 when comparing album names. Live/version titles are not stripped. This is
@@ -78,8 +112,9 @@ address on the worker as for metadata verification; no additional key is needed.
 
 Cover Art Archive is queried at most once per 1.1 seconds with a HEAD request.
 The worker reads only the redirect, never the image bytes. Group-level cover
-results, including confirmed absence, use the existing seven-day enrichment cache.
-Per-reference results expire after 30 days. Temporary failures are reported
+and release-level results, including confirmed absence, use the existing seven-day
+enrichment cache. Per-reference covers expire after 30 days; new negative results
+expire after seven days. Temporary failures are reported
 separately, expire after a minute, and are not cached as missing covers.
 
 The browser loads a cover directly from the archive over HTTPS without a referrer;
@@ -87,14 +122,23 @@ this makes its IP address visible to the image host. Only Cover Art Archive and
 archive.org image hosts are permitted by validation and the page's image policy.
 Recognition credentials are never sent to them.
 
+</details>
+
 ### Additive database migration
+
+<details>
+<summary>Edition matching backlog, schema and rollout notes</summary>
 
 Startup installs the independently versioned artwork extension (version 1), like
 the application credential registry: `artwork_requests` plus the `artwork_schema`
 entry in existing service state. Installation is transactional and idempotent on
 SQLite and PostgreSQL. Existing reference rows, fingerprint formats and core
 database versions are unchanged; there is no rescan or bulk MusicBrainz lookup.
-The queue/cache is bounded to 4,096 entries and populated only on demand.
+When the worker has no submissions or requested artwork to process, it prepares
+at most one published reference every 15 seconds. It caches the URL or lookup
+result, not image files. This stops at 3,072 entries so that on-demand lookups
+have room in the shared 4,096-entry queue/cache. Idle retries after a temporary
+error wait at least an hour; an explicit artwork request can retry sooner.
 The offline database import/export transfers this optional cache.
 
 Deploy the updated worker, API and recognition service and update the gateway's
@@ -102,6 +146,8 @@ read-authenticated `/api/v1/dejavu/artwork/*` route. Multiple API replicas share
 queue; only the owned ingestion worker calls MusicBrainz or Cover Art Archive.
 If rolling back, retain the additive table and state entry. A server older than
 this extension may reject the additional SQLite table during schema validation.
+
+</details>
 
 ## Configuration and local development
 
@@ -205,23 +251,12 @@ before exposing it.
 
 ## Optional private history
 
-The theme button cycles through System, Light and Dark. System is the default
-and follows changes to the device's appearance. Manual choices are remembered.
-
-Recognition works without an account. With accounts enabled, **Save your
-finds with an account** in the header explains what is saved and how to
-register. Open the account icon in the top-right corner to sign in or select
-**Register with an invitation** and choose a username and password. Successful matches
-initiated while signed in are automatically saved to that account, up to the
-most recent 500. The page refreshes your history after each successful match.
-If the same song is recognized twice in a row within 60 seconds, only the
-latest recognition is kept. When you are signed in, your username appears beside the
-account icon. Saved matches appear across the page below the recognition card,
-with title, artists, the date and time they were recognized, and cover art when
-available. Older matches without an artwork reference show a placeholder.
-You can clear the history from the account dialog.
-No audio, fingerprints, missed matches or anonymous matches are
-stored. Account credentials are separate from all existing gateway keys.
+1. Open the account icon and sign in, or choose **Register with an invitation**.
+2. Recognize a song while signed in. Successful matches appear below the song
+   card; the history keeps up to 500. Consecutive matches of the same song within
+   60 seconds keep only the latest entry.
+3. Use the account dialog to clear your history. Audio, fingerprints, missed
+   matches and anonymous recognitions are not saved.
 
 To enable accounts in Docker, add `-f compose.recognition-accounts.yaml` to the
 existing invocation and rebuild only `recognition`. The writable

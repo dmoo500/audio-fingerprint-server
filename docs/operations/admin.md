@@ -2,83 +2,33 @@
 
 [Documentation](../README.md)
 
-The optional admin service serves a Vue 3 frontend and a private, same-origin
-JSON API, separate from the public fingerprint API.
-It adds searchable, server-paginated metadata tables without introducing ORM
-models or changing the database schema. It supports SQLite and PostgreSQL with
-APISIX.
+Use the private Admin website to monitor the collection, review submissions
+and manage API keys. For a local deployment, open
+<http://127.0.0.1:8099/admin/> and sign in as **admin**.
 
-## What it provides
+**Jump to:** [Overview](#overview) · [Submissions](#search-and-sort) ·
+[MusicBrainz reviews](#musicbrainz-reviews) · [API keys](#personal-api-keys) ·
+[Setup](#local-activation)
 
-- Database size (including indexes, excluding WAL), layout version,
-  worker availability, reference counts and submission lifecycle counts.
-- Searchable submissions and references, detail views, sortable columns and
-  advanced text filters. Tables show at most 100 records per page and scroll
-  within the page; raw fingerprint documents are never returned.
-- An **Unresolved ISRC submissions** table: all retained submissions with an
-  ISRC whose state is not `processed`, including waiting and failed entries.
-  This is a processing-state view, not a certificate of ISRC validity.
-  Historical processed records do not store whether resolution was based on
-  an ISRC association or a strict metadata match, so the UI cannot reconstruct
-  that distinction.
-- A non-destructive pending review using the existing worker controls.
-  This preserves unresolved entries and does not increase their completed
-  pending-check count. Normal housekeeping remains a separate operation.
-- Confirmed individual/bulk retries and submission deletions. Queued and
-  processing jobs cannot be changed. Retry is limited to failed/unresolved
-  records, respects shared admission budgets, resets attempt counts and
-  preserves completed pending-check counts. Deleting a submission retains its
-  acoustic reference and landmarks; it is **not** a reference purge.
-- Personal APISIX key creation/revocation. Stored secrets are never displayed;
-  a newly generated secret is shown only in its creation response. Names have
-  a random suffix to avoid replacing an existing named consumer through
-  APISIX's upsert endpoint.
-- Separate **Application keys** page for creating and revoking named application
-  credentials. Secrets appear once on creation; the database stores only SHA-256
-  hashes of the randomly generated keys. Revoked identities remain listed for
-  audit purposes. Every application still needs a personal key for permissions.
-  Internal scope and gateway/admin credentials are not managed here.
-
-MusicBrainz cooldown is worker-local and is not reported by this service.
-No data is submitted back to MusicBrainz.
-
-## A quick look
-
-After signing in, use the left sidebar to switch between admin pages. On narrow
-screens, use the three-line menu icon above the page content to open the
-navigation and the **X** icon to close it.
-Use the moon or sun icon in the header to switch to dark or light mode.
-The admin starts in light mode and remembers your choice in this browser.
-
-Actions such as copying a track title or refreshing the charts show a short
-notification. Manual copy instructions and one-time keys stay visible so
-you have time to use them.
-
-These screenshots show the previous layout and use synthetic example records and key names, not a live
-installation's private data. Creation screenshots show clearly labelled,
-non-functional example credentials only.
+Screenshots use synthetic records and non-functional example credentials.
+Some show an earlier layout.
 
 ### Overview
 
-The overview shows worker availability, database size and live ingestion counts:
-queued, processing, pending metadata and awaiting manual MusicBrainz review.
-Select **View pending submissions** below the **Pending metadata** count to
-open the submissions list with that status filter. The **Manual MusicBrainz
-review** card links to **Review candidates** in the same position. Manual
-review is a subset of pending metadata. The connection indicator shows whether
-live data is current.
+![Admin overview showing worker availability, database size, acoustic references and searchable recordings](images/admin-overview.png)
 
-The history charts show searchable recordings (not individual fingerprint
-references) and the submission backlog. The worker stores one sample per UTC
-hour and keeps the most recent 30 days. History begins with the first saved
-sample; missing hours stay blank. Use **Refresh charts** to load the latest
-saved samples without reloading the overview.
-The updated server creates the history table on startup without rewriting
-existing fingerprints. Deploy the updated worker to start collection.
-
-![Admin overview with worker availability, database size and submission counts](images/admin-overview.png)
+| Card | What to look for |
+| --- | --- |
+| **Searchable recordings** | Same count as Recognition; verified variants count once. |
+| **Acoustic references** | Published fingerprints versus all stored fingerprints. |
+| **Database size** | Includes indexes, excludes the SQLite WAL. |
+| **Pending metadata** | **View pending submissions** opens the filtered list. |
+| **Manual MusicBrainz review** | **Review candidates** opens the subset requiring a decision. |
 
 ![Live ingestion queue and 30-day charts for searchable recordings and submission backlog, with the Refresh charts button](images/admin-queue-history.png)
+
+Use **Refresh charts** for the latest saved samples. The worker saves hourly
+samples for 30 days; missing hours stay blank.
 
 ### MusicBrainz reviews
 
@@ -98,45 +48,51 @@ still show their album credits but have no highlight.
 
 ### Search and sort
 
-Searching for `ACDC` also finds `AC/DC`. The result count confirms that the
-filter has finished; column headings control sorting. The **X** in the search
-field clears the search without changing advanced filters or sorting. Use **Show/Hide columns**
-to adjust the visible fields without changing the results, or **Filter** for
-literal matching. Wider tables scroll horizontally without moving the page
-controls. Long values are shortened to keep rows compact. Hover over a cell to
-see its full value, or click or tap an underlined preview to open it. The ID
-link opens the full record.
-Use the eye icon to open a record. In submission lists, the retry and delete
-icons act on that row only and require confirmation. References are read-only.
-
 ![Submissions table filtered by ACDC, showing three matching example recordings](images/admin-search.png)
+
+```mermaid
+flowchart LR
+    List["Search, filter or sort the list"] --> Open["Open via eye icon or ID"]
+    Open --> Detail["Submission detail"]
+    Detail --> Browse["Previous / Next in the same list order"]
+    Browse --> Detail
+    Detail --> Back["Back: restore original page and filters"]
+```
+
+- **Search:** `ACDC` finds `AC/DC`. **X** clears only the search; **Filter** matches a specific field.
+- **Sort:** Click a heading to change direction; Shift-click adds another column. Empty values stay last.
+- **Artwork:** Both lists show cached covers in a non-sortable column. Reload to see newly cached covers. Submission details display the same cached image; published reference details can also request one and show its status.
+- **Details:** **Previous / Next** can cross pages. Direct detail links have no list context. Hover over shortened values or open underlined previews to read the full text.
+- **Retry and delete:** Row and bulk actions require confirmation. Deleting a submission does **not** delete its acoustic reference. References are read-only.
+
+<details>
+<summary>Submission and reference rules</summary>
+
+- The **Reference ID** links a submission to a stored acoustic fingerprint. It is not a MusicBrainz ID and can be empty before a submission is processed.
+- **Unresolved ISRC submissions** includes retained entries with an ISRC whose state is not `processed`. It does not certify ISRC validity or show how a processed recording was verified.
+- A pending review preserves unresolved entries and their completed recheck counts. Normal housekeeping is separate.
+- Queued and processing entries cannot be changed. Retry is limited to failed or unresolved submissions, respects admission budgets and resets attempts but not completed rechecks.
+- Tables show up to 100 records per page and scroll within their own area. Raw fingerprints are never returned. Reviews do not send data back to MusicBrainz; worker cooldown is not shown in Admin.
+
+</details>
 
 ### Personal API keys
 
-Issue personal keys with read, upload or combined permissions. To revoke a
-personal or application key, select **Confirm revocation** in that key's row
-and click **Revoke**. Existing secret values are never displayed.
-Like the data tables, key tables scroll horizontally inside their own area
-when the columns do not fit; the rest of the page stays in place.
+Choose read, upload or both. To revoke a personal or application key, select
+**Confirm revocation** in its row, then **Revoke**.
 
 ![Personal API key creation form and example read and upload identities](images/admin-personal-keys.png)
 
-After creation, save the personal key before leaving or dismissing the page:
-its value will not appear in the list again.
+**Save the secret at creation.** It will not appear in the list again.
 
 ![One-time personal API key display with an explicitly invalid example credential](images/admin-personal-key-created.png)
 
 ### Application keys
 
-Applications have separate revocable keys, in addition to the personal key
-that grants permissions. The legacy environment token is identified but not
-revealed, and revoked application identities remain visible.
+Clients send **both**: the personal key in `X-API-Key`, and the application
+token in `X-Application-Key`. Revoked applications remain visible for audit.
 
 ![Application key management with active and revoked example identities](images/admin-applications.png)
-
-The application token is also shown only once. Clients send this value in
-`X-Application-Key`, alongside their personal key in `X-API-Key`. The visible
-example below is deliberately not a valid token.
 
 ![One-time application token display with an explicitly invalid example credential](images/admin-application-token-created.png)
 
@@ -169,20 +125,18 @@ does not delete them.
 
 ## Live updates
 
-Table search filters the entire dataset on the server, not just the visible
-page. Typing, pasting and clearing the search field apply after a 350 ms pause;
-Enter applies immediately. Search is case-insensitive and also matches with
-spaces and punctuation removed, so `ACDC` finds `AC/DC`. Punctuation-only
-queries still use literal matching rather than matching everything. Advanced
-field filters retain their literal matching rules.
-Click column headings to toggle ascending/descending order, or Shift-click
-for multiple sort columns. Numeric counts and verification versions sort
-numerically. Selection/action and hidden metadata columns are not sortable.
-The query status explicitly shows when a search or table load is running,
-then shows the matching-record count. Previous rows stay visible until the
-response arrives; a failed request is marked as an error, not an empty result.
-Metadata searches still read the stored submission documents and can take
-several seconds on larger collections.
+The overview updates automatically. Tables keep your current rows until you
+choose **Newer data available - refresh**. Refresh keeps search, sorting,
+page and scroll position but clears selected rows.
+
+<details>
+<summary>Search timing, live updates and troubleshooting</summary>
+
+Search runs across the entire dataset after a 350 ms pause, or immediately
+with Enter. It ignores case and can match without punctuation; punctuation-only
+queries and advanced filters retain literal matching. Metadata searches can
+take several seconds on larger collections. A failed request does not replace
+the current rows with an empty result.
 
 The overview receives counts, database size and worker availability through an
 authenticated Server-Sent Events (SSE) connection. One shared sampler checks
@@ -193,13 +147,6 @@ explicitly; displayed numbers must not be treated as fresh during an outage.
 On the overview and database table pages, the connection status shows the last
 successful check or explains why the data may be stale. Key-management pages
 do not open a live database stream.
-
-Submission, unresolved-ISRC and reference tables keep their rows, filters,
-sorting, selection and scroll position when changes arrive. A **Newer data
-available - refresh** button lets the operator reload rows explicitly, keeping
-the current search, sort, page and scroll position. That explicit refresh
-clears selected rows to avoid applying actions to an outdated selection.
-API-key pages are not part of this database stream.
 
 Table notices are advisory: PostgreSQL uses asynchronous per-table write
 counters plus lifecycle/reference counts, not expensive metadata or landmark
@@ -219,6 +166,8 @@ sign you out. The browser reconnects automatically
 after a connection failure. A service restart invalidates sessions and requires
 signing in again. Reverse proxies must disable buffering for `/admin/events`
 and allow long-lived responses.
+
+</details>
 
 ## Local activation
 

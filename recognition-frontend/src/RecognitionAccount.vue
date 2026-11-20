@@ -2,6 +2,7 @@
 import { UserRound, X } from "@lucide/vue";
 import { onMounted, ref, watch } from "vue";
 import HistoryArtwork from "./HistoryArtwork.vue";
+import SongShareLink from "./SongShareLink.vue";
 
 type Hit = {
   id: number;
@@ -300,17 +301,32 @@ watch(() => props.revision, loadHistory);
       <h2 id="history-heading">Recognition history</h2>
       <ol tabindex="0" aria-labelledby="history-heading">
         <li v-for="hit in hits" :key="hit.id">
-          <HistoryArtwork :hit-id="hit.has_artwork ? hit.id : undefined" />
-          <div class="history-track">
-            <strong>{{ hit.title }}</strong>
-            <span v-if="hit.artists.length">{{ hit.artists.join(", ") }}</span>
-          </div>
-          <div class="history-date">
-            <span>Recognized on</span>
-            <time :datetime="new Date(hit.recognized_at * 1000).toISOString()">
-              {{ new Date(hit.recognized_at * 1000).toLocaleString() }}
-            </time>
-          </div>
+          <HistoryArtwork
+            v-slot="{ coverUrl }"
+            :hit-id="hit.has_artwork ? hit.id : undefined"
+          >
+            <div class="history-track">
+              <strong>{{ hit.title }}</strong>
+              <span v-if="hit.artists.length">{{
+                hit.artists.join(", ")
+              }}</span>
+            </div>
+            <div class="history-date">
+              <span>Recognized on</span>
+              <time
+                :datetime="new Date(hit.recognized_at * 1000).toISOString()"
+              >
+                {{ new Date(hit.recognized_at * 1000).toLocaleString() }}
+              </time>
+            </div>
+            <SongShareLink
+              :title="hit.title"
+              :artists="hit.artists"
+              :cover-url="coverUrl"
+              lazy
+              compact
+            />
+          </HistoryArtwork>
         </li>
       </ol>
     </section>

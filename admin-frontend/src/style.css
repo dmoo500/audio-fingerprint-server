@@ -124,6 +124,9 @@ td { max-width: 28rem; overflow-wrap: anywhere; }
 .records-table input[type="checkbox"] { width: 1rem; height: 1rem; margin: 0; vertical-align: middle; accent-color: #2563a6; }
 .records-table td .actions { margin: 0; }
 .records-table :is(.row-actions-cell, .row-actions-heading) { width: 1%; padding-inline: .3rem .6rem; }
+.records-table .artwork-cell { width: 1%; text-align: center; }
+.artwork-cell img { display: block; margin-inline: auto; object-fit: cover; border-radius: .2rem; }
+.detail-cover { object-fit: contain; border-radius: .2rem; }
 .row-actions { display: flex; gap: .15rem; }
 .row-actions :is(a, button) { display: grid; place-items: center; width: 1.65rem; height: 1.75rem; padding: 0; border: 0; border-radius: .25rem; background: transparent; color: #096bc2; }
 .row-actions :is(a, button:not(:disabled)):hover { background: #e9f2ff; }

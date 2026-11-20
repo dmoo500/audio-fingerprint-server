@@ -53,7 +53,8 @@ SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; "
-    "style-src 'self'; img-src 'self'; connect-src 'self'; "
+    "style-src 'self'; img-src 'self' https://archive.org https://*.archive.org "
+    "https://coverartarchive.org; connect-src 'self'; "
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     "Referrer-Policy": "same-origin",
 }

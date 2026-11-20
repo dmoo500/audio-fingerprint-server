@@ -14,6 +14,7 @@ from test_admin import ORIGIN, configuration, create_admin, login
 from fingerprint_server.admin.app import AdminSettings
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.admin.sqlite_data import SQLiteAdminData
+from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.database.application_keys import ApplicationKeys, initialize
 from fingerprint_server.database.metrics import capture_hour
 from fingerprint_server.database.sqlite import Store
@@ -176,11 +177,21 @@ def test_hourly_history(data: SQLiteAdminData) -> None:
 
 
 def test_full_admin_starts_with_sqlite(data: SQLiteAdminData) -> None:
+    with data.store.connect() as db:
+        db.execute(
+            "INSERT INTO reference_tracks(reference_key,metadata,created_at,"
+            "publication_ready,recording_key) VALUES "
+            "('a','{}',0,1,'same'),('b','{}',0,1,'same'),"
+            "('c','{}',0,1,NULL),('d','{}',0,1,''),('hidden','{}',0,0,'other')"
+        )
     with TestClient(create_admin(data.settings)) as client:
         assert login(client).status_code == 200
         response = client.get("/admin/api/overview")
         assert response.status_code == 200
-        assert response.json()["overview"]["database_bytes"] > 0
+        overview = response.json()["overview"]
+        assert overview["database_bytes"] > 0
+        assert overview["references"] == {"published": 4, "stored": 5}
+        assert overview["searchable_recordings"] == 3
         assert client.get("/admin/api/applications").status_code == 200
         response = client.post(
             "/admin/api/applications",
@@ -189,3 +200,94 @@ def test_full_admin_starts_with_sqlite(data: SQLiteAdminData) -> None:
         )
         assert response.status_code == 200
         assert response.json()["new_key"].startswith("fpapp_")
+
+
+def test_admin_artwork_requires_session_and_publication(data: SQLiteAdminData) -> None:
+    reference = "b" * 64
+    image = "https://archive.org/download/example/cover-500.jpg"
+    queue = ArtworkStore(data.store)
+    queue.initialize()
+    with data.store.connect() as db:
+        db.execute(
+            "INSERT INTO reference_tracks(reference_key,metadata,created_at,publication_ready) "
+            "VALUES(?,?,0,1)",
+            (
+                reference,
+                '{"recording_mbid":"4dc16a49-7330-4164-854b-b6a6d3a89a87","album":"Album"}',
+            ),
+        )
+    with TestClient(create_admin(data.settings)) as client:
+        path = f"/admin/api/references/{reference}/artwork"
+        assert client.get(path).status_code == 401
+        assert queue.next() is None
+        assert login(client).status_code == 200
+        assert client.get(path).json() == {"status": "pending", "url": None}
+        queue.finish(reference, image)
+        assert client.get(path).json() == {"status": "ready", "url": image}
+        queue.finish(reference, "https://other.example/cover")
+        assert client.get(path).status_code == 502
+        queue.finish(reference, image)
+        with data.store.connect() as db:
+            db.execute("UPDATE reference_tracks SET publication_ready=0")
+        assert client.get(path).json() == {"status": "missing", "url": None}
+
+
+def test_submission_list_sorts_text_and_only_reads_cached_artwork(data: SQLiteAdminData) -> None:
+    queue = ArtworkStore(data.store)
+    queue.initialize()
+    image = "https://archive.org/download/example/cover-500.jpg"
+    with data.store.connect() as db:
+        for index, title in enumerate(("Zulu", "alpha", None, "")):
+            reference = str(index) * 64
+            metadata = {
+                "title": title,
+                "album": "Album",
+                "recording_mbid": "4dc16a49-7330-4164-854b-b6a6d3a89a87",
+            }
+            db.execute(
+                "INSERT INTO reference_tracks(reference_key,metadata,created_at,publication_ready) "
+                "VALUES(?,?,0,?)",
+                (reference, json.dumps(metadata), int(index != 2)),
+            )
+            db.execute(
+                "INSERT INTO submissions(id,state,document,created_at,reference_id) "
+                "VALUES(?,'processed',?,0,?)",
+                (str(index), json.dumps({"metadata": metadata}), reference),
+            )
+    for index in (0, 1, 2):
+        reference = str(index) * 64
+        if index != 2:
+            assert queue.request(reference)["status"] == "pending"
+        else:
+            with data.store.connect() as db:
+                db.execute(
+                    "INSERT INTO artwork_requests VALUES(?,'pending',NULL,0,0)", (reference,)
+                )
+        queue.finish(reference, image if index != 0 else "https://not-archive.example/cover")
+
+    with TestClient(create_admin(data.settings)) as client:
+        assert login(client).status_code == 200
+        path = "/admin/api/tables/submissions"
+        for direction, ids in (("asc", ["1", "0", "2", "3"]), ("desc", ["0", "1", "2", "3"])):
+            response = client.get(f"{path}?order_by=title:{direction}")
+            assert response.status_code == 200
+            result = response.json()
+            assert [row["id"] for row in result["items"]] == ids
+            assert {row["id"]: row["artwork_url"] for row in result["items"]} == {
+                "0": None,
+                "1": image,
+                "2": None,
+                "3": None,
+            }
+            assert "artwork_url" not in result["sortable"]
+        assert client.get(f"{path}?order_by=artwork_url:asc").status_code == 422
+        references = client.get("/admin/api/tables/references?order_by=title:asc").json()
+        assert [row["id"] for row in references["items"]] == [
+            str(index) * 64 for index in (1, 0, 2, 3)
+        ]
+        assert [row["artwork_url"] for row in references["items"]] == [image, None, None, None]
+        assert "artwork_url" not in references["sortable"]
+        assert client.get(f"{path}/1").json()["artwork_url"] == image
+        assert client.get(f"{path}/2").json()["artwork_url"] is None
+    with data.store.connect() as db:
+        assert db.execute("SELECT count(*) FROM artwork_requests").fetchone()[0] == 3

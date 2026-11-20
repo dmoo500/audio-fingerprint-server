@@ -16,7 +16,7 @@ import httpx
 
 from fingerprint_server.admin.data import STATES, TEXT_FIELDS, AdminFilters, Dataset, Filter
 from fingerprint_server.admin.errors import ActionFailed
-from fingerprint_server.database.metrics import HISTORY_HOURS, REVIEW_COUNT
+from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.settings import Settings
 
@@ -114,15 +114,7 @@ class SQLiteAdminData(AdminFilters):
                 raise ActionFailed("Select at most 100 entries")
             clause += " AND id IN (" + ",".join("?" for _ in pks) + ")"
             args.extend(pks)
-        order = []
-        for item in order_by or ["created_at desc"]:
-            parts = item.split()
-            if len(parts) != 2 or parts[0] not in self.sortable_fields(dataset):
-                raise ActionFailed("Unsupported sorting field")
-            if parts[1] not in ("asc", "desc"):
-                raise ActionFailed("Unsupported sorting direction")
-            order.append(" ".join(parts))
-        order.append("id asc")
+        order = self.sort_clause(dataset, order_by)
         source = self.source(dataset)
         with self.store.connect() as db:
             if count:
@@ -138,7 +130,7 @@ class SQLiteAdminData(AdminFilters):
             )
             result = db.execute(
                 f"SELECT id,created_at,metadata,{columns} FROM ({source}) entries WHERE {clause} "
-                f"ORDER BY {','.join(order)} LIMIT ? OFFSET ?",
+                f"ORDER BY {order} LIMIT ? OFFSET ?",
                 [*args, limit, skip],
             ).fetchall()
         rows = [dict(row) for row in result]
@@ -170,12 +162,8 @@ class SQLiteAdminData(AdminFilters):
                     )
                 }
             )
-            reference_row = db.execute(
-                "SELECT count(*) AS stored,count(*) FILTER (WHERE publication_ready=1) "
-                "AS published FROM reference_tracks"
-            ).fetchone()
-            assert reference_row is not None
-            references = dict(reference_row)
+            counts = db.execute(REFERENCE_COUNTS).fetchone()
+            assert counts is not None
             version = db.execute("PRAGMA user_version").fetchone()[0]
             review_table = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='musicbrainz_reviews'"
@@ -193,7 +181,8 @@ class SQLiteAdminData(AdminFilters):
             healthy = False
         return {
             "submissions": uploads,
-            "references": references,
+            "references": {"published": counts["published"], "stored": counts["stored"]},
+            "searchable_recordings": counts["searchable_recordings"],
             "manual_review": review["count"] if review is not None else None,
             "database_bytes": self.store.path.stat().st_size,
             "format_version": version,

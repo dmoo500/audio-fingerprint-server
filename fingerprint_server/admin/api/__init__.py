@@ -84,6 +84,7 @@ def routes() -> list[web.RouteDef]:
         web.post("/admin/api/pending-review", pending_review, name="audit-pending-review"),
         web.get("/admin/api/tables/{dataset}", tables.table),
         web.get("/admin/api/tables/{dataset}/{identifier}", tables.detail),
+        web.get("/admin/api/references/{identifier}/artwork", tables.artwork),
         web.post("/admin/api/tables/{dataset}/actions", tables.action, name="audit-table-action"),
         web.get("/admin/api/reviews", reviews.reviews),
         web.post("/admin/api/reviews", reviews.select_review, name="audit-review-selection"),

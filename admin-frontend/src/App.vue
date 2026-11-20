@@ -5,6 +5,7 @@ import { api, errorMessage, SessionExpired, type Snapshot } from "./api";
 import AdminNavigation from "./components/AdminNavigation.vue";
 import Overview from "./components/Overview.vue";
 import DataTable from "./components/DataTable.vue";
+import type { SubmissionNavigation } from "./submissionNavigation";
 import Reviews from "./components/Reviews.vue";
 import Credentials from "./components/Credentials.vue";
 import { provideToast } from "./composables/useToast";
@@ -34,6 +35,9 @@ function toggleTheme() {
 
 const route = ref(location.pathname);
 const routeSearch = ref(location.search);
+const submissionNavigation = ref<SubmissionNavigation | null>(
+  history.state?.submissionNavigation ?? null,
+);
 const authenticated = ref(false);
 const { toast, dismiss } = provideToast(() => authenticated.value);
 watch(authenticated, (signedIn) => {
@@ -88,8 +92,21 @@ const detailId = computed(() => {
 function navigate(path: string, replace = false) {
   if (replace) history.replaceState(null, "", path);
   else history.pushState(null, "", path);
-  route.value = location.pathname;
-  routeSearch.value = location.search;
+  popstate();
+  window.scrollTo(0, 0);
+}
+function browse(path: string, context: SubmissionNavigation) {
+  if (
+    `${route.value}${routeSearch.value}` === context.listPath &&
+    path !== context.listPath
+  )
+    history.replaceState(
+      { submissionNavigation: context },
+      "",
+      context.listPath,
+    );
+  history.pushState({ submissionNavigation: context }, "", path);
+  popstate();
   window.scrollTo(0, 0);
 }
 async function navigateFromMenu(path: string) {
@@ -244,6 +261,7 @@ async function logout() {
 function popstate() {
   route.value = location.pathname;
   routeSearch.value = location.search;
+  submissionNavigation.value = history.state?.submissionNavigation ?? null;
 }
 function pagehide() {
   stopLive();
@@ -387,8 +405,11 @@ onUnmounted(() => {
           :key="`${route}:${pendingMetadataOnly}`"
           :dataset="tableRoute[1]!"
           :pending-metadata-only="pendingMetadataOnly"
+          :list-path="`${route}${routeSearch}`"
+          :submission-navigation="submissionNavigation"
           :snapshot="snapshot"
           @navigate="navigate"
+          @browse="browse"
         />
         <Reviews v-else-if="route === '/admin/musicbrainz-reviews'" />
         <Credentials

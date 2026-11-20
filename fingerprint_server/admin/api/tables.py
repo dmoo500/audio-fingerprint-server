@@ -1,6 +1,7 @@
 """Admin metadata tables and guarded submission actions."""
 
-from typing import Annotated, Literal
+import re
+from typing import Annotated, Any, Literal
 
 from aiohttp import web
 from pydantic import BaseModel, Field, ValidationError
@@ -10,7 +11,10 @@ from fingerprint_server.admin.api.request import parse_filters, query_dataset, q
 from fingerprint_server.admin.audit import ACTION
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.aiohttp_support import HTTPError
+from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database import Storage
+from fingerprint_server.http_utils import trusted_image
 
 
 class TableAction(BaseModel):
@@ -61,9 +65,12 @@ async def table(request: web.Request) -> web.Response:
     except ActionFailed as err:
         raise HTTPError(422, str(err)) from err
     assert isinstance(rows, list) and isinstance(total, int)
+    items = [{field: row.get(field) for field in fields} for row in rows]
+    reference_field = "id" if dataset == "references" else "reference_id"
+    await _add_cached_artwork(data.store, items, reference_field)
     return web.json_response(
         {
-            "items": [{field: row.get(field) for field in fields} for row in rows],
+            "items": items,
             "total": total,
             "fields": fields,
             "searchable": data.fields(dataset),
@@ -75,13 +82,25 @@ async def table(request: web.Request) -> web.Response:
 async def detail(request: web.Request) -> web.Response:
     """Return the metadata-only detail for one table entry."""
     dataset = query_dataset(request)
-    rows = await run_sync(
-        data_for(request).read, dataset, pks=[request.match_info["identifier"]], limit=1
-    )
+    data = data_for(request)
+    rows = await run_sync(data.read, dataset, pks=[request.match_info["identifier"]], limit=1)
     assert isinstance(rows, list)
     if not rows:
         raise HTTPError(404, "Entry not found")
+    if dataset != "references":
+        await _add_cached_artwork(data.store, rows, "reference_id")
     return web.json_response(rows[0])
+
+
+async def artwork(request: web.Request) -> web.Response:
+    """Request artwork for one published reference from the shared worker queue."""
+    identifier = request.match_info["identifier"]
+    if not re.fullmatch(r"[a-f0-9]{64}", identifier):
+        raise HTTPError(404, "Reference not found")
+    result = await run_sync(ArtworkStore(data_for(request).store).request, identifier)
+    if result["status"] == "ready" and not trusted_image(result["url"]):
+        raise HTTPError(502, "Invalid album artwork address")
+    return web.json_response(result)
 
 
 async def action(request: web.Request) -> web.Response:
@@ -96,3 +115,17 @@ async def action(request: web.Request) -> web.Response:
         raise HTTPError(400, "References are read-only")
     await run_sync(data_for(request).mutate, body.ids, body.operation)
     return web.json_response({})
+
+
+async def _add_cached_artwork(
+    store: Storage, rows: list[dict[str, Any]], reference_field: str
+) -> None:
+    references = {
+        reference
+        for row in rows
+        if isinstance(reference := row.get(reference_field), str) and reference
+    }
+    covers = await run_sync(ArtworkStore(store).ready_urls, sorted(references))
+    for row in rows:
+        reference = row.get(reference_field)
+        row["artwork_url"] = covers.get(reference) if isinstance(reference, str) else None
