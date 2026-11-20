@@ -62,9 +62,11 @@ non-functional example credentials only.
 
 The overview shows worker availability, database size and live ingestion counts:
 queued, processing, pending metadata and awaiting manual MusicBrainz review.
-Select **Pending metadata** to open the submissions list with that status filter.
-Manual review is a subset of pending metadata. The connection indicator shows
-whether live data is current.
+Select **View pending submissions** below the **Pending metadata** count to
+open the submissions list with that status filter. The **Manual MusicBrainz
+review** card links to **Review candidates** in the same position. Manual
+review is a subset of pending metadata. The connection indicator shows whether
+live data is current.
 
 The history charts show searchable recordings (not individual fingerprint
 references) and the submission backlog. The worker stores one sample per UTC

@@ -197,7 +197,18 @@ describe("table", () => {
     const shortcut = wrapper.get(
       'a[href="/admin/submissions/list?state=pending_metadata"]',
     );
-    expect(shortcut.text()).toBe("Pending metadata");
+    const review = wrapper.get('.stats a[href="/admin/musicbrainz-reviews"]');
+    expect(review.text()).toBe("Review candidates");
+    expect(shortcut.text()).toBe("View pending submissions");
+    for (const [link, label] of [
+      [shortcut, "Pending metadata"],
+      [review, "Manual MusicBrainz review"],
+    ] as const) {
+      const card = link.element.closest(".card");
+      expect(card?.firstElementChild?.matches("span.subheader")).toBe(true);
+      expect(card?.firstElementChild?.textContent).toBe(label);
+      expect(link.element.previousElementSibling?.tagName).toBe("STRONG");
+    }
     await shortcut.trigger("click");
     await flushPromises();
     expect(location.search).toBe("?state=pending_metadata");

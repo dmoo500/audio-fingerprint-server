@@ -13,11 +13,26 @@ const historyLoading = ref(false);
 const historyError = ref("");
 const pending = ref(false);
 const notify = useToast();
-const queue = [
-  ["queued", "Queued"],
-  ["processing", "Processing"],
-  ["pending_metadata", "Pending metadata"],
-  ["manual_review", "Manual MusicBrainz review"],
+const queue: {
+  key: string;
+  label: string;
+  link?: { href: string; label: string };
+}[] = [
+  { key: "queued", label: "Queued" },
+  { key: "processing", label: "Processing" },
+  {
+    key: "pending_metadata",
+    label: "Pending metadata",
+    link: {
+      href: "/admin/submissions/list?state=pending_metadata",
+      label: "View pending submissions",
+    },
+  },
+  {
+    key: "manual_review",
+    label: "Manual MusicBrainz review",
+    link: { href: "/admin/musicbrainz-reviews", label: "Review candidates" },
+  },
 ];
 const submissions = computed(() => current.value?.overview.submissions ?? {});
 const total = computed(() =>
@@ -136,27 +151,18 @@ onMounted(() => {
     </div>
     <h2>Ingestion queue</h2>
     <div class="grid stats">
-      <div v-for="[key, label] in queue" :key="key" class="card">
-        <a
-          v-if="key === 'pending_metadata'"
-          class="subheader"
-          href="/admin/submissions/list?state=pending_metadata"
-          @click.exact.prevent="
-            $emit('navigate', '/admin/submissions/list?state=pending_metadata')
-          "
-          >{{ label }}</a
-        >
-        <span v-else class="subheader">{{ label }}</span>
+      <div v-for="{ key, label, link } in queue" :key="key" class="card">
+        <span class="subheader">{{ label }}</span>
         <strong>{{
           key === "manual_review"
             ? (current.overview.manual_review ?? "Unavailable")
-            : (current.overview.submissions[key!] ?? 0)
+            : (current.overview.submissions[key] ?? 0)
         }}</strong
         ><a
-          v-if="key === 'manual_review'"
-          href="/admin/musicbrainz-reviews"
-          @click.prevent="$emit('navigate', '/admin/musicbrainz-reviews')"
-          >Review candidates</a
+          v-if="link"
+          :href="link.href"
+          @click.exact.prevent="$emit('navigate', link.href)"
+          >{{ link.label }}</a
         >
       </div>
     </div>
