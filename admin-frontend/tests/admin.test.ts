@@ -855,8 +855,16 @@ describe("navigation", () => {
     const wrapper = mount(App, { attachTo: document.body });
     await flushPromises();
     expect(wrapper.find("header nav").exists()).toBe(false);
+    expect(wrapper.get(".topbar").classes()).toContain("topbar-with-sidebar");
+    expect(wrapper.get(".sidebar-brand").text()).toBe(
+      "Fingerprint administration",
+    );
     const nav = wrapper.get('.sidebar nav[aria-label="Administration"]');
     expect(nav.findAll("a")).toHaveLength(7);
+    for (const link of nav.findAll("a")) {
+      expect(link.get("svg").attributes("aria-hidden")).toBe("true");
+      expect(link.get("span").text()).not.toBe("");
+    }
     expect(nav.get('[aria-current="page"]').text()).toBe("References");
     const toggle = wrapper.get('[aria-controls="admin-navigation"]');
     expect(toggle.attributes("aria-label")).toBe("Show menu");

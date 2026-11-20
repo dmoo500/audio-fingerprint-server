@@ -48,7 +48,7 @@ still show their album credits but have no highlight.
 
 ### Search and sort
 
-![Submissions table filtered by ACDC, showing three matching example recordings](images/admin-search.png)
+![Submissions table filtered by Midnight, showing one matching example recording](images/admin-search.png)
 
 ```mermaid
 flowchart LR
@@ -124,6 +124,11 @@ Rolling back to pre-registry API code similarly disables registry keys; it
 does not delete them.
 
 ## Live updates
+
+The desktop shell keeps the earlier Tabler-style dark sidebar with its title
+and icons, with theme and sign-out controls in the header to the right.
+On mobile, the title stays in the header and the navigation collapses behind
+the menu button. Dashboard, table and form behavior is unchanged.
 
 Dashboard counts, chart values and database size use the browser's default
 number format, including thousands and decimal separators.

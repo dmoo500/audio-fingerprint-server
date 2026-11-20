@@ -315,7 +315,7 @@ onUnmounted(() => {
       ×
     </button>
   </div>
-  <header class="topbar">
+  <header class="topbar" :class="{ 'topbar-with-sidebar': authenticated }">
     <a href="/admin/" @click.prevent="navigate('/admin/')"
       >Fingerprint administration</a
     >

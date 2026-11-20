@@ -1,18 +1,36 @@
 <script setup lang="ts">
-import { Menu, X } from "@lucide/vue";
+import {
+  AudioLines,
+  Boxes,
+  CircleHelp,
+  ClipboardCheck,
+  KeyRound,
+  LayoutDashboard,
+  ListMusic,
+  Menu,
+  X,
+} from "@lucide/vue";
 import { ref } from "vue";
 
 defineProps<{ activePath: string }>();
 const emit = defineEmits<{ navigate: [path: string] }>();
 const expanded = ref(false);
 const links = [
-  { label: "Overview", path: "/admin/" },
-  { label: "Submissions", path: "/admin/submissions/list" },
-  { label: "Unresolved ISRC", path: "/admin/unresolved/list" },
-  { label: "References", path: "/admin/references/list" },
-  { label: "MusicBrainz reviews", path: "/admin/musicbrainz-reviews" },
-  { label: "Personal keys", path: "/admin/keys" },
-  { label: "Applications", path: "/admin/applications" },
+  { label: "Overview", path: "/admin/", icon: LayoutDashboard },
+  { label: "Submissions", path: "/admin/submissions/list", icon: ListMusic },
+  {
+    label: "Unresolved ISRC",
+    path: "/admin/unresolved/list",
+    icon: CircleHelp,
+  },
+  { label: "References", path: "/admin/references/list", icon: AudioLines },
+  {
+    label: "MusicBrainz reviews",
+    path: "/admin/musicbrainz-reviews",
+    icon: ClipboardCheck,
+  },
+  { label: "Personal keys", path: "/admin/keys", icon: KeyRound },
+  { label: "Applications", path: "/admin/applications", icon: Boxes },
 ];
 
 function follow(event: MouseEvent, path: string) {
@@ -32,6 +50,9 @@ function follow(event: MouseEvent, path: string) {
 
 <template>
   <div class="sidebar">
+    <a class="sidebar-brand" href="/admin/" @click="follow($event, '/admin/')">
+      Fingerprint administration
+    </a>
     <button
       class="sidebar-toggle secondary"
       type="button"
@@ -49,12 +70,13 @@ function follow(event: MouseEvent, path: string) {
       :class="{ expanded }"
     >
       <ul>
-        <li v-for="{ label, path } in links" :key="path">
+        <li v-for="{ label, path, icon } in links" :key="path">
           <a
             :href="path"
             :aria-current="activePath === path ? 'page' : undefined"
             @click="follow($event, path)"
-            >{{ label }}</a
+            ><component :is="icon" :size="18" aria-hidden="true" />
+            <span>{{ label }}</span></a
           >
         </li>
       </ul>
