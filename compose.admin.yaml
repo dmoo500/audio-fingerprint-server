@@ -7,16 +7,14 @@ services:
       args:
         FP_INSTALL_EXTRAS: postgres,admin
     command:
-      - uvicorn
-      - fingerprint_server.admin:app
+      - python
+      - -m
+      - fingerprint_server.aiohttp_runner
+      - fingerprint_server.admin
       - --host
       - 0.0.0.0
       - --port
       - "8099"
-      - --workers
-      - "1"
-      - --log-config
-      - fingerprint_server/logging.json
     environment:
       FP_DATABASE_BACKEND: postgres
       FP_POSTGRES_DSN: ${FP_ADMIN_POSTGRES_DSN:-}

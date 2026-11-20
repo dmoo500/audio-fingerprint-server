@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from aiohttp_client import TestClient
 from test_admin import ORIGIN, configuration, create_admin, login
 
 from fingerprint_server.admin.app import AdminSettings

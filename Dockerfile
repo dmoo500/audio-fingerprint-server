@@ -4,6 +4,7 @@ RUN corepack enable
 COPY music-assistant-fingerprint-server/recognition-frontend/package.json music-assistant-fingerprint-server/recognition-frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY music-assistant-fingerprint-server/recognition-frontend ./
+COPY music-assistant-fingerprint-server/frontend-shared /frontend-shared
 COPY music-assistant-fingerprint-server/fingerprint_server/recognition/static/recording.js /fingerprint_server/recognition/static/recording.js
 RUN pnpm build
 
@@ -13,6 +14,7 @@ RUN corepack enable
 COPY music-assistant-fingerprint-server/admin-frontend/package.json music-assistant-fingerprint-server/admin-frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY music-assistant-fingerprint-server/admin-frontend ./
+COPY music-assistant-fingerprint-server/frontend-shared /frontend-shared
 RUN pnpm build
 
 FROM python:3.14-slim
@@ -25,8 +27,9 @@ ARG FP_INSTALL_EXTRAS=postgres
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir ".[${FP_INSTALL_EXTRAS}]"
-RUN useradd --uid 10001 --create-home fingerprint && mkdir /data && chown fingerprint /data
+RUN useradd --uid 10001 --create-home fingerprint \
+    && mkdir /data /recognition-data && chown fingerprint /data /recognition-data
 USER fingerprint
 ENV FP_DATABASE=/data/fingerprints.db
 EXPOSE 8097
-CMD ["uvicorn", "fingerprint_server.app:app", "--host", "0.0.0.0", "--port", "8097", "--workers", "1", "--log-config", "fingerprint_server/logging.json"]
+CMD ["python", "-m", "fingerprint_server.aiohttp_runner", "fingerprint_server.app", "--host", "0.0.0.0", "--port", "8097"]

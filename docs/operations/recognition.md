@@ -9,6 +9,12 @@ button, a song result and one collection counter, not the upload queue,
 reference variants or administrator tools. It replaces the former browser
 microphone test page on the API port.
 
+Use the theme icon in the header to switch between System, Light and Dark.
+The site follows your device by default and remembers manual choices without
+requiring an account.
+
+![Recognition in dark mode with the account menu and a private history populated with example matches](images/recognition-history.png)
+
 ## What stays on the server
 
 The browser records ten seconds of mono PCM, stops the microphone and sends the
@@ -127,9 +133,8 @@ cd ..
 After loading the private environment:
 
 ```bash
-uv run uvicorn fingerprint_server.recognition:app \
-  --host 127.0.0.1 --port 8100 --workers 1 --no-proxy-headers \
-  --log-config fingerprint_server/logging.json
+uv run python -m fingerprint_server.aiohttp_runner fingerprint_server.recognition \
+  --host 127.0.0.1 --port 8100
 ```
 
 Open `http://127.0.0.1:8100`. Remote microphone access requires HTTPS.
@@ -163,10 +168,12 @@ loopback port 8100. Publish **only this service** behind an HTTPS reverse proxy,
 not the fingerprint API's test page or admin service.
 `GET /health` checks that the web process is alive; it does not certify upstream
 availability. Recognition and counter outages are reported explicitly in the UI.
+If a counter refresh fails, the page labels the last successful count as stale
+and keeps it visible until the next successful refresh.
 
 ## Admission and deployment limits
 
-- One Uvicorn worker and **one recognition replica**. Limits and the counter cache
+- One server process and **one recognition replica**. Limits and the counter cache
   are in memory. Do not scale this service out without shared admission accounting.
   The fingerprint API's existing replica coordination is unaffected.
 - At most two active recognition requests, including body reads; each upload is
@@ -178,18 +185,58 @@ availability. Recognition and counter outages are reported explicitly in the UI.
   The upstream API/APISIX admission limits still apply to the dedicated identity.
 - The Compose command ignores forwarding headers by default. Behind a reverse
   proxy, visitors therefore share its address and its recognition budget.
-  To distinguish visitors, configure Uvicorn to trust **only the actual proxy's
-  address**, have that proxy replace incoming forwarding headers, and prevent
-  clients from reaching the web service directly. Never trust `*` on a
-  publicly reachable listener.
+  For TLS termination and per-visitor limits, add `--trusted-proxy <IP>` to
+  the runner command (override the command for Compose). Use the actual
+  direct peer address as seen by the service, preserve the public `Host`, and
+  have the proxy replace `X-Forwarded-Proto` and `X-Forwarded-For` with a
+  single scheme and client IP respectively. Prevent clients from reaching
+  the web service directly.
 - Apply connection, upload-size, body-timeout and request-rate limits at the
   public reverse proxy as well. Origin checks prevent cross-site browser use;
   they do not stop non-browser clients from spoofing an Origin header.
   This is bounded anonymous access, not bot-proof or distributed-DDoS protection.
-- No CORS, cookies, external scripts/fonts or analytics. Recognition POSTs require
+- No CORS, external scripts/fonts or analytics. Recognition POSTs require
   the configured origin and an explicit same-origin request header. A strict CSP
   and microphone permissions policy apply to every response.
 
 This service is implemented but is **not enabled automatically** in an existing
 deployment. Choose the public origin and configure credentials and proxy limits
 before exposing it.
+
+## Optional private history
+
+The theme button cycles through System, Light and Dark. System is the default
+and follows changes to the device's appearance. Manual choices are remembered.
+
+Recognition works without an account. With accounts enabled, **Save your
+finds with an account** in the header explains what is saved and how to
+register. Open the account icon in the top-right corner to sign in or select
+**Register with an invitation** and choose a username and password. Successful matches
+initiated while signed in are automatically saved to that account, up to the
+most recent 500. When you are signed in, your username appears beside the
+account icon. Saved matches appear across the page below the recognition card,
+with title, artists, the date and time they were recognized, and cover art when
+available. Older matches without an artwork reference show a placeholder.
+You can clear the history from the account dialog.
+No audio, fingerprints, missed matches or anonymous matches are
+stored. Account credentials are separate from all existing gateway keys.
+
+To enable accounts in Docker, add `-f compose.recognition-accounts.yaml` to the
+existing invocation and rebuild only `recognition`. The writable
+`recognition-history` volume holds a separate versioned SQLite database. On
+startup, schema version 2 adds an optional artwork reference without removing
+existing matches. Back up the volume before upgrading. Include
+that volume in private backups and never mount the fingerprint database into
+Recognition. Keep the public site behind HTTPS except for local loopback use.
+
+Using the same Compose files and environment, create one invitation with:
+
+```bash
+docker compose ... exec recognition python -m fingerprint_server.recognition.invite \
+  /recognition-data/recognition.sqlite
+```
+
+Deliver the printed code privately; it expires after seven days or on first
+use. For a native install, set `FP_WEB_HISTORY_DATABASE` to an absolute path
+in a private writable directory and pass that path to the invitation command.
+Leaving it unset disables account routes without disabling song recognition.

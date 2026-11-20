@@ -156,7 +156,7 @@ def deployment(tmp_path: Path) -> Iterator[tuple[httpx.Client, httpx.Client, str
             )
             backend_timing = re.search(
                 r'"POST /api/v1/dejavu/submissions HTTP/1.1" 202 '
-                r"duration_ms=([0-9.]+) complete=true",
+                r"duration_ms=([0-9.]+)",
                 logs,
             )
             assert backend_timing is not None

@@ -21,6 +21,8 @@ jobs:
           node-version: "24"
       - run: corepack enable
       - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm lint:check
+      - run: corepack pnpm install --frozen-lockfile
         working-directory: recognition-frontend
       - run: corepack pnpm build && corepack pnpm test
         working-directory: recognition-frontend
@@ -33,4 +35,4 @@ jobs:
       - run: uv venv && uv pip install -e '.[dev,admin]'
       - run: uv run --no-sync pre-commit run --all-files
       - run: uv run --no-sync mypy fingerprint_server
-      - run: uv run --no-sync pytest -q tests/test_precommit_safeguards.py tests/test_repository_layout.py tests/test_admin.py tests/test_admin_live.py tests/test_sqlite_admin.py tests/test_recognition.py tests/test_database_growth.py
+      - run: uv run --no-sync pytest -q tests/test_precommit_safeguards.py tests/test_repository_layout.py tests/test_admin.py tests/test_admin_live.py tests/test_sqlite_admin.py tests/test_recognition.py tests/test_recognition_accounts.py tests/test_database_growth.py

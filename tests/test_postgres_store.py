@@ -14,8 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
-import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 from pydantic import ValidationError
 from test_admin_history import assert_hourly_sampling
@@ -27,6 +27,7 @@ from test_postgres_migration import source as source
 from test_server import READ, UPLOAD, audio, canonical, recognize, settings, submit
 from test_server import document as acoustic_document
 
+from fingerprint_server.api_state import OWNERSHIP_TASK, STORE, WORKER_TASK
 from fingerprint_server.app import create_app
 from fingerprint_server.database import create_store
 from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError, Store
@@ -443,53 +444,43 @@ def test_unknown_version_is_not_modified(store) -> None:
 
 async def test_real_api_ingestion_and_pcm_recognition(configuration) -> None:
     application = create_app(configuration)
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as client:
-            assert (await client.get("/health")).status_code == 200
-            await submit(client, acoustic_document())
-            result = await recognize(
-                client, audio()[50 * HOP_SIZE : 50 * HOP_SIZE + 5 * SAMPLE_RATE]
-            )
-            assert result.status_code == 200
-            assert result.json()["status"] == "matched"
-            statistics = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
-            assert statistics.json()["references"]["total"] == 1
+    async with AsyncClient(application) as client:
+        assert (await client.get("/health")).status_code == 200
+        await submit(client, acoustic_document())
+        result = await recognize(client, audio()[50 * HOP_SIZE : 50 * HOP_SIZE + 5 * SAMPLE_RATE])
+        assert result.status_code == 200
+        assert result.json()["status"] == "matched"
+        statistics = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
+        assert statistics.json()["references"]["total"] == 1
 
 
 async def test_separate_api_and_worker(configuration) -> None:
     application = create_app(configuration.model_copy(update={"service_role": "api"}))
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as client:
-            health = await client.get("/health")
-            assert health.status_code == 503
-            assert health.json() == {"status": "failed"}
-            assert health.headers["Cache-Control"] == "no-store"
-            body, identifier = canonical(document())
-            headers = {
-                "X-API-Key": UPLOAD,
-                "Content-Type": "application/json",
-                "Idempotency-Key": identifier,
-            }
-            assert (
-                await client.post("/api/v1/dejavu/submissions", content=body, headers=headers)
-            ).status_code == 503
-            async with runtime(configuration.model_copy(update={"service_role": "worker"})):
-                assert (await client.get("/health")).status_code == 200
-                assert application.state.worker_task is None
-                response = await client.post(
-                    "/api/v1/dejavu/submissions", content=body, headers=headers
-                )
-                assert response.status_code == 202
-                async with asyncio.timeout(5):
-                    while (
-                        application.state.store.get_submission(identifier)["state"] != "processed"
-                    ):
-                        await asyncio.sleep(0.05)
-            assert (await client.get("/health")).status_code == 503
+    async with AsyncClient(application) as client:
+        health = await client.get("/health")
+        assert health.status_code == 503
+        assert health.json() == {"status": "failed"}
+        assert health.headers["Cache-Control"] == "no-store"
+        body, identifier = canonical(document())
+        headers = {
+            "X-API-Key": UPLOAD,
+            "Content-Type": "application/json",
+            "Idempotency-Key": identifier,
+        }
+        assert (
+            await client.post("/api/v1/dejavu/submissions", content=body, headers=headers)
+        ).status_code == 503
+        async with runtime(configuration.model_copy(update={"service_role": "worker"})):
+            assert (await client.get("/health")).status_code == 200
+            assert application[WORKER_TASK] is None
+            response = await client.post(
+                "/api/v1/dejavu/submissions", content=body, headers=headers
+            )
+            assert response.status_code == 202
+            async with asyncio.timeout(5):
+                while application[STORE].get_submission(identifier)["state"] != "processed":
+                    await asyncio.sleep(0.05)
+        assert (await client.get("/health")).status_code == 503
 
 
 async def test_failed_startup_releases_api_ownership(store, configuration) -> None:
@@ -505,21 +496,20 @@ async def test_lost_ownership_stops_worker_and_http(configuration) -> None:
     psycopg = pytest.importorskip("psycopg")
     application = create_app(configuration)
     with pytest.raises(psycopg.OperationalError):
-        async with application.router.lifespan_context(application):
-            with application.state.store.connect(write=True) as db:
+        async with AsyncClient(application) as client:
+            with application[STORE].connect(write=True) as db:
                 db.execute(
                     "SELECT pg_terminate_backend(l.pid) FROM pg_locks l "
                     "JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' "
                     "AND l.granted AND l.pid!=pg_backend_pid() AND a.application_name=%s",
                     (f"fingerprint:{configuration.postgres_schema}",),
                 )
+            monitor = application[OWNERSHIP_TASK]
+            assert monitor is not None
             async with asyncio.timeout(8):
-                while not application.state.ownership_task.done():
+                while not monitor.done():
                     await asyncio.sleep(0.05)
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=application), base_url="http://test"
-            ) as client:
-                assert (await client.get("/health")).status_code == 503
-                assert (
-                    await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
-                ).status_code == 503
+            assert (await client.get("/health")).status_code == 503
+            assert (
+                await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
+            ).status_code == 503

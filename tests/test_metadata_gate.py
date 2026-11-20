@@ -10,8 +10,10 @@ from typing import Any
 
 import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from test_server import READ, UPLOAD, canonical, settings
 
+from fingerprint_server.api_state import STORE
 from fingerprint_server.app import create_app
 from fingerprint_server.database.sqlite import QueueFullError, Store
 from fingerprint_server.schemas import Submission, metadata_complete
@@ -131,41 +133,33 @@ async def test_pending_api_state_survives_restart(tmp_path: Path, missing: str) 
     configuration = settings(tmp_path)
     for _ in range(2):
         application = create_app(configuration)
-        async with application.router.lifespan_context(application):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=application), base_url="http://test"
-            ) as client:
-                response = await client.post(
-                    "/api/v1/dejavu/submissions",
-                    content=body,
-                    headers={
-                        "X-API-Key": UPLOAD,
-                        "Idempotency-Key": identifier,
-                        "Content-Type": "application/json",
-                    },
-                )
-                assert response.status_code == 202
-                assert response.json()["status"] == "pending_metadata"
-                status = await client.get(
-                    f"/api/v1/dejavu/submissions/{identifier}", headers={"X-API-Key": UPLOAD}
-                )
-                assert status.json()["state"] == "pending_metadata"
-                assert status.json()["attempts"] == 0
-                assert status.json()["error"] == "Incomplete metadata"
-                assert status.json()["reference_id"] is None
-                assert application.state.store.claim() is None
-                assert application.state.store.match([("0" * 20, 0)]) == []
-                statistics = await client.get(
-                    "/api/v1/dejavu/statistics", headers={"X-API-Key": READ}
-                )
-                assert statistics.json()["submissions"]["pending_metadata"] == 1
-                assert statistics.json()["references"]["total"] == 0
-                with application.state.store.connect() as db:
-                    assert (
-                        db.execute("SELECT document FROM submissions").fetchone()[0]
-                        == body.decode()
-                    )
-                    assert db.execute("SELECT count(*) FROM reference_tracks").fetchone()[0] == 0
+        async with AsyncClient(application) as client:
+            response = await client.post(
+                "/api/v1/dejavu/submissions",
+                content=body,
+                headers={
+                    "X-API-Key": UPLOAD,
+                    "Idempotency-Key": identifier,
+                    "Content-Type": "application/json",
+                },
+            )
+            assert response.status_code == 202
+            assert response.json()["status"] == "pending_metadata"
+            status = await client.get(
+                f"/api/v1/dejavu/submissions/{identifier}", headers={"X-API-Key": UPLOAD}
+            )
+            assert status.json()["state"] == "pending_metadata"
+            assert status.json()["attempts"] == 0
+            assert status.json()["error"] == "Incomplete metadata"
+            assert status.json()["reference_id"] is None
+            assert application[STORE].claim() is None
+            assert application[STORE].match([("0" * 20, 0)]) == []
+            statistics = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
+            assert statistics.json()["submissions"]["pending_metadata"] == 1
+            assert statistics.json()["references"]["total"] == 0
+            with application[STORE].connect() as db:
+                assert db.execute("SELECT document FROM submissions").fetchone()[0] == body.decode()
+                assert db.execute("SELECT count(*) FROM reference_tracks").fetchone()[0] == 0
 
 
 def legacy_store(path: Path, supplied: str, payload: str = "{}") -> Store:

@@ -8,12 +8,12 @@ import httpx
 import pytest
 import test_server
 from audio_fingerprint.codec import ENCODING_ID, decode_document, encode_document
-from fastapi import HTTPException
 from test_metadata_gate import document
 from test_server import UPLOAD, canonical
 
-import fingerprint_server.app as app_module
-from fingerprint_server.app import parse_submission
+import fingerprint_server.api as api_module
+from fingerprint_server.aiohttp_support import HTTPError
+from fingerprint_server.api import parse_submission
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.schemas import decode_submission
 
@@ -27,7 +27,7 @@ def test_compact_and_legacy_upload_share_identity() -> None:
     assert parse_submission(body, identifier)[0] == identifier
     assert parse_submission(compact, identifier)[0] == identifier
     assert decode_submission(compact) == decode_submission(body)
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(HTTPError) as error:
         parse_submission(compact, hashlib.sha256(compact).hexdigest())
     assert error.value.status_code == 422
 
@@ -88,7 +88,7 @@ def test_invalid_compact_document_rejected(mutation: str) -> None:
         payload["audio_url"] = "https://invalid.example"
     else:
         payload["windows"][0]["start_sample"] = 4096
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(HTTPError) as error:
         parse_submission(json.dumps(payload).encode(), "bad")
     assert error.value.status_code == 422
 
@@ -99,10 +99,10 @@ def test_decoded_document_size_boundary_is_enforced(monkeypatch: pytest.MonkeyPa
     body, identifier = canonical(payload)
     compact = json.dumps(encode_document(payload), sort_keys=True, separators=(",", ":")).encode()
     assert len(compact) < len(body)
-    monkeypatch.setattr(app_module, "MAX_DOCUMENT_BYTES", len(body))
+    monkeypatch.setattr(api_module, "MAX_DOCUMENT_BYTES", len(body))
     assert parse_submission(compact, identifier)[0] == identifier
-    monkeypatch.setattr(app_module, "MAX_DOCUMENT_BYTES", len(body) - 1)
-    with pytest.raises(HTTPException) as error:
+    monkeypatch.setattr(api_module, "MAX_DOCUMENT_BYTES", len(body) - 1)
+    with pytest.raises(HTTPError) as error:
         parse_submission(compact, identifier)
     assert error.value.status_code == 413
 
@@ -114,6 +114,6 @@ def test_compact_legacy_cannot_bypass_original_byte_limit() -> None:
     body, identifier = canonical(payload)
     compact = json.dumps(encode_document(payload), sort_keys=True, separators=(",", ":")).encode()
     assert len(compact) < 2000000 < len(body)
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(HTTPError) as error:
         parse_submission(compact, identifier)
     assert error.value.status_code == 413

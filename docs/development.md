@@ -6,14 +6,18 @@
 
 ```text
 fingerprint_server/
-  app.py                 Fingerprint API
+  app.py                 Fingerprint service startup and middleware
+  api.py                 Fingerprint API routes and admission
   recognition/           Optional standalone public microphone app
-    app.py               Server-held read credentials and bounded public facade
+    app.py               Recognition startup, browser headers and static assets
+    api.py               Public JSON routes and admission
+    upstream.py          Bounded fingerprint API transport with server-held credentials
+    settings.py          Public origin and upstream configuration
     static/              Capture worklet and recorder
     dist/                Generated public frontend assets
   admin/                 Optional administrator service
     app.py               Authentication, static frontend and SSE entry point
-    api.py               Private JSON routes for the admin frontend
+    api/                 Private JSON routes, grouped by dashboard, tables, reviews and keys
     data.py              Bounded metadata queries and guarded actions
     dist/                Generated administrator frontend assets
   database/
@@ -38,9 +42,14 @@ docs/
 ```
 
 Public start commands remain `fingerprint_server.app:app`,
-`fingerprint_server.admin:app` and `python -m fingerprint_server.worker_runtime`.
-The optional public app starts with `fingerprint_server.recognition:app`;
+`python -m fingerprint_server.aiohttp_runner fingerprint_server.admin --port 8099`
+and `python -m fingerprint_server.worker_runtime`.
+The optional public app starts with
+`python -m fingerprint_server.aiohttp_runner fingerprint_server.recognition --port 8100`;
 see [configuration and admission limits](operations/recognition.md).
+These are separate services in the same repository. Recognition calls the
+fingerprint API over HTTP rather than opening the database. Admin uses its
+own authenticated routes and the shared storage adapters.
 Storage modules are internal; their imports now live under
 `fingerprint_server.database`. No stored schema, API or fingerprint format changes
 are involved in this reorganization.
@@ -86,6 +95,8 @@ credentials. If a secret was committed, rotate it even after deleting the file.
 ## Validation and limitations
 
 ```sh
+pnpm install --frozen-lockfile
+pnpm lint:check
 cd recognition-frontend && pnpm install --frozen-lockfile && pnpm build && pnpm test && cd ..
 cd admin-frontend && pnpm install --frozen-lockfile && pnpm build && pnpm test && cd ..
 uv run --no-sync pytest -q
@@ -105,6 +116,17 @@ FP_TEST_POSTGRES=1 uv run --no-sync pytest -q tests/test_admin.py tests/test_adm
 FP_TEST_POSTGRES=1 uv run --no-sync pytest -q tests/test_replicas.py
 FP_RUN_REPLICA_TESTS=1 uv run --no-sync pytest -q tests/test_replicas_integration.py
 ```
+
+Both Vue frontends share the repository-root Oxlint, ESLint and Prettier
+configuration, based on the Music Assistant frontend. Run `pnpm lint` from
+the root to apply ESLint fixes and format both frontends. Each app keeps its
+own dependencies, type check, tests and production build.
+
+Keep components focused, use explicitly typed props and emits, and move
+reusable stateful logic into composables and standalone utilities into
+tested helpers. Prefer clear grouping in `<script setup>` rather than a
+fixed method order; keep the template focused on rendering and clean up
+listeners and timers on unmount.
 
 The PostgreSQL tests use fresh, randomly named schemas and loopback-bound containers, never an operator's database. They check exact candidate-limit boundaries, concurrent admission/idempotence, FIFO, publication rollback, recording grouping, coverage/recognition parity, cleanup dependencies, imported queue recovery, separate roles and loss of ownership. Without `FP_TEST_POSTGRES=1`, integration cases are skipped. The ordinary suite still exercises SQLite.
 

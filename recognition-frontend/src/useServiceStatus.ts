@@ -29,13 +29,20 @@ export function useServiceStatus() {
         signal: AbortSignal.timeout(10000),
       });
       const data: unknown = await response.json();
-      if (!response.ok || !isCount(data)) throw new Error("Invalid collection count.");
+      if (!response.ok || !isCount(data))
+        throw new Error("Invalid collection count.");
       count.value = data.recordings.toLocaleString();
-      countMessage.value = "Only searchable recordings are counted. Not every song or passage is covered.";
+      countMessage.value =
+        "Only searchable recordings are counted. Not every song or passage is covered.";
     } catch (error) {
-      count.value = "—";
-      countMessage.value = "Collection count unavailable right now.";
-      console.error("Collection count failed", error instanceof Error ? error.name : "Unknown error");
+      countMessage.value =
+        count.value === "—"
+          ? "Collection count unavailable right now."
+          : "Showing the last known count. The update is temporarily unavailable.";
+      console.error(
+        "Collection count failed",
+        error instanceof Error ? error.name : "Unknown error",
+      );
     } finally {
       countLoading = false;
       if (active && !document.hidden) countTimer = setTimeout(loadCount, 60000);
@@ -53,11 +60,15 @@ export function useServiceStatus() {
         signal: AbortSignal.timeout(10000),
       });
       const data: unknown = await response.json();
-      if (!response.ok || !isAvailability(data)) throw new Error("Invalid recognition availability response.");
+      if (!response.ok || !isAvailability(data))
+        throw new Error("Invalid recognition availability response.");
       if (requestGeneration === generation) setAvailable(data.available);
     } catch (error) {
       if (requestGeneration === generation) setAvailable(false);
-      console.error("Recognition availability check failed", error instanceof Error ? error.name : "Unknown error");
+      console.error(
+        "Recognition availability check failed",
+        error instanceof Error ? error.name : "Unknown error",
+      );
     } finally {
       availabilityLoading = false;
       if (active && !document.hidden) {
@@ -105,12 +116,20 @@ export function useServiceStatus() {
 }
 
 function isCount(value: unknown): value is { recordings: number } {
-  if (typeof value !== "object" || value === null || !("recordings" in value)) return false;
-  return typeof value.recordings === "number"
-    && Number.isSafeInteger(value.recordings) && value.recordings >= 0;
+  if (typeof value !== "object" || value === null || !("recordings" in value))
+    return false;
+  return (
+    typeof value.recordings === "number" &&
+    Number.isSafeInteger(value.recordings) &&
+    value.recordings >= 0
+  );
 }
 
 function isAvailability(value: unknown): value is { available: boolean } {
-  return typeof value === "object" && value !== null
-    && "available" in value && typeof value.available === "boolean";
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "available" in value &&
+    typeof value.available === "boolean"
+  );
 }

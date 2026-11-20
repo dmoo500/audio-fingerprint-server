@@ -18,9 +18,7 @@
     "handlers": ["console"]
   },
   "loggers": {
-    "uvicorn": {"handlers": [], "level": "INFO", "propagate": true},
-    "uvicorn.error": {"handlers": [], "level": "INFO", "propagate": true},
-    "uvicorn.access": {"handlers": [], "level": "WARNING", "propagate": true},
+    "aiohttp.server": {"handlers": [], "level": "INFO", "propagate": true},
     "httpx": {"handlers": [], "level": "WARNING", "propagate": true}
   }
 }

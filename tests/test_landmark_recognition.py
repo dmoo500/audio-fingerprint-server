@@ -3,11 +3,12 @@
 import json
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from audio_fingerprint import FORMAT_ID, HOP_SIZE, SAMPLE_RATE, fingerprint
 from test_server import READ, UPLOAD, audio, document, recognize, settings, submit
 
+from fingerprint_server.api_state import STORE
 from fingerprint_server.app import MAX_LANDMARK_QUERY_BYTES, create_app
 from fingerprint_server.database.sqlite import QueryTooBroadError
 
@@ -30,11 +31,8 @@ def query() -> dict:
 @pytest.fixture
 async def client(tmp_path: Path):
     application = create_app(settings(tmp_path))
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as connection:
-            yield connection, application
+    async with AsyncClient(application) as connection:
+        yield connection, application
 
 
 async def test_landmarks_equal_pcm_and_never_ingest(client) -> None:
@@ -44,13 +42,13 @@ async def test_landmarks_equal_pcm_and_never_ingest(client) -> None:
     excerpt = samples[50 * HOP_SIZE : 50 * HOP_SIZE + 5 * SAMPLE_RATE]
     payload = query()
     payload["fingerprints"] = [list(pair) for pair in fingerprint(excerpt)]
-    before = application.state.store.statistics()
+    before = application[STORE].statistics()
     pcm = await recognize(connection, excerpt)
     response = await connection.post(PATH, headers=HEADERS, json=payload)
     assert response.status_code == 200
     assert response.json() == pcm.json()
     assert response.json()["status"] == "matched"
-    assert application.state.store.statistics() == before
+    assert application[STORE].statistics() == before
 
 
 @pytest.mark.parametrize(
@@ -120,7 +118,7 @@ async def test_candidate_limit_is_error_not_no_match(client, monkeypatch) -> Non
     def too_broad(pairs):
         raise QueryTooBroadError
 
-    monkeypatch.setattr(application.state.store, "match", too_broad)
+    monkeypatch.setattr(application[STORE], "match", too_broad)
     response = await connection.post(PATH, headers=HEADERS, json=query())
     assert response.status_code == 503
 

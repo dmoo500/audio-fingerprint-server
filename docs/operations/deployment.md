@@ -15,7 +15,7 @@ uv venv --python 3.14
 uv pip install -e '.[dev]'
 export FP_UPLOAD_KEY="$(uv run --no-sync python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export FP_READ_KEY="$(uv run --no-sync python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-uv run --no-sync uvicorn fingerprint_server.app:app --host 127.0.0.1 --port 8097 --workers 1
+uv run --no-sync python -m fingerprint_server.aiohttp_runner fingerprint_server.app --port 8097
 ```
 
 Keep these keys privately for your session. Set the MA provider's URL to `http://localhost:8097` and its API key to `FP_UPLOAD_KEY` when MA runs on the same machine. MA in another container needs a reachable HTTPS destination; localhost there means that container, not this host. Do not relax the MA provider's HTTP guard.
@@ -30,7 +30,7 @@ Enable sharing in MA **before** analyzing reference tracks. Old private analyses
 
 ### Gateway admission protection
 
-The Docker backend uses the packaged `fingerprint_server/logging.json` configuration for consistent console output: Unix epoch seconds with millisecond precision, severity, logger name and message. For example: `1794764000.125 INFO: [fingerprint_server.worker] ...`. Native development runs can opt in with `uvicorn fingerprint_server.app:app --log-config fingerprint_server/logging.json`. Gateway access logs are JSON with numeric Unix `timestamp`, `level`, method, path and status; Nginx/APISIX native diagnostic logs retain their own format.
+The HTTP runner loads the packaged `fingerprint_server/logging.json` in Docker and native runs. Console output contains Unix epoch seconds with millisecond precision, severity, logger name and message. For example: `1794764000.125 INFO: [fingerprint_server.worker] ...`. Gateway access logs are JSON with numeric Unix `timestamp`, `level`, method, path and status; Nginx/APISIX native diagnostic logs retain their own format.
 
 Backend access lines include elapsed application time, for example
 `"POST /api/v1/dejavu/submissions HTTP/1.1" 202 duration_ms=42.31 complete=true`.
@@ -118,8 +118,8 @@ export FP_DATABASE_BACKEND=postgres
 export FP_POSTGRES_SCHEMA=fingerprints
 
 # Terminal / process 1: HTTP API only
-FP_SERVICE_ROLE=api uv run --no-sync uvicorn fingerprint_server.app:app \
-  --host 127.0.0.1 --port 8097 --workers 1
+FP_SERVICE_ROLE=api uv run --no-sync python -m fingerprint_server.aiohttp_runner \
+  fingerprint_server.app --port 8097
 
 # Terminal / process 2: one ingestion worker, no HTTP listener
 FP_SERVICE_ROLE=worker uv run --no-sync python -m fingerprint_server.worker_runtime

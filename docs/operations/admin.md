@@ -44,6 +44,16 @@ No data is submitted back to MusicBrainz.
 
 ## A quick look
 
+After signing in, use the left sidebar to switch between admin pages. On narrow
+screens, use the three-line menu icon above the page content to open the
+navigation and the **X** icon to close it.
+Use the moon or sun icon in the header to switch to dark or light mode.
+The admin starts in light mode and remembers your choice in this browser.
+
+Actions such as copying a track title or refreshing the charts show a short
+notification. Manual copy instructions and one-time keys stay visible so
+you have time to use them.
+
 These screenshots show the previous layout and use synthetic example records and key names, not a live
 installation's private data. Creation screenshots show clearly labelled,
 non-functional example credentials only.
@@ -52,6 +62,7 @@ non-functional example credentials only.
 
 The overview shows worker availability, database size and live ingestion counts:
 queued, processing, pending metadata and awaiting manual MusicBrainz review.
+Select **Pending metadata** to open the submissions list with that status filter.
 Manual review is a subset of pending metadata. The connection indicator shows
 whether live data is current.
 
@@ -86,15 +97,25 @@ still show their album credits but have no highlight.
 ### Search and sort
 
 Searching for `ACDC` also finds `AC/DC`. The result count confirms that the
-filter has finished; column headings control sorting. Wider tables scroll
-horizontally without leaving the page.
+filter has finished; column headings control sorting. The **X** in the search
+field clears the search without changing advanced filters or sorting. Use **Show/Hide columns**
+to adjust the visible fields without changing the results, or **Filter** for
+literal matching. Wider tables scroll horizontally without moving the page
+controls. Long values are shortened to keep rows compact. Hover over a cell to
+see its full value, or click or tap an underlined preview to open it. The ID
+link opens the full record.
+Use the eye icon to open a record. In submission lists, the retry and delete
+icons act on that row only and require confirmation. References are read-only.
 
 ![Submissions table filtered by ACDC, showing three matching example recordings](images/admin-search.png)
 
 ### Personal API keys
 
-Issue personal keys with read, upload or combined permissions. Revocation
-requires explicit confirmation; existing secret values are never displayed.
+Issue personal keys with read, upload or combined permissions. To revoke a
+personal or application key, select **Confirm revocation** in that key's row
+and click **Revoke**. Existing secret values are never displayed.
+Like the data tables, key tables scroll horizontally inside their own area
+when the columns do not fit; the rest of the page stays in place.
 
 ![Personal API key creation form and example read and upload identities](images/admin-personal-keys.png)
 
@@ -187,7 +208,12 @@ SQLite uses a persistent connection's `PRAGMA data_version`; any external
 database commit can mark both tables as changed.
 
 The SSE stream rechecks session validity on each update and at least every ten
-seconds; logout or expiry ends updates. The browser reconnects automatically
+seconds; logout or expiry ends updates. The live badge shows the connection
+state. Hover over the badge or open its popover for details, including the last
+update time when connected; the details do not shift the page content.
+All visible Admin pages also check the session every 15 seconds
+and when the tab becomes visible again. A connection failure alone does not
+sign you out. The browser reconnects automatically
 after a connection failure. A service restart invalidates sessions and requires
 signing in again. Reverse proxies must disable buffering for `/admin/events`
 and allow long-lived responses.
@@ -241,6 +267,10 @@ service joins the backend, private administration and outbound networks and publ
 only `127.0.0.1:8099`. It does not start a worker, acquire API ownership, create
 tables or apply migrations. The database and gateway must already be running.
 Open <http://127.0.0.1:8099/admin/> and sign in as **admin**.
+The theme button cycles through System, Light and Dark. System is the default
+and follows changes to the device's appearance. Manual choices are remembered.
+The standalone Vite preview serves the frontend only. Use the actual Admin
+service URL for sign-in and API-backed pages; the preview has no session API.
 
 Use **one admin process/replica**: sessions and login admission are held in that
 process. Login is capped at ten attempts per minute across the service.
@@ -248,6 +278,15 @@ Sessions expire after one hour, are revoked on logout, and are invalidated by
 an admin restart. Cookies are HttpOnly/SameSite=Strict; the login secret is not
 stored in them. State-changing requests require POST and a same-origin Origin
 header. Responses are marked `no-store`.
+
+The Admin container logs audit events under `fingerprint_server.admin.audit`.
+Use `docker logs <admin-container>` and filter by that logger name to see login,
+logout, review, queue and credential write outcomes, including rejected requests.
+Entries carry an event name, an action where applicable, the authenticated Admin
+role if known, and an HTTP status. They do not include passwords, keys, cookies,
+request bodies, or query strings. The current shared Admin login cannot identify
+individual operators. Retention follows the container's log configuration;
+forward these logs separately if they must survive container replacement.
 
 ## Future remote access
 

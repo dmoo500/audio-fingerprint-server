@@ -14,9 +14,11 @@ import httpx
 import numpy as np
 import pytest
 import soxr
+from aiohttp_client import AsyncClient
 from audio_fingerprint import FORMAT_ID, HOP_SIZE, SAMPLE_RATE, fingerprint, plan_windows
 from pydantic import SecretStr, ValidationError
 
+from fingerprint_server.api_state import STORE, WORKER
 from fingerprint_server.app import MAX_DOCUMENT_BYTES, create_app
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database.sqlite import QueueFullError, Store
@@ -37,11 +39,8 @@ def settings(path: Path, **kwargs: Any) -> Settings:
 @pytest.fixture
 async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
     application = create_app(settings(tmp_path))
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as connection:
-            yield connection
+    async with AsyncClient(application) as connection:
+        yield connection
 
 
 def audio(seconds: int = 12) -> np.ndarray[Any, Any]:
@@ -438,10 +437,12 @@ async def test_musicbrainz_missing_or_multiple_results_never_fabricate_recording
 async def test_terminal_processing_failure_is_visible(tmp_path: Path) -> None:
     """Worker validation failures stay durable and never become recognition references."""
     application = create_app(settings(tmp_path))
-    async with application.router.lifespan_context(application):
-        store = application.state.store
+    async with AsyncClient(application):
+        store = application[STORE]
+        worker = application[WORKER]
+        assert worker is not None
         await run_sync(store.submit, "bad-reference", "{}", 10)
-        application.state.worker.wakeup.set()
+        worker.wakeup.set()
         async with asyncio.timeout(5):
             while True:
                 row = await run_sync(store.get_submission, "bad-reference")

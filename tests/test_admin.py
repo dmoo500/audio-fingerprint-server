@@ -9,23 +9,31 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from aiohttp_client import TestClient
 from pydantic import ValidationError
 from test_postgres_migration import postgres as postgres
 
-pytest.importorskip("itsdangerous")
+from fingerprint_server.admin.state import DATA_KEY
+from fingerprint_server.admin.state import GATEWAY_KEY as GATEWAY_CLIENT_KEY
+
 pytest.importorskip("psycopg")
 admin = importlib.import_module("fingerprint_server.admin")
 AdminSettings = admin.AdminSettings
 create_admin = admin.create_admin
 AdminData = importlib.import_module("fingerprint_server.admin.data").AdminData
+
 ApplicationKeys = importlib.import_module(
     "fingerprint_server.database.application_keys"
 ).ApplicationKeys
 
 ADMIN_KEY = "admin-only-" + "a" * 32
 GATEWAY_KEY = "gateway-only-" + "b" * 32
-ORIGIN = {"Origin": "http://testserver"}
+ORIGIN = {"Origin": "http://test"}
+
+
+def app_for(client: TestClient):
+    """Return the application served by the shared aiohttp test client."""
+    return client.client.server.app
 
 
 def configuration(**kwargs) -> AdminSettings:
@@ -123,6 +131,46 @@ def test_overview_shows_live_queue_and_persisted_history(client, monkeypatch):
     assert backlog[1]["series"][0]["last"] == 3
 
 
+def test_admin_audit_records_outcome_without_secrets(client, caplog):
+    logger = "fingerprint_server.admin.audit"
+    caplog.set_level("INFO", logger=logger)
+    untrusted = "never-log-this-input"
+    assert client.post("/admin/api/logout", headers=ORIGIN).status_code == 401
+    assert client.post("/admin/api/login").status_code == 403
+    assert (
+        client.post(
+            f"/admin/api/login?note={untrusted}",
+            json={"username": untrusted, "password": untrusted},
+            headers=ORIGIN,
+        ).status_code
+        == 400
+    )
+    response = login(client)
+    assert response.status_code == 200
+    cookie = client.client.cookies.get("fp_admin")
+    assert cookie
+    assert client.get("/admin/api/overview").status_code == 200
+    assert (
+        client.post(
+            "/admin/api/keys",
+            json={"operation": "revoke", "username": "sample-user"},
+            headers=ORIGIN,
+        ).status_code
+        == 400
+    )
+    assert client.post("/admin/api/logout", headers=ORIGIN).status_code == 200
+    messages = [record.getMessage() for record in caplog.records if record.name == logger]
+    assert messages == [
+        "event=logout action=- actor=- outcome=rejected status=401",
+        "event=login action=- actor=- outcome=rejected status=403",
+        "event=login action=- actor=- outcome=rejected status=400",
+        "event=login action=- actor=admin outcome=success status=200",
+        "event=personal-key action=revoke actor=admin outcome=rejected status=400",
+        "event=logout action=- actor=admin outcome=success status=200",
+    ]
+    assert not any(value in caplog.text for value in (untrusted, ADMIN_KEY, cookie))
+
+
 def test_login_is_separate_and_sessions_are_revoked(client):
     assert client.get("/admin/events").status_code == 401
     assert client.get("/admin/api/tables/submissions").status_code == 401
@@ -133,7 +181,7 @@ def test_login_is_separate_and_sessions_are_revoked(client):
     assert "Invalid administrator credentials" in response.text
     response = login(client)
     assert response.status_code == 200
-    cookie = client.cookies.get("fp_admin")
+    cookie = client.client.cookies.get("fp_admin")
     assert cookie and ADMIN_KEY not in cookie
     assert "httponly" in response.headers["set-cookie"].lower()
     assert "samesite=strict" in response.headers["set-cookie"].lower()
@@ -144,7 +192,7 @@ def test_login_is_separate_and_sessions_are_revoked(client):
     assert "no-store" in overview.headers["cache-control"]
     assert overview.headers["referrer-policy"] == "same-origin"
     assert client.post("/admin/api/logout", headers=ORIGIN).status_code == 200
-    client.cookies.set("fp_admin", cookie)
+    client.client.cookies.set("fp_admin", cookie)
     assert client.get("/admin/api/overview").status_code == 401
 
 
@@ -233,7 +281,7 @@ def test_pending_and_row_actions_use_existing_service_logic(client, monkeypatch)
     mutation = Mock()
     monkeypatch.setattr(AdminData, "mutate", mutation)
     pending = Mock()
-    monkeypatch.setattr(client.app.state.data.store, "request_pending_recheck", pending)
+    monkeypatch.setattr(app_for(client)[DATA_KEY].store, "request_pending_recheck", pending)
     assert client.post("/admin/api/pending-review", headers=ORIGIN).status_code == 200
     pending.assert_called_once()
     body = {"operation": "retry", "ids": ["test"], "confirmed": True}
@@ -373,7 +421,8 @@ def test_application_key_ui_requires_confirmation_and_never_redisplays_secrets(c
     response = client.get("/admin/api/applications")
     assert response.status_code == 200
     assert response.json()["legacy_configured"] is True
-    assert client.app.state.data.settings.application_key.get_secret_value() not in response.text
+    application_key = app_for(client)[DATA_KEY].settings.application_key.get_secret_value()
+    assert application_key not in response.text
     response = client.post(
         "/admin/api/applications", headers=ORIGIN, json={"operation": "issue", "name": "my-client"}
     )
@@ -401,7 +450,7 @@ def test_application_key_ui_requires_confirmation_and_never_redisplays_secrets(c
 
 def test_key_values_redacted_and_creation_does_not_replace_named_consumer(client):
     login(client)
-    state = client.app.state
+    app = app_for(client)
     calls = []
     consumers = {
         "existing": {
@@ -424,10 +473,11 @@ def test_key_values_redacted_and_creation_does_not_replace_named_consumer(client
         del consumers[username]
         return httpx.Response(200, json={"deleted": 1})
 
-    original = state.gateway
-    state.gateway = httpx.AsyncClient(
+    original = app[GATEWAY_CLIENT_KEY]
+    mock_gateway = httpx.AsyncClient(
         base_url="http://gateway/apisix/admin/", transport=httpx.MockTransport(handle)
     )
+    app._state[GATEWAY_CLIENT_KEY] = mock_gateway
     try:
         response = client.get("/admin/api/keys")
         assert response.status_code == 200
@@ -457,8 +507,8 @@ def test_key_values_redacted_and_creation_does_not_replace_named_consumer(client
         assert response.status_code == 200
         assert issued not in consumers
     finally:
-        client.portal.call(state.gateway.aclose)
-        state.gateway = original
+        client.portal.call(mock_gateway.aclose)
+        app._state[GATEWAY_CLIENT_KEY] = original
 
 
 def test_admin_settings_reject_shared_secret():

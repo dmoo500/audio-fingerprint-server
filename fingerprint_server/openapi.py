@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from audio_fingerprint.codec import ENCODING_ID, MAX_ENCODED_BYTES
-from fastapi import FastAPI
-from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
 from fingerprint_server.schemas import (
@@ -21,15 +19,6 @@ from fingerprint_server.schemas import (
 )
 
 State = Literal["queued", "processing", "processed", "failed", "pending_metadata"]
-
-
-class DocumentedAPI(FastAPI):
-    """Expose documentation for the active deployment without changing endpoint handling."""
-
-    def openapi(self) -> dict[str, Any]:
-        settings = getattr(self.state, "settings", None)
-        gateway = settings.gateway_enabled if settings else self.state.openapi_gateway
-        return build_schema(self, gateway=gateway)
 
 
 class Health(BaseModel):
@@ -115,23 +104,54 @@ class Artwork(BaseModel):
     url: str | None
 
 
-def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
+def build_schema(gateway: bool = True) -> dict[str, Any]:
     """Generate a deployment-specific schema without starting the app or reading secrets."""
-    schema = get_openapi(
-        title="Audio Fingerprint HTTP API",
-        version="1.0.0",
-        description=(
-            "Experimental independent fingerprint service. "
-            "No official Music Assistant affiliation. "
-            "Gateway mode requires BOTH personal and application credentials. "
-            "Gateway errors may use a different body than backend errors. "
-            "Recognition PCM is transient; no downloading or audio export is provided."
-            if gateway
-            else "Legacy direct-backend mode: use the upload or read key for each operation."
-        ),
-        routes=application.routes,
-    )
-    schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+    schema: dict[str, Any] = {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Audio Fingerprint HTTP API",
+            "version": "1.0.0",
+            "description": (
+                "Experimental independent fingerprint service. "
+                "No official Music Assistant affiliation. "
+                "Gateway mode requires BOTH personal and application credentials. "
+                "Gateway errors may use a different body than backend errors. "
+                "Recognition PCM is transient; no downloading or audio export is provided."
+                if gateway
+                else "Legacy direct-backend mode: use the upload or read key for each operation."
+            ),
+        },
+        "paths": {},
+        "components": {"schemas": {}},
+    }
+    schemas = schema["components"]["schemas"]
+    schemas["ValidationError"] = {
+        "title": "ValidationError",
+        "type": "object",
+        "required": ["loc", "msg", "type"],
+        "properties": {
+            "loc": {
+                "title": "Location",
+                "type": "array",
+                "items": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+            },
+            "msg": {"title": "Message", "type": "string"},
+            "type": {"title": "Error Type", "type": "string"},
+            "input": {"title": "Input"},
+            "ctx": {"title": "Context", "type": "object"},
+        },
+    }
+    schemas["HTTPValidationError"] = {
+        "title": "HTTPValidationError",
+        "type": "object",
+        "properties": {
+            "detail": {
+                "title": "Detail",
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/ValidationError"},
+            }
+        },
+    }
 
     def register(model: type[BaseModel]) -> dict[str, str]:
         definition = model.model_json_schema(ref_template="#/components/schemas/{model}")
@@ -178,25 +198,60 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
             "ApplicationKey": {"type": "apiKey", "in": "header", "name": "X-Application-Key"},
         }
     schema["components"]["securitySchemes"] = security
-    operations: dict[str, tuple[str, type[BaseModel], str, str | None]] = {
-        "/health": ("get", Health, "health", None),
-        "/api/v1/dejavu/statistics": ("get", Statistics, "getStatistics", "read"),
-        "/api/v1/dejavu/artwork/{reference}": ("get", Artwork, "getArtwork", "read"),
-        "/api/v1/dejavu/capabilities": ("get", Capabilities, "getCapabilities", "upload"),
-        "/api/v1/dejavu/availability": ("post", AvailabilityResponse, "getAvailability", "upload"),
-        "/api/v1/dejavu/submissions": ("post", SubmissionReceipt, "submitFingerprints", "upload"),
+    operations: dict[str, tuple[str, type[BaseModel], str, str | None, str]] = {
+        "/health": ("get", Health, "health", None, "Health"),
+        "/api/v1/dejavu/statistics": ("get", Statistics, "getStatistics", "read", "Statistics"),
+        "/api/v1/dejavu/artwork/{reference}": ("get", Artwork, "getArtwork", "read", "Artwork"),
+        "/api/v1/dejavu/capabilities": (
+            "get",
+            Capabilities,
+            "getCapabilities",
+            "upload",
+            "Capabilities",
+        ),
+        "/api/v1/dejavu/availability": (
+            "post",
+            AvailabilityResponse,
+            "getAvailability",
+            "upload",
+            "Availability",
+        ),
+        "/api/v1/dejavu/submissions": (
+            "post",
+            SubmissionReceipt,
+            "submitFingerprints",
+            "upload",
+            "Submit",
+        ),
         "/api/v1/dejavu/submissions/{submission_id}": (
             "get",
             SubmissionStatus,
             "getSubmission",
             "upload",
+            "Submission Status",
         ),
-        "/api/v1/dejavu/recognize": ("post", Recognition, "recognizePcm", "read"),
-        "/api/v1/dejavu/recognize/landmarks": ("post", Recognition, "recognizeLandmarks", "read"),
+        "/api/v1/dejavu/recognize": ("post", Recognition, "recognizePcm", "read", "Recognize"),
+        "/api/v1/dejavu/recognize/landmarks": (
+            "post",
+            Recognition,
+            "recognizeLandmarks",
+            "read",
+            "Recognize Landmarks",
+        ),
     }
-    schema["paths"] = {path: schema["paths"][path] for path in operations}
-    for path, (method, model, identifier, scope) in operations.items():
-        operation = schema["paths"][path][method]
+    for path, (method, model, identifier, scope, summary) in operations.items():
+        operation: dict[str, Any] = {"summary": summary}
+        schema["paths"][path] = {method: operation}
+        if "{" in path:
+            name = path.split("{", 1)[1].removesuffix("}")
+            operation["parameters"] = [
+                {
+                    "in": "path",
+                    "name": name,
+                    "required": True,
+                    "schema": {"type": "string", "title": name.replace("_", " ").title()},
+                }
+            ]
         operation["operationId"] = identifier
         operation["security"] = [{name: [] for name in security}] if scope else []
         operation["tags"] = [scope or "health"]
@@ -276,6 +331,31 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
                 "202 is not publication; 200 means an already processed duplicate."
             )
         if identifier == "recognizePcm":
+            operation["parameters"] = [
+                {
+                    "in": "query",
+                    "name": "sample_rate",
+                    "required": True,
+                    "schema": {
+                        "type": "integer",
+                        "minimum": 8000,
+                        "maximum": 192000,
+                        "title": "Sample Rate",
+                    },
+                },
+                {
+                    "in": "query",
+                    "name": "channels",
+                    "required": False,
+                    "schema": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2,
+                        "default": 1,
+                        "title": "Channels",
+                    },
+                },
+            ]
             operation["requestBody"] = {
                 "required": True,
                 "content": {
@@ -300,7 +380,7 @@ def build_schema(application: FastAPI, gateway: bool = True) -> dict[str, Any]:
                     }
                 }
         if identifier == "recognizePcm":
-            # Query validation is performed by FastAPI, unlike manual document validation.
+            # Query validation has a structured error body, unlike manual document validation.
             operation["responses"]["422"]["content"]["application/json"]["schema"] = {
                 "oneOf": [register(Error), {"$ref": "#/components/schemas/HTTPValidationError"}]
             }
@@ -313,11 +393,8 @@ def main() -> None:
     parser.add_argument("--legacy", action="store_true")
     parser.add_argument("--output", type=Path, default=Path("openapi.json"))
     args = parser.parse_args()
-    from fingerprint_server.app import create_app
-
     args.output.write_text(
-        json.dumps(build_schema(create_app(), gateway=not args.legacy), indent=2, sort_keys=True)
-        + "\n"
+        json.dumps(build_schema(gateway=not args.legacy), indent=2, sort_keys=True) + "\n"
     )
 
 

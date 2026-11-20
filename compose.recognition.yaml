@@ -5,17 +5,14 @@ services:
       context: ..
       dockerfile: music-assistant-fingerprint-server/Dockerfile
     command:
-      - uvicorn
-      - fingerprint_server.recognition:app
+      - python
+      - -m
+      - fingerprint_server.aiohttp_runner
+      - fingerprint_server.recognition
       - --host
       - 0.0.0.0
       - --port
       - "8100"
-      - --workers
-      - "1"
-      - --no-proxy-headers
-      - --log-config
-      - fingerprint_server/logging.json
     environment:
       FP_WEB_PUBLIC_URL: ${FP_WEB_PUBLIC_URL:?Set the browser-visible HTTPS origin}
       FP_WEB_API_URL: http://gateway:9080

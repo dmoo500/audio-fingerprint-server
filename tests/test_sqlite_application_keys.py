@@ -1,18 +1,21 @@
 """Verify SQLite application credentials survive restart and reject revoked keys."""
 
+import asyncio
 import hashlib
 import sqlite3
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from pydantic import SecretStr
 from test_server import READ, settings
 
+from fingerprint_server.api_state import STORE
 from fingerprint_server.app import create_app
 from fingerprint_server.database import create_store
 from fingerprint_server.database.application_keys import ApplicationKeys, initialize, validate
 from fingerprint_server.database.sqlite import Store
+from fingerprint_server.worker import Worker
 
 
 def test_registry_initialization_issue_and_revocation(tmp_path: Path) -> None:
@@ -64,42 +67,44 @@ def test_empty_registry_version_is_not_repaired(tmp_path: Path) -> None:
 async def test_gateway_authentication_and_revocation(tmp_path: Path, monkeypatch) -> None:
     config = settings(tmp_path, gateway_enabled=True, application_key=SecretStr("l" * 40))
     app = create_app(config)
-    async with app.router.lifespan_context(app):
+    async with AsyncClient(app) as client:
         keys = ApplicationKeys(create_store(config))
         identifier, secret = keys.issue("sqlite-client")
         headers = {"X-Application-Key": secret, "X-API-Key": READ}
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/v1/dejavu/statistics", headers=headers)
-            assert response.status_code == 200
+        response = await client.get("/api/v1/dejavu/statistics", headers=headers)
+        assert response.status_code == 200
 
-            def unavailable(self, supplied):
-                raise sqlite3.OperationalError("temporary registry outage")
+        def unavailable(self, supplied):
+            raise sqlite3.OperationalError("temporary registry outage")
 
-            with monkeypatch.context() as patch:
-                patch.setattr(ApplicationKeys, "authenticate", unavailable)
-                assert (
-                    await client.get("/api/v1/dejavu/statistics", headers=headers)
-                ).status_code == 503
-            keys.revoke(identifier)
-            response = await client.get("/api/v1/dejavu/statistics", headers=headers)
-            assert response.status_code == 401
+        with monkeypatch.context() as patch:
+            patch.setattr(ApplicationKeys, "authenticate", unavailable)
+            assert (
+                await client.get("/api/v1/dejavu/statistics", headers=headers)
+            ).status_code == 503
+        keys.revoke(identifier)
+        response = await client.get("/api/v1/dejavu/statistics", headers=headers)
+        assert response.status_code == 401
 
 
-async def test_health_reports_sqlite_database_failure(tmp_path: Path, monkeypatch) -> None:
+async def test_health_reports_sqlite_database_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Keep the worker alive without letting it race the health probe for the failing connection.
+    async def idle_worker(self: Worker) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Worker, "run", idle_worker)
     app = create_app(settings(tmp_path))
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            assert (await client.get("/health")).status_code == 200
-            with monkeypatch.context() as patch:
+    async with AsyncClient(app) as client:
+        assert (await client.get("/health")).status_code == 200
+        with monkeypatch.context() as patch:
 
-                def unavailable():
-                    raise sqlite3.OperationalError("database unavailable")
+            def unavailable():
+                raise sqlite3.OperationalError("database unavailable")
 
-                patch.setattr(app.state.store, "connect", unavailable)
-                response = await client.get("/health")
-                assert response.status_code == 503
-                assert response.json() == {"status": "failed"}
+            patch.setattr(app[STORE], "connect", unavailable)
+            response = await client.get("/health")
+            assert response.status_code == 503
+            assert response.json() == {"status": "failed"}
+        assert (await client.get("/health")).status_code == 200

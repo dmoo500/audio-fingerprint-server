@@ -7,11 +7,32 @@ import DataTable from "../src/components/DataTable.vue";
 import HistoryCharts from "../src/components/HistoryCharts.vue";
 import Reviews from "../src/components/Reviews.vue";
 
-const response = (data: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
-const rows = { items: [{ id: "one", title: "AC/DC", created_at: 1700000000 }], total: 1, fields: ["id", "title", "created_at"], sortable: ["title", "created_at"], searchable: ["title"] };
+const response = (data: unknown, status = 200) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  headers: new Headers({ "Content-Type": "application/json" }),
+  json: async () => data,
+});
+const rows = {
+  items: [{ id: "one", title: "AC/DC", created_at: 1700000000 }],
+  total: 1,
+  fields: ["id", "title", "created_at"],
+  sortable: ["title", "created_at"],
+  searchable: ["title"],
+};
 const snapshot = {
-  overview: { worker_available: true, database_backend: "sqlite", database_bytes: 0, format_version: 1, references: { published: 1, stored: 1 }, submissions: { queued: 1 }, manual_review: 0 },
-  revisions: { submissions: "one" }, updated_at: new Date().toISOString(), failed: false,
+  overview: {
+    worker_available: true,
+    database_backend: "sqlite",
+    database_bytes: 0,
+    format_version: 1,
+    references: { published: 1, stored: 1 },
+    submissions: { queued: 1 },
+    manual_review: 0,
+  },
+  revisions: { submissions: "one" },
+  updated_at: new Date().toISOString(),
+  failed: false,
 };
 
 class MockEventSource {
@@ -19,10 +40,18 @@ class MockEventSource {
   listeners: Record<string, (event: MessageEvent) => void> = {};
   onerror: (() => void) | null = null;
   closed = false;
-  constructor(public url: string) { MockEventSource.instance = this; }
-  addEventListener(name: string, handler: (event: MessageEvent) => void) { this.listeners[name] = handler; }
-  close() { this.closed = true; }
-  send(name: string, data: unknown = {}) { this.listeners[name]?.({ data: JSON.stringify(data) } as MessageEvent); }
+  constructor(public url: string) {
+    MockEventSource.instance = this;
+  }
+  addEventListener(name: string, handler: (event: MessageEvent) => void) {
+    this.listeners[name] = handler;
+  }
+  close() {
+    this.closed = true;
+  }
+  send(name: string, data: unknown = {}) {
+    this.listeners[name]?.({ data: JSON.stringify(data) } as MessageEvent);
+  }
 }
 
 beforeEach(() => {
@@ -31,13 +60,245 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn());
   vi.stubGlobal("scrollTo", vi.fn());
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  localStorage.removeItem("fingerprint-admin-theme");
+  delete document.documentElement.dataset.theme;
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+it("follows system changes and remembers a manual override on the login screen", async () => {
+  const media = Object.assign(new EventTarget(), { matches: true });
+  vi.spyOn(window, "matchMedia").mockImplementation(() =>
+    Object.assign(media, {
+      media: "(prefers-color-scheme: dark)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    }),
+  );
+  vi.mocked(globalThis.fetch).mockResolvedValue(
+    response({ authenticated: false }) as Response,
+  );
+  const first = mount(App);
+  await flushPromises();
+  const toggle = first.get(".theme-toggle");
+  expect(toggle.attributes("aria-label")).toContain("Theme: system");
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  media.matches = false;
+  media.dispatchEvent(new Event("change"));
+  expect(document.documentElement.dataset.theme).toBe("light");
+  await toggle.trigger("click");
+  expect(toggle.attributes("aria-label")).toContain("Theme: light");
+  media.matches = true;
+  media.dispatchEvent(new Event("change"));
+  expect(document.documentElement.dataset.theme).toBe("light");
+  first.unmount();
+
+  const second = mount(App);
+  await flushPromises();
+  expect(second.get(".theme-toggle").attributes("aria-label")).toContain(
+    "Theme: light",
+  );
+  await second.get(".theme-toggle").trigger("click");
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  await second.get(".theme-toggle").trigger("click");
+  expect(second.get(".theme-toggle").attributes("aria-label")).toContain(
+    "Theme: system",
+  );
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  second.unmount();
+});
+
+describe("notifications", () => {
+  it("only announces chart success after manual refresh and dismisses it automatically", async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : String(input).endsWith("/overview")
+              ? snapshot
+              : { charts: [] },
+        ) as Response,
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    const toast = wrapper.get(".toast-region");
+    expect(toast.text()).toBe("");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Refresh charts")!
+      .trigger("click");
+    await flushPromises();
+    expect(toast.get('[role="status"]').text()).toBe("Charts updated.");
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(toast.get('[role="status"]').text()).toBe("Charts updated.");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(toast.text()).toBe("");
+    wrapper.unmount();
+  });
+
+  it("announces successful clipboard copies and allows dismissing the notification", async () => {
+    history.replaceState(null, "", "/admin/musicbrainz-reviews");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator, "clipboard", "get").mockReturnValue({
+      writeText,
+    } as Clipboard);
+    vi.mocked(globalThis.fetch).mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : {
+                items: [
+                  {
+                    submission_id: "one",
+                    title: "Song",
+                    metadata: { artists: ["Artist"] },
+                    candidates: [],
+                  },
+                ],
+                has_more: false,
+              },
+        ) as Response,
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[aria-label="Copy title and artist"]').trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("Song - Artist");
+    expect(wrapper.get('.toast-region [role="status"]').text()).toBe(
+      "Title and artist copied.",
+    );
+    await wrapper.get('[aria-label="Dismiss notification"]').trigger("click");
+    expect(wrapper.get(".toast-region").text()).toBe("");
+    wrapper.unmount();
+  });
+});
 
 describe("table", () => {
+  it("opens Pending metadata from the overview with an exact state filter", async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockImplementation(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/session"))
+        return response({ authenticated: true }) as Response;
+      if (path.endsWith("/overview")) return response(snapshot) as Response;
+      if (path.endsWith("/history"))
+        return response({ charts: [] }) as Response;
+      return response({ ...rows, searchable: ["title", "state"] }) as Response;
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+    const shortcut = wrapper.get(
+      'a[href="/admin/submissions/list?state=pending_metadata"]',
+    );
+    expect(shortcut.text()).toBe("Pending metadata");
+    await shortcut.trigger("click");
+    await flushPromises();
+    expect(location.search).toBe("?state=pending_metadata");
+    const request = new URL(String(fetch.mock.lastCall?.[0]), location.origin);
+    expect(request.pathname).toBe("/admin/api/tables/submissions");
+    expect(JSON.parse(request.searchParams.get("where")!)).toEqual({
+      state: { eq: "pending_metadata" },
+    });
+    expect(wrapper.get(".filter summary").text()).toContain("Filter (active)");
+    wrapper.unmount();
+  });
+
+  it("shortens long values without changing the full value or record link", async () => {
+    const id = "0123456789abcdef".repeat(4);
+    const error =
+      "An intentionally long error message that does not fit on one line.";
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({
+        ...rows,
+        fields: ["id", "title", "error"],
+        items: [{ id, title: "Short title", error }],
+      }) as Response,
+    );
+    const wrapper = mount(DataTable, {
+      attachTo: document.body,
+      props: { dataset: "unresolved", snapshot },
+    });
+    await flushPromises();
+    const idCell = wrapper.get('[data-field="id"]');
+    expect(idCell.attributes("title")).toBe(id);
+    expect(idCell.get("a").text()).toBe("0123456789…bcdef");
+    expect(idCell.get("a").attributes("href")).toBe(
+      `/admin/unresolved/detail/${id}`,
+    );
+    expect(wrapper.get('[data-field="title"]').text()).toBe("Short title");
+    const errorCell = wrapper.get('[data-field="error"]');
+    expect(errorCell.attributes("title")).toBe(error);
+    const button = errorCell.get("button");
+    expect(button.text()).toBe(`${error.slice(0, 35)}…`);
+    await button.trigger("click");
+    expect(wrapper.get("dialog").attributes()).toHaveProperty("open");
+    expect(wrapper.get("dialog p").text()).toBe(error);
+    wrapper.unmount();
+  });
+
+  it("offers compact row actions without bypassing confirmation", async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockResolvedValue(response(rows) as Response);
+    const confirm = vi
+      .fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    vi.stubGlobal("confirm", confirm);
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", snapshot },
+    });
+    await flushPromises();
+    expect(wrapper.get('[aria-label="View one"]').attributes("href")).toBe(
+      "/admin/submissions/detail/one",
+    );
+    const remove = wrapper.get('[aria-label="Delete one"]');
+    await remove.trigger("click");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await remove.trigger("click");
+    await flushPromises();
+    const action = fetch.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse(String(action?.[1]?.body))).toEqual({
+      operation: "delete",
+      ids: ["one"],
+      confirmed: true,
+    });
+    wrapper.unmount();
+  });
+
+  it("can hide and restore columns without fetching or removing the detail link", async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockResolvedValue(response(rows) as Response);
+    const wrapper = mount(DataTable, {
+      props: { dataset: "references", snapshot },
+    });
+    await flushPromises();
+    const options = wrapper.get(".column-options").findAll("input");
+    expect(options[0]!.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("Showing 1 to 1 of 1 entries");
+    await options[1]!.setValue(false);
+    expect(wrapper.get("table").text()).not.toContain("AC/DC");
+    expect(wrapper.get("table a").attributes("href")).toBe(
+      "/admin/references/detail/one",
+    );
+    await options[1]!.setValue(true);
+    expect(wrapper.get("table").text()).toContain("AC/DC");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
   it("searches all records, applies literal filters and sends repeated sort parameters", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     fetch.mockResolvedValue(response(rows) as Response);
-    const wrapper = mount(DataTable, { props: { dataset: "submissions", snapshot } });
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", snapshot },
+    });
     await flushPromises();
     expect(wrapper.text()).toContain("2023-11-14 22:13:20 UTC");
     const search = wrapper.get('input[type="search"]');
@@ -46,49 +307,91 @@ describe("table", () => {
     await flushPromises();
     let url = new URL(String(fetch.mock.lastCall?.[0]), "http://localhost");
     expect(JSON.parse(url.searchParams.get("where")!)).toBe("ACDC");
-    const selects = wrapper.findAll("select");
+    const selects = wrapper.findAll(".filter select");
     await selects[0]!.setValue("title");
     await selects[1]!.setValue("eq");
-    await wrapper.get('.filter input').setValue("AC/DC");
+    await wrapper.get(".filter input").setValue("AC/DC");
     await wrapper.get(".filter form").trigger("submit");
     await flushPromises();
     url = new URL(String(fetch.mock.lastCall?.[0]), "http://localhost");
-    expect(JSON.parse(url.searchParams.get("where")!)).toEqual({ and: ["ACDC", { title: { eq: "AC/DC" } }] });
+    expect(JSON.parse(url.searchParams.get("where")!)).toEqual({
+      and: ["ACDC", { title: { eq: "AC/DC" } }],
+    });
     const sort = wrapper.findAll("button.sort");
     await sort[0]!.trigger("click");
     await flushPromises();
     await sort[1]!.trigger("click", { shiftKey: true });
     await flushPromises();
     url = new URL(String(fetch.mock.lastCall?.[0]), "http://localhost");
-    expect(url.searchParams.getAll("order_by")).toEqual(["title:asc", "created_at:asc"]);
+    expect(url.searchParams.getAll("order_by")).toEqual([
+      "title:asc",
+      "created_at:asc",
+    ]);
+    await search.setValue("another search");
+    const calls = fetch.mock.calls.length;
+    await wrapper.get('button[aria-label="Clear search"]').trigger("click");
+    await flushPromises();
+    expect(search.element.value).toBe("");
+    expect(wrapper.find('button[aria-label="Clear search"]').exists()).toBe(
+      false,
+    );
+    expect(fetch).toHaveBeenCalledTimes(calls + 1);
+    url = new URL(String(fetch.mock.lastCall?.[0]), "http://localhost");
+    expect(JSON.parse(url.searchParams.get("where")!)).toEqual({
+      title: { eq: "AC/DC" },
+    });
+    expect(url.searchParams.get("skip")).toBe("0");
+    expect(url.searchParams.getAll("order_by")).toEqual([
+      "title:asc",
+      "created_at:asc",
+    ]);
     wrapper.unmount();
   });
 
   it("requires confirmation for bulk actions and never replaces rows on a live revision", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     fetch.mockResolvedValue(response(rows) as Response);
-    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi
+      .fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
     vi.stubGlobal("confirm", confirm);
-    const wrapper = mount(DataTable, { props: { dataset: "submissions", snapshot } });
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", snapshot },
+    });
     await flushPromises();
-    await wrapper.setProps({ snapshot: { ...snapshot, revisions: { submissions: "two" } } });
+    await wrapper.setProps({
+      snapshot: { ...snapshot, revisions: { submissions: "two" } },
+    });
     expect(wrapper.text()).toContain("Newer data available");
     expect(fetch).toHaveBeenCalledTimes(1);
     await wrapper.get('input[aria-label="Select one"]').setValue(true);
-    const retry = wrapper.findAll("button").find(button => button.text() === "Retry selected")!;
+    const retry = wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Retry selected")!;
     await retry.trigger("click");
     expect(fetch).toHaveBeenCalledTimes(1);
     await retry.trigger("click");
     await flushPromises();
     expect(confirm).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({ operation: "retry", ids: ["one"], confirmed: true });
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
+      operation: "retry",
+      ids: ["one"],
+      confirmed: true,
+    });
     wrapper.unmount();
   });
 
   it("shows failed refreshes without discarding previous results", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    fetch.mockResolvedValueOnce(response(rows) as Response).mockResolvedValueOnce(response({ detail: "Database unavailable" }, 503) as Response);
-    const wrapper = mount(DataTable, { props: { dataset: "submissions", snapshot } });
+    fetch
+      .mockResolvedValueOnce(response(rows) as Response)
+      .mockResolvedValueOnce(
+        response({ detail: "Database unavailable" }, 503) as Response,
+      );
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", snapshot },
+    });
     await flushPromises();
     await wrapper.get('input[aria-label="Select one"]').setValue(true);
     await wrapper.get('input[type="search"]').setValue("x");
@@ -98,22 +401,44 @@ describe("table", () => {
     expect(wrapper.text()).toContain("AC/DC");
     expect(wrapper.text()).toContain("Retry table refresh");
     await wrapper.get('input[aria-label="Select one"]').setValue(true);
-    expect(wrapper.findAll("button").find(button => button.text() === "Delete selected")?.attributes("disabled")).toBeDefined();
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Delete selected")
+        ?.attributes("disabled"),
+    ).toBeDefined();
     wrapper.unmount();
   });
 
   it("loads detail metadata and returns to the list after confirmed deletion", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    fetch.mockResolvedValueOnce(response({ id: "a/b", metadata: { album: "Album" } }) as Response).mockResolvedValueOnce(response({}) as Response);
+    fetch
+      .mockResolvedValueOnce(
+        response({ id: "a/b", metadata: { album: "Album" } }) as Response,
+      )
+      .mockResolvedValueOnce(response({}) as Response);
     vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
-    const wrapper = mount(DataTable, { props: { dataset: "submissions", id: "a/b", snapshot } });
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", id: "a/b", snapshot },
+    });
     await flushPromises();
-    expect(fetch.mock.calls[0]?.[0]).toBe("/admin/api/tables/submissions/a%2Fb");
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      "/admin/api/tables/submissions/a%2Fb",
+    );
     expect(wrapper.text()).toContain("Album");
-    await wrapper.findAll("button").find(button => button.text() === "Delete submission")!.trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Delete submission")!
+      .trigger("click");
     await flushPromises();
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({ operation: "delete", ids: ["a/b"], confirmed: true });
-    expect(wrapper.emitted("navigate")?.[0]).toEqual(["/admin/submissions/list"]);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
+      operation: "delete",
+      ids: ["a/b"],
+      confirmed: true,
+    });
+    expect(wrapper.emitted("navigate")?.[0]).toEqual([
+      "/admin/submissions/list",
+    ]);
     wrapper.unmount();
   });
 });
@@ -121,13 +446,30 @@ describe("table", () => {
 describe("reviews and history", () => {
   it("retries the failed page without allowing changes to stale reviews", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    const review = { submission_id: "s1", title: "First page", candidates: [{ id: "mbid" }] };
-    fetch.mockResolvedValueOnce(response({ items: [review], has_more: true }) as Response)
-      .mockResolvedValueOnce(response({ detail: "Database unavailable" }, 503) as Response)
-      .mockResolvedValueOnce(response({ items: [{ ...review, title: "Second page" }], has_more: false }) as Response);
+    const review = {
+      submission_id: "s1",
+      title: "First page",
+      candidates: [{ id: "mbid" }],
+    };
+    fetch
+      .mockResolvedValueOnce(
+        response({ items: [review], has_more: true }) as Response,
+      )
+      .mockResolvedValueOnce(
+        response({ detail: "Database unavailable" }, 503) as Response,
+      )
+      .mockResolvedValueOnce(
+        response({
+          items: [{ ...review, title: "Second page" }],
+          has_more: false,
+        }) as Response,
+      );
     const wrapper = mount(Reviews);
     await flushPromises();
-    await wrapper.findAll("button").find(button => button.text() === "Next reviews")!.trigger("click");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Next reviews")!
+      .trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("First page");
     expect(wrapper.get("form button").attributes("disabled")).toBeDefined();
@@ -141,61 +483,239 @@ describe("reviews and history", () => {
 
   it("offers a selected manual copy fallback and submits the chosen recording", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    const review = { submission_id: "s1", title: "Song", metadata: { artists: ["Artist"] }, candidates: [{ id: "mbid", title: "Song", artists: ["Artist"], length: 3661000, earliest_album: { title: "Album", date: "2000" }, albums: ["Album"] }] };
-    fetch.mockResolvedValue(response({ items: [review], has_more: false }) as Response);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const review = {
+      submission_id: "s1",
+      title: "Song",
+      metadata: { artists: ["Artist"] },
+      candidates: [
+        {
+          id: "mbid",
+          title: "Song",
+          artists: ["Artist"],
+          length: 3661000,
+          earliest_album: { title: "Album", date: "2000" },
+          albums: ["Album"],
+        },
+      ],
+    };
+    fetch.mockResolvedValue(
+      response({ items: [review], has_more: false }) as Response,
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
     const wrapper = mount(Reviews, { attachTo: document.body });
     await flushPromises();
     expect(wrapper.text()).toContain("01:01:01");
     expect(wrapper.text()).toContain("Earliest known official album");
     await wrapper.get('[aria-label="Copy title and artist"]').trigger("click");
     await flushPromises();
-    const input = wrapper.get('[aria-label="Title and artist to copy"]').element as HTMLInputElement;
+    const input = wrapper.get('[aria-label="Title and artist to copy"]')
+      .element as HTMLInputElement;
     expect(input.value).toBe("Song - Artist");
     expect(input.selectionStart).toBe(0);
     expect(input.selectionEnd).toBe(input.value.length);
     await wrapper.get('input[type="radio"]').setValue(true);
     await wrapper.get("form").trigger("submit");
     await flushPromises();
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({ submission_id: "s1", selected_mbid: "mbid" });
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
+      submission_id: "s1",
+      selected_mbid: "mbid",
+    });
     wrapper.unmount();
   });
 
   it("renders server paths without bridging missing hours", () => {
-    const wrapper = mount(HistoryCharts, { props: { charts: [["Queue", { maximum: 3, start: "start", end: "end", last_at: "last", series: [{ label: "Queued", color: "#123456", path: "M0,1 L1,2 M3,4", dots: [[0, 1], [3, 4]], last: 2 }] }]] } });
-    expect(wrapper.get('path[stroke="#123456"]').attributes("d")).toBe("M0,1 L1,2 M3,4");
+    const wrapper = mount(HistoryCharts, {
+      props: {
+        charts: [
+          [
+            "Queue",
+            {
+              maximum: 3,
+              start: "start",
+              end: "end",
+              last_at: "last",
+              series: [
+                {
+                  label: "Queued",
+                  color: "#123456",
+                  path: "M0,1 L1,2 M3,4",
+                  dots: [
+                    [0, 1],
+                    [3, 4],
+                  ],
+                  last: 2,
+                },
+              ],
+            },
+          ],
+        ],
+      },
+    });
+    expect(wrapper.get('path[stroke="#123456"]').attributes("d")).toBe(
+      "M0,1 L1,2 M3,4",
+    );
     expect(wrapper.findAll("circle")).toHaveLength(2);
     wrapper.unmount();
   });
 });
 
 describe("credentials", () => {
-  it.each(["keys", "applications"] as const)("shows %s secrets once and requires revocation confirmation", async kind => {
+  it.each(["keys", "applications"] as const)(
+    "shows %s secrets once and requires revocation confirmation",
+    async (kind) => {
+      const fetch = vi.mocked(globalThis.fetch);
+      const item =
+        kind === "keys"
+          ? { username: "test-1", role: "read" }
+          : { id: "1", name: "test", revoked_at: null };
+      fetch.mockImplementation(
+        async (_input, init) =>
+          response(
+            init?.method === "POST" &&
+              JSON.parse(String(init.body)).operation === "issue"
+              ? { new_key: "example-secret" }
+              : { items: [item], legacy_configured: true },
+          ) as Response,
+      );
+      const wrapper = mount(Credentials, { props: { kind } });
+      await flushPromises();
+      await wrapper.get('form input:not([type="checkbox"])').setValue("test");
+      await wrapper.findAll("form")[0]!.trigger("submit");
+      await flushPromises();
+      expect(wrapper.text()).toContain("example-secret");
+      expect(wrapper.text()).toContain("only once");
+      const revokeForm = wrapper.get(
+        ".table-wrap > .records-table .revoke-actions",
+      );
+      const callsBeforeConfirmation = fetch.mock.calls.length;
+      await revokeForm.trigger("submit");
+      expect(fetch.mock.calls).toHaveLength(callsBeforeConfirmation);
+      await revokeForm.get('input[type="checkbox"]').setValue(true);
+      await revokeForm.trigger("submit");
+      await flushPromises();
+      const call = fetch.mock.calls.find(
+        ([, init]) =>
+          init?.method === "POST" &&
+          JSON.parse(String(init.body)).operation === "revoke",
+      )!;
+      expect(JSON.parse(String(call[1]?.body)).confirmed).toBe(true);
+      await wrapper
+        .findAll("button")
+        .find((b) => b.text() === "Dismiss key")!
+        .trigger("click");
+      expect(wrapper.text()).not.toContain("example-secret");
+      wrapper.unmount();
+    },
+  );
+});
+
+describe("navigation", () => {
+  it("shows page links in the sidebar and keeps the parent section active on detail pages", async () => {
+    history.replaceState(null, "", "/admin/references/detail/one");
     const fetch = vi.mocked(globalThis.fetch);
-    const item = kind === "keys" ? { username: "test-1", role: "read" } : { id: "1", name: "test", revoked_at: null };
-    fetch.mockImplementation(async (_input, init) => response(init?.method === "POST" && JSON.parse(String(init.body)).operation === "issue" ? { new_key: "example-secret" } : { items: [item], legacy_configured: true }) as Response);
-    const wrapper = mount(Credentials, { props: { kind } });
+    fetch.mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : String(input).endsWith("/reviews?skip=0")
+              ? { items: [], has_more: false }
+              : { id: "one" },
+        ) as Response,
+    );
+    const wrapper = mount(App, { attachTo: document.body });
     await flushPromises();
-    await wrapper.get('form input:not([type="checkbox"])').setValue("test");
-    await wrapper.findAll("form")[0]!.trigger("submit");
+    expect(wrapper.find("header nav").exists()).toBe(false);
+    const nav = wrapper.get('.sidebar nav[aria-label="Administration"]');
+    expect(nav.findAll("a")).toHaveLength(7);
+    expect(nav.get('[aria-current="page"]').text()).toBe("References");
+    const toggle = wrapper.get('[aria-controls="admin-navigation"]');
+    expect(toggle.attributes("aria-label")).toBe("Show menu");
+    expect(toggle.text()).toBe("");
+    const closedIcon = toggle.get("svg path").attributes("d");
+    await toggle.trigger("click");
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+    expect(toggle.attributes("aria-label")).toBe("Hide menu");
+    expect(toggle.get("svg path").attributes("d")).not.toBe(closedIcon);
+    await nav.get('a[href="/admin/musicbrainz-reviews"]').trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("example-secret");
-    expect(wrapper.text()).toContain("only once");
-    await wrapper.findAll("form")[1]!.get('input[type="checkbox"]').setValue(true);
-    await wrapper.findAll("form")[1]!.trigger("submit");
-    await flushPromises();
-    const call = fetch.mock.calls.find(([, init]) => init?.method === "POST" && JSON.parse(String(init.body)).operation === "revoke")!;
-    expect(JSON.parse(String(call[1]?.body)).confirmed).toBe(true);
-    await wrapper.findAll("button").find(b => b.text() === "Dismiss key")!.trigger("click");
-    expect(wrapper.text()).not.toContain("example-secret");
+    expect(location.pathname).toBe("/admin/musicbrainz-reviews");
+    expect(nav.get('[aria-current="page"]').text()).toBe("MusicBrainz reviews");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(wrapper.get("main").element);
     wrapper.unmount();
   });
 });
 
 describe("session", () => {
+  it("shows a compact live badge and keeps the last check time in its details", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : String(input).endsWith("/overview")
+              ? snapshot
+              : { charts: [] },
+        ) as Response,
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    const badge = wrapper.get(".live-badge");
+    const details = wrapper.get(".live-status");
+    expect(badge.text()).toBe("Connecting");
+    MockEventSource.instance.send("snapshot", {
+      ...snapshot,
+      updated_at: new Date().toISOString(),
+    });
+    await flushPromises();
+    expect(badge.text()).toBe("Live");
+    expect(badge.attributes("title")).toContain(
+      "Live updates connected — checked",
+    );
+    expect(details.attributes()).not.toHaveProperty("open");
+    await badge.trigger("click");
+    expect(details.get(".live-popover").text()).toBe(badge.attributes("title"));
+    (details.element as HTMLDetailsElement).open = true;
+    await badge.trigger("keydown", { key: "Escape" });
+    expect(details.attributes()).not.toHaveProperty("open");
+    MockEventSource.instance.send("unavailable");
+    await flushPromises();
+    expect(badge.text()).toBe("Delayed");
+    MockEventSource.instance.onerror?.();
+    await flushPromises();
+    expect(badge.text()).toBe("Reconnecting");
+    wrapper.unmount();
+  });
+
+  it("explains when a frontend-only preview serves HTML instead of the session API", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      new Response("<!doctype html><title>Frontend preview</title>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain("Admin service URL");
+    expect(wrapper.text()).not.toContain("Unexpected token");
+    wrapper.unmount();
+  });
+
   it("loads an authenticated session and closes events on expiry", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    fetch.mockImplementation(async input => response(String(input).endsWith("/session") ? { authenticated: true } : String(input).endsWith("/overview") ? snapshot : { charts: [] }) as Response);
+    fetch.mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : String(input).endsWith("/overview")
+              ? snapshot
+              : { charts: [] },
+        ) as Response,
+    );
     const wrapper = mount(App);
     await flushPromises();
     expect(MockEventSource.instance.url).toBe("/admin/events");
@@ -205,18 +725,25 @@ describe("session", () => {
     expect(MockEventSource.instance.closed).toBe(true);
     expect(wrapper.text()).toContain("Session ended");
     expect(location.pathname).toBe("/admin/login");
+    expect(wrapper.find("#admin-navigation").exists()).toBe(false);
     wrapper.unmount();
   });
 
   it("keeps login errors visible and starts events after signing in", async () => {
     const fetch = vi.mocked(globalThis.fetch);
     fetch.mockImplementation(async (input, init) => {
-      if (String(input).endsWith("/session")) return response({ authenticated: false }) as Response;
+      if (String(input).endsWith("/session"))
+        return response({ authenticated: false }) as Response;
       if (String(input).endsWith("/login")) {
         const accepted = JSON.parse(String(init?.body)).password === "correct"; // pragma: allowlist secret
-        return response(accepted ? {} : { detail: "Invalid credentials" }, accepted ? 200 : 401) as Response;
+        return response(
+          accepted ? {} : { detail: "Invalid credentials" },
+          accepted ? 200 : 401,
+        ) as Response;
       }
-      return response(String(input).endsWith("/overview") ? snapshot : { charts: [] }) as Response;
+      return response(
+        String(input).endsWith("/overview") ? snapshot : { charts: [] },
+      ) as Response;
     });
     const wrapper = mount(App);
     await flushPromises();
@@ -235,12 +762,28 @@ describe("session", () => {
 
   it("posts logout and tears down the live stream", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    fetch.mockImplementation(async input => response(String(input).endsWith("/session") ? { authenticated: true } : String(input).endsWith("/overview") ? snapshot : String(input).endsWith("/history") ? { charts: [] } : {}) as Response);
+    fetch.mockImplementation(
+      async (input) =>
+        response(
+          String(input).endsWith("/session")
+            ? { authenticated: true }
+            : String(input).endsWith("/overview")
+              ? snapshot
+              : String(input).endsWith("/history")
+                ? { charts: [] }
+                : {},
+        ) as Response,
+    );
     const wrapper = mount(App);
     await flushPromises();
-    await wrapper.findAll("button").find(button => button.text() === "Sign out")!.trigger("click");
+    const signOut = wrapper.get('button[aria-label="Sign out"]');
+    expect(signOut.get("svg").attributes("aria-hidden")).toBe("true");
+    expect(signOut.text()).toBe("");
+    await signOut.trigger("click");
     await flushPromises();
-    const call = fetch.mock.calls.find(([input]) => String(input).endsWith("/logout"))!;
+    const call = fetch.mock.calls.find(([input]) =>
+      String(input).endsWith("/logout"),
+    )!;
     expect(JSON.parse(String(call[1]?.body))).toEqual({});
     expect(MockEventSource.instance.closed).toBe(true);
     expect(location.pathname).toBe("/admin/login");
@@ -249,16 +792,57 @@ describe("session", () => {
 
   it("expires the session on a protected API 401", async () => {
     const fetch = vi.mocked(globalThis.fetch);
-    fetch.mockImplementation(async input => String(input).endsWith("/session")
-      ? response({ authenticated: true }) as Response
-      : String(input).endsWith("/overview")
-        ? response({ detail: "Expired" }, 401) as Response
-        : response({ charts: [] }) as Response);
+    fetch.mockImplementation(async (input) =>
+      String(input).endsWith("/session")
+        ? (response({ authenticated: true }) as Response)
+        : String(input).endsWith("/overview")
+          ? (response({ detail: "Expired" }, 401) as Response)
+          : (response({ charts: [] }) as Response),
+    );
     const wrapper = mount(App);
     await flushPromises();
     expect(wrapper.text()).toContain("Session ended");
     expect(location.pathname).toBe("/admin/login");
     expect(MockEventSource.instance.closed).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("checks idle pages without live updates and only signs out on confirmed expiry", async () => {
+    vi.useFakeTimers();
+    history.replaceState(null, "", "/admin/keys");
+    const fetch = vi.mocked(globalThis.fetch);
+    const sessions = vi
+      .fn()
+      .mockResolvedValueOnce(response({ authenticated: true }))
+      .mockRejectedValueOnce(new TypeError("Network unavailable"))
+      .mockResolvedValueOnce(response({ authenticated: false }));
+    fetch.mockImplementation(async (input) =>
+      String(input).endsWith("/session")
+        ? sessions()
+        : (response({ items: [] }) as Response),
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(sessions).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(sessions).toHaveBeenCalledTimes(2);
+    expect(location.pathname).toBe("/admin/keys");
+    expect(wrapper.text()).toContain("Could not verify the session");
+
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(sessions).toHaveBeenCalledTimes(2);
+
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    expect(sessions).toHaveBeenCalledTimes(3);
+    expect(wrapper.text()).toContain("Session ended");
+    expect(location.pathname).toBe("/admin/login");
+    expect(wrapper.find('[aria-label="Sign out"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(sessions).toHaveBeenCalledTimes(3);
     wrapper.unmount();
   });
 });

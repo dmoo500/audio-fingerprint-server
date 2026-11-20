@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from aiohttp_client import TestClient
 from test_recognition import HEADERS, PCM, matched, settings
 from test_server import settings as api_settings
 

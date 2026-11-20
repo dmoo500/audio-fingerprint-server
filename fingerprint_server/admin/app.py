@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -11,93 +13,50 @@ import sqlite3
 import time
 from collections import deque
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import httpx
 import psycopg
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
-from pydantic import Field, HttpUrl, SecretStr, model_validator
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from aiohttp import web
+from aiohttp.typedefs import Handler
+from pydantic import SecretStr
 
-from fingerprint_server.access_log import AccessLogMiddleware
-from fingerprint_server.admin.api import require_session, router
-from fingerprint_server.admin.data import AdminData, Dataset
+from fingerprint_server.admin.api import routes as api_routes
+from fingerprint_server.admin.api.dependencies import require_session
+from fingerprint_server.admin.audit import AUTHENTICATED, audit_admin
+from fingerprint_server.admin.data import AdminData
 from fingerprint_server.admin.errors import ActionFailed, LoginFailed
 from fingerprint_server.admin.live import AdminLive
+from fingerprint_server.admin.settings import AdminSettings
 from fingerprint_server.admin.sqlite_data import SQLiteAdminData
+from fingerprint_server.admin.state import (
+    AUTH_KEY,
+    CONFIG_KEY,
+    DATA_KEY,
+    GATEWAY_KEY,
+    LIVE_KEY,
+    SESSION_KEY,
+    SESSION_SECRET_KEY,
+)
+from fingerprint_server.aiohttp_support import error_responses
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database.application_keys import validate as validate_application_keys
-from fingerprint_server.settings import Settings
 
 LOGGER = logging.getLogger(__name__)
 FRONTEND = Path(__file__).with_name("dist")
 ASSETS = ("app.js", "index.css")
 SESSION_SECONDS = 3600
-
-
-class AdminSettings(Settings):
-    """Configure the separately published administration service."""
-
-    model_config = {**Settings.model_config, "hide_input_in_errors": True}
-
-    admin_key: SecretStr = Field(min_length=32)
-    admin_cookie_secure: bool = False
-    gateway_admin_key: SecretStr = Field(min_length=24)
-    gateway_admin_url: HttpUrl = HttpUrl("http://gateway:9180/apisix/admin/")
-    worker_health_url: HttpUrl = HttpUrl("http://fingerprints:8097/health")
-
-    @model_validator(mode="after")
-    def validate_admin(self) -> AdminSettings:
-        """Require separate credentials and URLs without embedded credentials."""
-        if self.postgres_dsn is not None and not self.postgres_dsn.get_secret_value():
-            raise ValueError("The admin PostgreSQL DSN must not be empty")
-        if self.admin_key in (
-            self.upload_key,
-            self.read_key,
-            self.application_key,
-            self.gateway_admin_key,
-        ):
-            raise ValueError("Use a separate admin UI key")
-        url = self.gateway_admin_url
-        if url.username or url.password or url.query or url.fragment:
-            raise ValueError("Gateway admin URL must not include credentials/query/fragment")
-        url = self.worker_health_url
-        if url.username or url.password or url.query or url.fragment or url.path != "/health":
-            raise ValueError("Worker health URL must be a plain /health URL")
-        return self
-
-
-class AdminProtection(BaseHTTPMiddleware):
-    """Require same-origin writes and prevent caching of administrator responses."""
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        response: Response
-        origin = f"{request.url.scheme}://{request.url.netloc}"
-        if request.method not in ("GET", "HEAD", "OPTIONS") and (
-            request.headers.get("origin") != origin
-        ):
-            response = JSONResponse(
-                {"detail": "A same-origin administration request is required"}, status_code=403
-            )
-        else:
-            response = await call_next(request)
-        response.headers.update(
-            {
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "default-src 'none'; script-src 'self'; "
-                "style-src 'self'; img-src 'self'; connect-src 'self'; "
-                "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-                "Referrer-Policy": "same-origin",
-            }
-        )
-        return response
+COOKIE_NAME = "fp_admin"
+SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; "
+    "style-src 'self'; img-src 'self'; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    "Referrer-Policy": "same-origin",
+}
 
 
 class AdminAuth:
@@ -108,7 +67,7 @@ class AdminAuth:
         self.sessions: dict[str, float] = {}
         self.attempts: deque[float] = deque()
 
-    async def login(self, username: str, password: str, request: Request) -> None:
+    async def login(self, username: str, password: str, request: web.Request) -> None:
         now = time.monotonic()
         while self.attempts and self.attempts[0] < now - 60:
             self.attempts.popleft()
@@ -120,54 +79,138 @@ class AdminAuth:
             LOGGER.warning("Rejected administrator login")
             raise LoginFailed("Invalid administrator credentials")
         self.sessions = {key: expiry for key, expiry in self.sessions.items() if expiry > now}
-        previous = request.session.get("token", "")
+        session = request[SESSION_KEY]
+        previous = session.get("token", "")
         if len(self.sessions) >= 20 and previous not in self.sessions:
             raise LoginFailed("Too many active admin sessions")
         self.sessions.pop(previous, None)
         token = secrets.token_urlsafe(32)
         self.sessions[token] = now + SESSION_SECONDS
-        request.session.clear()
-        request.session["token"] = token
+        session.clear()
+        session["token"] = token
         LOGGER.info("Administrator logged in")
 
-    async def is_authenticated(self, request: Request) -> bool:
-        return self.sessions.get(request.session.get("token", ""), 0) > time.monotonic()
+    async def is_authenticated(self, request: web.Request) -> bool:
+        return self.sessions.get(request[SESSION_KEY].get("token", ""), 0) > time.monotonic()
 
-    async def logout(self, request: Request) -> None:
-        self.sessions.pop(request.session.get("token", ""), None)
-        request.session.clear()
+    async def logout(self, request: web.Request) -> None:
+        session = request[SESSION_KEY]
+        self.sessions.pop(session.get("token", ""), None)
+        session.clear()
 
 
-class AdminSessionMiddleware:
-    """Apply the configured cookie policy after settings are loaded at startup."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        key = secrets.token_urlsafe(32)
-        self.handlers = {
-            secure: SessionMiddleware(
-                app,
-                secret_key=key,
-                session_cookie="fp_admin",
+@web.middleware
+async def admin_session(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Load a signed session cookie and persist session changes."""
+    app = request.app
+    secret = app[SESSION_SECRET_KEY]
+    original = _decode_session(request.cookies.get(COOKIE_NAME, ""), secret)
+    session = original.copy()
+    request[SESSION_KEY] = session
+    response = await handler(request)
+    if session != original:
+        if session:
+            value = _encode_session(session, secret)
+            response.set_cookie(
+                COOKIE_NAME,
+                value,
                 max_age=SESSION_SECONDS,
-                same_site="strict",
-                https_only=secure,
+                httponly=True,
+                secure=app[CONFIG_KEY].admin_cookie_secure,
+                samesite="Strict",
+                path="/",
             )
-            for secure in (False, True)
-        }
+        else:
+            response.set_cookie(
+                COOKIE_NAME,
+                "",
+                max_age=0,
+                httponly=True,
+                secure=app[CONFIG_KEY].admin_cookie_secure,
+                samesite="Strict",
+                path="/",
+            )
+    return response
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket"):
-            await self.handlers[False](scope, receive, send)
-            return
-        config: AdminSettings = scope["app"].state.config
-        await self.handlers[config.admin_cookie_secure](scope, receive, send)
+
+def _encode_session(session: dict[str, str], secret: bytes) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps(session, separators=(",", ":")).encode())
+    encoded = payload.rstrip(b"=")
+    signature = hmac.new(secret, encoded, hashlib.sha256).digest()
+    return (encoded + b"." + base64.urlsafe_b64encode(signature).rstrip(b"=")).decode()
 
 
-def create_admin(configuration: AdminSettings | None = None) -> FastAPI:
+def _decode_session(value: str, secret: bytes) -> dict[str, str]:
+    try:
+        encoded, signature = value.encode().split(b".", 1)
+        expected = hmac.new(secret, encoded, hashlib.sha256).digest()
+        supplied = base64.urlsafe_b64decode(signature + b"=" * (-len(signature) % 4))
+        if not hmac.compare_digest(expected, supplied):
+            return {}
+        payload = base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
+        session = json.loads(payload)
+        if isinstance(session, dict) and all(
+            isinstance(key, str) and isinstance(item, str) for key, item in session.items()
+        ):
+            return session
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+@web.middleware
+async def admin_authentication(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Require a session for private API and event-stream requests."""
+    if request.path.startswith("/admin/api/") and request.path not in (
+        "/admin/api/login",
+        "/admin/api/session",
+    ):
+        await require_session(request)
+        request[AUTHENTICATED] = True
+    elif request.path == "/admin/events":
+        await require_session(request)
+    return await handler(request)
+
+
+@web.middleware
+async def admin_errors(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Preserve the admin API's stable database and gateway error responses."""
+    try:
+        return await handler(request)
+    except ActionFailed as err:
+        return web.json_response({"detail": str(err)}, status=400)
+    except (psycopg.Error, sqlite3.Error) as err:
+        LOGGER.error("Admin database operation failed: %s", type(err).__name__)
+        return web.json_response({"detail": "Administrator database is unavailable"}, status=503)
+    except httpx.HTTPError as err:
+        LOGGER.error("Admin gateway operation failed: %s", type(err).__name__)
+        return web.json_response(
+            {"detail": "Gateway administration failed; see server log"}, status=502
+        )
+
+
+@web.middleware
+async def admin_protection(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """Enforce same-origin writes and set private-content security headers."""
+    response: web.StreamResponse
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = f"{request.scheme}://{request.host}"
+        if request.headers.get("Origin") != origin:
+            response = web.json_response(
+                {"detail": "A same-origin administration request is required"}, status=403
+            )
+        else:
+            response = await handler(request)
+    else:
+        response = await handler(request)
+    response.headers.update(SECURITY_HEADERS)
+    return response
+
+
+def create_admin(configuration: AdminSettings | None = None) -> web.Application:
     """Create the independent admin service without starting workers or migrating data."""
 
-    @asynccontextmanager
-    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(application: web.Application) -> AsyncIterator[None]:
         for path in (FRONTEND / "index.html", *(FRONTEND / "assets" / name for name in ASSETS)):
             if not path.is_file():
                 raise RuntimeError("Admin frontend assets are missing. Build admin-frontend first.")
@@ -188,10 +231,11 @@ def create_admin(configuration: AdminSettings | None = None) -> FastAPI:
             await live.sample()
             if live.failed:
                 raise RuntimeError("Cannot initialize admin live data; see server log")
-            application.state.config = config
-            application.state.data = data
-            application.state.live = live
-            application.state.auth = AdminAuth(config.admin_key)
+            application[CONFIG_KEY] = config
+            application[DATA_KEY] = data
+            application[LIVE_KEY] = live
+            application[AUTH_KEY] = AdminAuth(config.admin_key)
+            application[SESSION_SECRET_KEY] = secrets.token_bytes(32)
             async with httpx.AsyncClient(
                 base_url=str(config.gateway_admin_url).rstrip("/") + "/",
                 headers={"X-API-KEY": config.gateway_admin_key.get_secret_value()},
@@ -199,7 +243,7 @@ def create_admin(configuration: AdminSettings | None = None) -> FastAPI:
                 follow_redirects=False,
                 timeout=15,
             ) as gateway:
-                application.state.gateway = gateway
+                application[GATEWAY_KEY] = gateway
                 task = asyncio.create_task(live.run())
                 try:
                     yield
@@ -211,83 +255,87 @@ def create_admin(configuration: AdminSettings | None = None) -> FastAPI:
             if isinstance(data, SQLiteAdminData):
                 await run_sync(data.close)
 
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.add_middleware(AdminSessionMiddleware)
-    app.add_middleware(AdminProtection)
-    app.add_middleware(AccessLogMiddleware)
-    app.include_router(router)
-
-    @app.exception_handler(RequestValidationError)
-    async def invalid_request(_request: Request, _error: RequestValidationError) -> JSONResponse:
-        return JSONResponse({"detail": "Invalid administrator request"}, status_code=422)
-
-    @app.exception_handler(ActionFailed)
-    async def action_failed(_request: Request, error: ActionFailed) -> JSONResponse:
-        return JSONResponse({"detail": str(error)}, status_code=400)
-
-    @app.exception_handler(psycopg.Error)
-    @app.exception_handler(sqlite3.Error)
-    async def database_failed(
-        _request: Request, error: psycopg.Error | sqlite3.Error
-    ) -> JSONResponse:
-        LOGGER.error("Admin database operation failed: %s", type(error).__name__)
-        return JSONResponse({"detail": "Administrator database is unavailable"}, status_code=503)
-
-    @app.exception_handler(httpx.HTTPError)
-    async def gateway_failed(_request: Request, error: httpx.HTTPError) -> JSONResponse:
-        LOGGER.error("Admin gateway operation failed: %s", type(error).__name__)
-        return JSONResponse({"detail": "Gateway administration failed; see server log"}, 502)
-
-    @app.get("/")
-    async def root() -> RedirectResponse:
-        return RedirectResponse("/admin/")
-
-    @app.get("/admin/events")
-    async def events(request: Request) -> StreamingResponse:
-        await require_session(request)
-        live: AdminLive = request.app.state.live
-        auth: AdminAuth = request.app.state.auth
-
-        async def stream() -> AsyncIterator[str]:
-            live.subscribers += 1
-            try:
-                while True:
-                    if not await auth.is_authenticated(request):
-                        yield "event: session-expired\ndata: {}\n\n"
-                        return
-                    changed = live.changed
-                    event = "unavailable" if live.failed else "snapshot"
-                    payload = {} if live.failed else live.snapshot
-                    yield f"event: {event}\ndata: {json.dumps(payload)}\n\n"
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(changed.wait(), timeout=10)
-            finally:
-                live.subscribers -= 1
-
-        return StreamingResponse(
-            stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"}
-        )
-
-    @app.get("/admin/assets/{name}")
-    async def asset(name: str) -> FileResponse:
-        if name not in ASSETS:
-            raise HTTPException(404)
-        return FileResponse(FRONTEND / "assets" / name)
-
-    @app.get("/admin/")
-    @app.get("/admin/login")
-    @app.get("/admin/musicbrainz-reviews")
-    @app.get("/admin/keys")
-    @app.get("/admin/applications")
-    async def index() -> FileResponse:
-        return FileResponse(FRONTEND / "index.html")
-
-    @app.get("/admin/{dataset}/list")
-    @app.get("/admin/{dataset}/detail/{identifier}")
-    async def table_page(dataset: Dataset, identifier: str | None = None) -> FileResponse:
-        return FileResponse(FRONTEND / "index.html")
-
+    app = web.Application(
+        middlewares=[
+            audit_admin,
+            admin_protection,
+            admin_errors,
+            error_responses,
+            admin_session,
+            admin_authentication,
+        ],
+        client_max_size=64 * 1024,
+        handler_args={"auto_decompress": False},
+    )
+    app.cleanup_ctx.append(lifespan)
+    app.add_routes(api_routes())
+    app.router.add_get("/", root)
+    app.router.add_get("/admin/events", events)
+    app.router.add_get("/admin/assets/{name}", asset)
+    for path in (
+        "/admin/",
+        "/admin/login",
+        "/admin/musicbrainz-reviews",
+        "/admin/keys",
+        "/admin/applications",
+    ):
+        app.router.add_get(path, index)
+    app.router.add_get("/admin/{dataset}/list", table_page)
+    app.router.add_get("/admin/{dataset}/detail/{identifier}", table_page)
     return app
+
+
+async def root(_request: web.Request) -> web.StreamResponse:
+    """Redirect the service root to its administrator interface."""
+    raise web.HTTPTemporaryRedirect("/admin/")
+
+
+async def events(request: web.Request) -> web.StreamResponse:
+    """Stream current collection snapshots until logout or disconnect."""
+    live = request.app[LIVE_KEY]
+    auth = request.app[AUTH_KEY]
+    response = web.StreamResponse(
+        status=200,
+        headers={"Content-Type": "text/event-stream", "X-Accel-Buffering": "no"},
+    )
+    response.headers.update(SECURITY_HEADERS)
+    await response.prepare(request)
+    live.subscribers += 1
+    try:
+        while True:
+            if not await auth.is_authenticated(request):
+                await response.write(b"event: session-expired\ndata: {}\n\n")
+                break
+            changed = live.changed
+            event = "unavailable" if live.failed else "snapshot"
+            payload: dict[str, Any] = {} if live.failed else live.snapshot
+            await response.write(f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode())
+            with suppress(TimeoutError):
+                await asyncio.wait_for(changed.wait(), timeout=10)
+    finally:
+        live.subscribers -= 1
+    return response
+
+
+async def asset(request: web.Request) -> web.StreamResponse:
+    """Serve one allowlisted administrator frontend asset."""
+    name = request.match_info["name"]
+    if name not in ASSETS:
+        raise web.HTTPNotFound()
+    return web.FileResponse(FRONTEND / "assets" / name)
+
+
+async def index(_request: web.Request) -> web.StreamResponse:
+    """Serve the administrator frontend entry point."""
+    return web.FileResponse(FRONTEND / "index.html")
+
+
+async def table_page(request: web.Request) -> web.StreamResponse:
+    """Serve a frontend route for one supported dataset."""
+    dataset = request.match_info["dataset"]
+    if dataset not in ("submissions", "unresolved", "references"):
+        raise web.HTTPUnprocessableEntity(reason="Invalid administrator request")
+    return await index(request)
 
 
 app = create_admin()

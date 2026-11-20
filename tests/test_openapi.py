@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-import httpx
+from aiohttp_client import AsyncClient
 from test_server import READ, UPLOAD, canonical, document, settings
 
 from fingerprint_server.app import create_app
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_published_schema_matches_generated_contract() -> None:
-    schema = build_schema(create_app())
+    schema = build_schema()
     assert json.loads((ROOT / "openapi.json").read_text()) == schema
     assert len(schema["paths"]) == 9
     assert schema["paths"]["/api/v1/dejavu/artwork/{reference}"]["get"]["security"] == [
@@ -36,7 +36,7 @@ def test_published_schema_matches_generated_contract() -> None:
 
 
 def test_wire_body_and_response_variants() -> None:
-    schema = build_schema(create_app())
+    schema = build_schema()
     operations = schema["paths"]
     upload = operations["/api/v1/dejavu/submissions"]["post"]
     assert {"200", "202", "409", "422", "503"} <= upload["responses"].keys()
@@ -57,7 +57,7 @@ def test_wire_body_and_response_variants() -> None:
 
 
 def test_all_component_references_resolve() -> None:
-    schema = build_schema(create_app())
+    schema = build_schema()
 
     def check(value: object) -> None:
         if isinstance(value, dict):
@@ -75,11 +75,13 @@ def test_all_component_references_resolve() -> None:
     check(schema)
 
 
-async def test_runtime_openapi_legacy_needs_no_lifespan_or_credentials() -> None:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app()), base_url="http://test"
-    ) as client:
+async def test_runtime_openapi_legacy_needs_no_credentials(tmp_path: Path) -> None:
+    async with AsyncClient(create_app(settings(tmp_path))) as client:
         response = await client.get("/openapi.json")
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            docs = await client.get(path)
+            assert docs.status_code == 200
+            assert docs.headers["Content-Type"].startswith("text/html")
     assert response.status_code == 200
     operation = response.json()["paths"]["/api/v1/dejavu/statistics"]["get"]
     assert operation["security"] == [{"ScopeKey": []}]
@@ -87,46 +89,41 @@ async def test_runtime_openapi_legacy_needs_no_lifespan_or_credentials() -> None
 
 async def test_declared_models_describe_actual_responses(tmp_path: Path) -> None:
     application = create_app(settings(tmp_path))
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as client:
-            response = await client.get("/health")
-            Health.model_validate(response.json())
-            response = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
-            Statistics.model_validate(response.json())
-            response = await client.get(
-                "/api/v1/dejavu/capabilities", headers={"X-API-Key": UPLOAD}
-            )
-            Capabilities.model_validate(response.json())
-            body, identifier = canonical(document())
-            response = await client.post(
-                "/api/v1/dejavu/submissions",
-                content=body,
-                headers={
-                    "X-API-Key": UPLOAD,
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": identifier,
-                },
-            )
-            SubmissionReceipt.model_validate(response.json())
-            response = await client.get(
-                f"/api/v1/dejavu/submissions/{identifier}", headers={"X-API-Key": UPLOAD}
-            )
-            SubmissionStatus.model_validate(response.json())
-            response = await client.post(
-                "/api/v1/dejavu/recognize?sample_rate=8000",
-                content=b"\0" * (8000 * 3 * 4),
-                headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
-            )
-            Recognition.model_validate(response.json())
-            assert response.json()["match"] is None
-            response = await client.get("/api/v1/dejavu/statistics")
-            assert response.status_code == 401
-            Error.model_validate(response.json())
+    async with AsyncClient(application) as client:
+        response = await client.get("/health")
+        Health.model_validate(response.json())
+        response = await client.get("/api/v1/dejavu/statistics", headers={"X-API-Key": READ})
+        Statistics.model_validate(response.json())
+        response = await client.get("/api/v1/dejavu/capabilities", headers={"X-API-Key": UPLOAD})
+        Capabilities.model_validate(response.json())
+        body, identifier = canonical(document())
+        response = await client.post(
+            "/api/v1/dejavu/submissions",
+            content=body,
+            headers={
+                "X-API-Key": UPLOAD,
+                "Content-Type": "application/json",
+                "Idempotency-Key": identifier,
+            },
+        )
+        SubmissionReceipt.model_validate(response.json())
+        response = await client.get(
+            f"/api/v1/dejavu/submissions/{identifier}", headers={"X-API-Key": UPLOAD}
+        )
+        SubmissionStatus.model_validate(response.json())
+        response = await client.post(
+            "/api/v1/dejavu/recognize?sample_rate=8000",
+            content=b"\0" * (8000 * 3 * 4),
+            headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
+        )
+        Recognition.model_validate(response.json())
+        assert response.json()["match"] is None
+        response = await client.get("/api/v1/dejavu/statistics")
+        assert response.status_code == 401
+        Error.model_validate(response.json())
 
 
-def test_runtime_gateway_requires_both_keys(tmp_path: Path) -> None:
+async def test_runtime_gateway_requires_both_keys(tmp_path: Path) -> None:
     application = create_app(
         settings(
             tmp_path,
@@ -134,7 +131,9 @@ def test_runtime_gateway_requires_both_keys(tmp_path: Path) -> None:
             application_key="test-application-key-at-least-24-characters",
         )
     )
-    schema = application.openapi()
-    assert schema["paths"]["/api/v1/dejavu/statistics"]["get"]["security"] == [
+    async with AsyncClient(application) as client:
+        response = await client.get("/openapi.json")
+    assert response.status_code == 200
+    assert response.json()["paths"]["/api/v1/dejavu/statistics"]["get"]["security"] == [
         {"PersonalKey": [], "ApplicationKey": []}
     ]

@@ -5,8 +5,8 @@ import importlib
 import json
 from uuid import uuid4
 
-import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from pydantic import SecretStr
 from test_postgres_migration import postgres as postgres
 from test_server import READ, settings
@@ -58,50 +58,40 @@ async def test_registry_migration_two_replicas_revocation_and_legacy(
     with pytest.raises(ValueError):
         keys.issue("invalid name")
     first, second = create_app(config), create_app(config)
-    async with first.router.lifespan_context(first), second.router.lifespan_context(second):
-        async with (
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=first), base_url="http://test"
-            ) as a,
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=second), base_url="http://test"
-            ) as b,
-        ):
-            caplog.set_level("INFO", logger="uvicorn.error.fingerprint.auth")
-            headers = {"X-Application-Key": secret, "X-API-Key": READ}
-            for client in (a, b):
-                assert (
-                    await client.get("/api/v1/dejavu/statistics", headers=headers)
-                ).status_code == 200
-
-            def unavailable(self, supplied):
-                raise psycopg.OperationalError("temporary registry outage")
-
-            with monkeypatch.context() as patch:
-                patch.setattr(ApplicationKeys, "authenticate", unavailable)
-                assert (
-                    await a.get("/api/v1/dejavu/statistics", headers=headers)
-                ).status_code == 503
-            assert "application=app-" + identifier in caplog.text
-            assert secret not in caplog.text
+    async with AsyncClient(first) as a, AsyncClient(second) as b:
+        caplog.set_level("INFO", logger="uvicorn.error.fingerprint.auth")
+        headers = {"X-Application-Key": secret, "X-API-Key": READ}
+        for client in (a, b):
             assert (
-                await a.get("/api/v1/dejavu/statistics", headers={"X-Application-Key": secret})
+                await client.get("/api/v1/dejavu/statistics", headers=headers)
+            ).status_code == 200
+
+        def unavailable(self, supplied):
+            raise psycopg.OperationalError("temporary registry outage")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ApplicationKeys, "authenticate", unavailable)
+            assert (await a.get("/api/v1/dejavu/statistics", headers=headers)).status_code == 503
+        assert "application=app-" + identifier in caplog.text
+        assert secret not in caplog.text
+        assert (
+            await a.get("/api/v1/dejavu/statistics", headers={"X-Application-Key": secret})
+        ).status_code == 401
+        keys.revoke(identifier)
+        keys.revoke(identifier)
+        for client in (a, b):
+            assert (
+                await client.get("/api/v1/dejavu/statistics", headers=headers)
             ).status_code == 401
-            keys.revoke(identifier)
-            keys.revoke(identifier)
-            for client in (a, b):
-                assert (
-                    await client.get("/api/v1/dejavu/statistics", headers=headers)
-                ).status_code == 401
-                assert (
-                    await client.get(
-                        "/api/v1/dejavu/statistics",
-                        headers={
-                            "X-Application-Key": LEGACY,
-                            "X-API-Key": READ,
-                        },
-                    )
-                ).status_code == 200
+            assert (
+                await client.get(
+                    "/api/v1/dejavu/statistics",
+                    headers={
+                        "X-Application-Key": LEGACY,
+                        "X-API-Key": READ,
+                    },
+                )
+            ).status_code == 200
     assert keys.list()[0]["revoked_at"] is not None
     assert keys.authenticate("fpapp_" + "X" * 43) is None
 

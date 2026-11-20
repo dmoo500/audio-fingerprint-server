@@ -8,9 +8,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from pydantic import SecretStr, ValidationError
 from test_server import READ, UPLOAD, audio, canonical, document, settings
 
+from fingerprint_server.api_state import WORKER
 from fingerprint_server.app import create_app
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.gateway import configure, main, provision
@@ -52,27 +54,24 @@ async def test_every_protected_route_requires_both_tokens(
     application = create_app(
         settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION))
     )
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as client:
-            for headers in [
-                {},
-                {"X-API-Key": internal},
-                {"X-Application-Key": APPLICATION},
-                {"X-Application-Key": "wrong", "X-API-Key": internal},
-                {"X-Application-Key": APPLICATION, "X-API-Key": "wrong"},
-                {"X-Consumer-Username": "admin", "X-Credential-Identifier": "admin"},
-            ]:
-                response = await client.request(method, path, headers=headers, content=b"invalid")
-                assert response.status_code == 401, response.text
-            response = await client.request(
-                method,
-                path,
-                headers={"X-Application-Key": APPLICATION, "X-API-Key": internal},
-                content=b"invalid",
-            )
-            assert response.status_code in (200, 404, 415), response.text
+    async with AsyncClient(application) as client:
+        for headers in [
+            {},
+            {"X-API-Key": internal},
+            {"X-Application-Key": APPLICATION},
+            {"X-Application-Key": "wrong", "X-API-Key": internal},
+            {"X-Application-Key": APPLICATION, "X-API-Key": "wrong"},
+            {"X-Consumer-Username": "admin", "X-Credential-Identifier": "admin"},
+        ]:
+            response = await client.request(method, path, headers=headers, content=b"invalid")
+            assert response.status_code == 401, response.text
+        response = await client.request(
+            method,
+            path,
+            headers={"X-Application-Key": APPLICATION, "X-API-Key": internal},
+            content=b"invalid",
+        )
+        assert response.status_code in (200, 404, 415), response.text
 
 
 async def test_two_token_upload_and_recognition(tmp_path: Path) -> None:
@@ -80,40 +79,39 @@ async def test_two_token_upload_and_recognition(tmp_path: Path) -> None:
     application = create_app(
         settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION))
     )
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as client:
-            samples = audio()
-            body, identifier = canonical(document(samples))
-            response = await client.post(
-                "/api/v1/dejavu/submissions",
-                content=body,
-                headers={
-                    "X-Application-Key": APPLICATION,
-                    "X-API-Key": UPLOAD,
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": identifier,
-                },
-            )
-            assert response.status_code == 202
-            await run_sync(
-                application.state.worker.publish,
-                identifier,
-                Submission.model_validate_json(body),
-                document(samples)["metadata"],
-            )
-            response = await client.post(
-                "/api/v1/dejavu/recognize?sample_rate=44100",
-                content=samples[: 5 * 44100].tobytes(),
-                headers={
-                    "X-Application-Key": APPLICATION,
-                    "X-API-Key": READ,
-                    "Content-Type": "application/octet-stream",
-                },
-            )
-            assert response.status_code == 200
-            assert response.json()["status"] == "matched"
+    async with AsyncClient(application) as client:
+        samples = audio()
+        body, identifier = canonical(document(samples))
+        response = await client.post(
+            "/api/v1/dejavu/submissions",
+            content=body,
+            headers={
+                "X-Application-Key": APPLICATION,
+                "X-API-Key": UPLOAD,
+                "Content-Type": "application/json",
+                "Idempotency-Key": identifier,
+            },
+        )
+        assert response.status_code == 202
+        worker = application[WORKER]
+        assert worker is not None
+        await run_sync(
+            worker.publish,
+            identifier,
+            Submission.model_validate_json(body),
+            document(samples)["metadata"],
+        )
+        response = await client.post(
+            "/api/v1/dejavu/recognize?sample_rate=44100",
+            content=samples[: 5 * 44100].tobytes(),
+            headers={
+                "X-Application-Key": APPLICATION,
+                "X-API-Key": READ,
+                "Content-Type": "application/octet-stream",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "matched"
 
 
 async def test_audit_logs_only_authenticated_user_and_application(
@@ -124,33 +122,30 @@ async def test_audit_logs_only_authenticated_user_and_application(
     application = create_app(
         settings(tmp_path, gateway_enabled=True, application_key=SecretStr(APPLICATION))
     )
-    async with application.router.lifespan_context(application):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=application), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/v1/dejavu/capabilities",
-                headers={
-                    "X-API-Key": UPLOAD,
-                    "X-Application-Key": APPLICATION,
-                    "X-Consumer-Username": "ma-installation",
-                },
-            )
-            assert response.status_code == 200
-            assert "user=ma-installation application=fingerprint" in caplog.text
-            assert UPLOAD not in caplog.text
-            assert APPLICATION not in caplog.text
-            caplog.clear()
-            response = await client.get(
-                "/api/v1/dejavu/capabilities",
-                headers={
-                    "X-API-Key": "wrong",
-                    "X-Application-Key": APPLICATION,
-                    "X-Consumer-Username": "forged",
-                },
-            )
-            assert response.status_code == 401
-            assert "authenticated user=" not in caplog.text
+    async with AsyncClient(application) as client:
+        response = await client.get(
+            "/api/v1/dejavu/capabilities",
+            headers={
+                "X-API-Key": UPLOAD,
+                "X-Application-Key": APPLICATION,
+                "X-Consumer-Username": "ma-installation",
+            },
+        )
+        assert response.status_code == 200
+        assert "user=ma-installation application=fingerprint" in caplog.text
+        assert UPLOAD not in caplog.text
+        assert APPLICATION not in caplog.text
+        caplog.clear()
+        response = await client.get(
+            "/api/v1/dejavu/capabilities",
+            headers={
+                "X-API-Key": "wrong",
+                "X-Application-Key": APPLICATION,
+                "X-Consumer-Username": "forged",
+            },
+        )
+        assert response.status_code == 401
+        assert "authenticated user=" not in caplog.text
 
 
 def test_gateway_routes_enforce_personal_scope_and_preserve_application_header(

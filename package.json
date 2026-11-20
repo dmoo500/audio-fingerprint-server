@@ -1,0 +1,23 @@
+{
+  "name": "fingerprint-frontend-checks",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "lint": "pnpm lint:oxlint && pnpm lint:eslint --fix && pnpm format",
+    "lint:check": "pnpm lint:oxlint && pnpm lint:eslint && pnpm format:check",
+    "lint:oxlint": "oxlint --deny-warnings admin-frontend recognition-frontend frontend-shared",
+    "lint:eslint": "eslint admin-frontend recognition-frontend frontend-shared --max-warnings=0",
+    "format": "prettier --write 'eslint.config.js' '{admin-frontend,recognition-frontend,frontend-shared}/**/*.{js,cjs,ts,vue}'",
+    "format:check": "prettier --check 'eslint.config.js' '{admin-frontend,recognition-frontend,frontend-shared}/**/*.{js,cjs,ts,vue}'"
+  },
+  "devDependencies": {
+    "@vue/eslint-config-typescript": "14.9.0",
+    "eslint": "10.14.0",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-oxlint": "1.92.0",
+    "eslint-plugin-vue": "10.11.1",
+    "oxlint": "1.92.0",
+    "prettier": "3.9.10"
+  }
+}

@@ -264,14 +264,12 @@ def exercise_processes(env: dict[str, str], directory: Path, queries: list) -> d
     api_command = [
         sys.executable,
         "-m",
-        "uvicorn",
-        "fingerprint_server.app:app",
+        "fingerprint_server.aiohttp_runner",
+        "fingerprint_server.app",
         "--host",
         "127.0.0.1",
         "--port",
         str(port),
-        "--workers",
-        "1",
     ]
     worker_command = [sys.executable, "-m", "fingerprint_server.worker_runtime"]
     with process(api_command, api_env, directory / "api.log") as api:

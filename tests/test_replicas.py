@@ -6,14 +6,15 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 
-import httpx
 import pytest
+from aiohttp_client import AsyncClient
 from pydantic import ValidationError
 from test_postgres_store import configuration as configuration
 from test_postgres_store import postgres as postgres
 from test_postgres_store import store as store
 from test_server import READ, settings
 
+from fingerprint_server.api_state import WORKER_TASK
 from fingerprint_server.app import create_app
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.runtime import runtime
@@ -85,43 +86,38 @@ async def test_two_apis_share_rate_budget_and_recognition_slots(configuration) -
 
     replica = configuration.model_copy(update={"service_role": "api", "api_replicas_enabled": True})
     first, second = create_app(replica), create_app(replica)
-    async with runtime(configuration.model_copy(update={"service_role": "worker"})):
-        async with first.router.lifespan_context(first), second.router.lifespan_context(second):
-            async with (
-                httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=first), base_url="http://one"
-                ) as one,
-                httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=second), base_url="http://two"
-                ) as two,
-            ):
-                for index in range(31):
-                    response = await (one if index % 2 else two).get(
-                        "/api/v1/dejavu/statistics", headers={"X-API-Key": READ}
-                    )
-                    assert response.status_code == (200 if index < 30 else 429)
-                store = PostgresStore(configuration)
-                holders = ExitStack()
-                try:
-                    assert await run_sync(holders.enter_context, store.recognition_slot())
-                    assert await run_sync(holders.enter_context, store.recognition_slot())
-                    for client in (one, two):
-                        response = await client.post(
-                            "/api/v1/dejavu/recognize?sample_rate=44100",
-                            content=b"",
-                            headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
-                        )
-                        assert response.status_code == 429
-                        assert response.headers["Retry-After"] == "2"
-                finally:
-                    await run_sync(holders.close)
-                response = await two.post(
+    async with (
+        runtime(configuration.model_copy(update={"service_role": "worker"})),
+        AsyncClient(first, base_url="http://one") as one,
+        AsyncClient(second, base_url="http://two") as two,
+    ):
+        for index in range(31):
+            response = await (one if index % 2 else two).get(
+                "/api/v1/dejavu/statistics", headers={"X-API-Key": READ}
+            )
+            assert response.status_code == (200 if index < 30 else 429)
+        store = PostgresStore(configuration)
+        holders = ExitStack()
+        try:
+            assert await run_sync(holders.enter_context, store.recognition_slot())
+            assert await run_sync(holders.enter_context, store.recognition_slot())
+            for client in (one, two):
+                response = await client.post(
                     "/api/v1/dejavu/recognize?sample_rate=44100",
                     content=b"",
                     headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
                 )
-                assert response.status_code == 422  # Slot available; input now gets validated.
-                assert first.state.worker_task is None and second.state.worker_task is None
+                assert response.status_code == 429
+                assert response.headers["Retry-After"] == "2"
+        finally:
+            await run_sync(holders.close)
+        response = await two.post(
+            "/api/v1/dejavu/recognize?sample_rate=44100",
+            content=b"",
+            headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == 422  # Slot available; input now gets validated.
+        assert first[WORKER_TASK] is None and second[WORKER_TASK] is None
 
 
 async def test_multiple_api_owners_exclude_non_replica_process(store, configuration) -> None:

@@ -1,15 +1,20 @@
 """Public recognition facade boundaries, privacy and admission tests."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+from aiohttp_client import AsyncClient, TestClient
 from pydantic import SecretStr, ValidationError
 
+from fingerprint_server.aiohttp_support import HTTPError, trusted_proxy
 from fingerprint_server.recognition.app import Admission, RecognitionSettings, create_app
 
 ORIGIN = "https://listen.example"
@@ -36,7 +41,7 @@ def test_availability_reports_and_caches_upstream_health(
         return httpx.Response(upstream_status, json=body)
 
     app = create_app(settings(), transport=httpx.MockTransport(upstream))
-    with TestClient(app) as client:
+    with TestClient(app, base_url=ORIGIN) as client:
         assert client.get("/api/availability").json() == {"available": expected}
         assert client.get("/api/availability").json() == {"available": expected}
     assert len(calls) == 1
@@ -107,7 +112,7 @@ def test_facade_keeps_credentials_and_internal_metadata_on_server() -> None:
         return httpx.Response(200, json=matched())
 
     app = create_app(settings(), transport=httpx.MockTransport(upstream))
-    with TestClient(app) as client:
+    with TestClient(app, base_url=ORIGIN) as client:
         response = client.post(
             "/api/recognize?sample_rate=8000",
             content=PCM,
@@ -162,6 +167,23 @@ def test_page_redirects_to_configured_origin_before_microphone_capture(address: 
             assert 'src="/assets/app.js"' in response.text
 
 
+@pytest.mark.parametrize(("proxy", "status"), [("127.0.0.1", 200), ("192.0.2.1", 307)])
+async def test_public_origin_behind_tls_proxy(proxy: str, status: int) -> None:
+    """Serve the HTTPS origin over HTTP only with scheme information from the chosen peer."""
+    app = create_app(settings())
+    app.middlewares.append(trusted_proxy(proxy))
+    async with TestServer(app) as listener, httpx.AsyncClient(trust_env=False) as client:
+        response = await client.get(
+            str(listener.make_url("/")),
+            headers={
+                "Host": "listen.example",
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-For": "192.0.2.10",
+            },
+        )
+    assert response.status_code == status
+
+
 @pytest.mark.parametrize("outcome", ["no_match", "ambiguous"])
 def test_unmatched_outcomes_remain_distinct(outcome: str) -> None:
     """Do not invent a successful match for ambiguous or absent evidence."""
@@ -191,6 +213,28 @@ def test_other_origins_cannot_spend_recognition_credentials(headers: dict[str, s
 
 
 @pytest.mark.parametrize(
+    ("path", "status"),
+    [
+        ("/api/recognize", 422),
+        ("/api/recognize?sample_rate=invalid", 422),
+        ("/api/recognize?sample_rate=7999", 422),
+        ("/api/recognize?sample_rate=8000", 403),
+        ("/unknown", 404),
+    ],
+)
+def test_security_headers_apply_to_errors(path: str, status: int) -> None:
+    """Keep browser protections on validation, authorization, and routing errors."""
+    with TestClient(create_app(settings())) as client:
+        response = client.post(path)
+        assert response.status_code == status
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+        assert response.headers["permissions-policy"].startswith("microphone=(self)")
+        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
     ("pcm", "rate", "content_type", "expected"),
     [
         (b"", 8000, "application/octet-stream", 422),
@@ -216,6 +260,26 @@ def test_invalid_audio_is_rejected_before_upstream(
             headers={**HEADERS, "Content-Type": content_type},
         )
         assert response.status_code == expected
+
+
+async def test_streamed_audio_is_bounded_without_content_length() -> None:
+    """Reject oversized chunked recordings before they reach the upstream service."""
+
+    def unexpected(_: httpx.Request) -> httpx.Response:
+        pytest.fail("Oversized audio reached the fingerprint API")
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"\0" * (15 * 8000 * 4)
+        yield b"\0" * 4
+
+    app = create_app(settings(), transport=httpx.MockTransport(unexpected))
+    async with AsyncClient(app, base_url=ORIGIN) as client:
+        response = await client.post(
+            "/api/recognize?sample_rate=8000", content=chunks(), headers=HEADERS
+        )
+        assert response.status_code == 413
+        assert response.json() == {"detail": "Request exceeds the size limit"}
+        assert response.headers["cache-control"] == "no-store"
 
 
 def test_per_address_limit_ignores_spoofed_forwarded_header() -> None:
@@ -271,7 +335,7 @@ def test_invalid_upstream_results_are_not_success_shaped(data: bytes) -> None:
 
 def test_count_failure_is_explicit_and_backed_off(monkeypatch: pytest.MonkeyPatch) -> None:
     """Failed or expired counters are never shown as current, and retries are bounded."""
-    module = import_module("fingerprint_server.recognition.app")
+    module = import_module("fingerprint_server.recognition.api")
     clock = SimpleNamespace(monotonic=lambda: 0.0)
     monkeypatch.setattr(module, "time", clock)
     calls = []
@@ -300,29 +364,26 @@ async def test_global_concurrency_is_bounded_and_released() -> None:
         return httpx.Response(200, json={"status": "no_match", "match": None})
 
     app = create_app(settings(), transport=httpx.MockTransport(upstream))
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url=ORIGIN
-        ) as client:
-            tasks = [
-                asyncio.create_task(
-                    client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
-                )
-                for _ in range(2)
-            ]
-            await asyncio.wait_for(started.get(), 2)
-            await asyncio.wait_for(started.get(), 2)
-            try:
-                busy = await client.post(
-                    "/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM
-                )
-                assert busy.status_code == 503
-            finally:
-                finish.set()
-                await asyncio.gather(*tasks)
-            assert (
-                await client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
-            ).status_code == 200
+    async with AsyncClient(app, base_url=ORIGIN) as client:
+        tasks = [
+            asyncio.create_task(
+                client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+            )
+            for _ in range(2)
+        ]
+        await asyncio.wait_for(started.get(), 2)
+        await asyncio.wait_for(started.get(), 2)
+        try:
+            busy = await client.post(
+                "/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM
+            )
+            assert busy.status_code == 503
+        finally:
+            finish.set()
+            await asyncio.gather(*tasks)
+        assert (
+            await client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+        ).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -344,7 +405,7 @@ def test_statistics_cache_expires_without_showing_stale_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A once-valid count cannot hide a later upstream outage."""
-    module = import_module("fingerprint_server.recognition.app")
+    module = import_module("fingerprint_server.recognition.api")
     clock = SimpleNamespace(monotonic=lambda: 0.0)
     monkeypatch.setattr(module, "time", clock)
     calls = []
@@ -368,25 +429,23 @@ def test_admission_expires_and_rejects_new_addresses_at_capacity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bound accounting memory without evicting active rate-limit budgets."""
-    from fastapi import HTTPException, Request
-
-    module = import_module("fingerprint_server.recognition.app")
+    module = import_module("fingerprint_server.recognition.api")
     clock = SimpleNamespace(monotonic=lambda: 0.0)
     monkeypatch.setattr(module, "time", clock)
     admission = Admission()
-    request = Request({"type": "http", "client": ("one-client", 123)})
+    request = cast(web.Request, SimpleNamespace(remote="one-client"))
     admission.check(request, "recognize", 1)
-    with pytest.raises(HTTPException) as limited:
+    with pytest.raises(HTTPError) as limited:
         admission.check(request, "recognize", 1)
     assert limited.value.status_code == 429
     clock.monotonic = lambda: 60.0
     admission.check(request, "recognize", 1)
     for index in range(4095):
-        admission.check(
-            Request({"type": "http", "client": (f"address-{index}", 123)}), "recognize", 1
-        )
-    with pytest.raises(HTTPException) as full:
-        admission.check(Request({"type": "http", "client": ("new-address", 123)}), "recognize", 1)
+        request = cast(web.Request, SimpleNamespace(remote=f"address-{index}"))
+        admission.check(request, "recognize", 1)
+    with pytest.raises(HTTPError) as full:
+        request = cast(web.Request, SimpleNamespace(remote="new-address"))
+        admission.check(request, "recognize", 1)
     assert full.value.status_code == 503
     assert len(admission.requests) == 4096
 
@@ -406,17 +465,24 @@ async def test_public_audio_path_extracts_landmarks_on_real_api(
     from fingerprint_server.app import create_app as create_api
 
     api = create_api(api_settings(tmp_path))
-    web = create_app(
-        settings(read_key=SecretStr(READ), application_key=None),
-        transport=httpx.ASGITransport(app=api),
-    )
-    async with api.router.lifespan_context(api), web.router.lifespan_context(web):
-        async with (
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=api), base_url="http://index.test"
-            ) as producer,
-            httpx.AsyncClient(transport=httpx.ASGITransport(app=web), base_url=ORIGIN) as visitor,
-        ):
+    async with AsyncClient(api, base_url="http://index.test") as producer:
+
+        async def forward(request: httpx.Request) -> httpx.Response:
+            response = await producer.request(
+                request.method,
+                str(request.url),
+                headers=dict(request.headers),
+                content=request.content,
+            )
+            return httpx.Response(
+                response.status_code, headers=response.headers, content=response.content
+            )
+
+        web = create_app(
+            settings(read_key=SecretStr(READ), application_key=None),
+            transport=httpx.MockTransport(forward),
+        )
+        async with AsyncClient(web, base_url=ORIGIN) as visitor:
             samples = audio()
             await submit(producer, document(samples))
             excerpt = samples[50 * HOP_SIZE : 50 * HOP_SIZE + 5 * SAMPLE_RATE]

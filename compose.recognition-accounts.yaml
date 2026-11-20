@@ -1,0 +1,10 @@
+# Optional invitation-only accounts; never mount the fingerprint database here.
+services:
+  recognition:
+    environment:
+      FP_WEB_HISTORY_DATABASE: /recognition-data/recognition.sqlite
+    volumes:
+      - recognition-history:/recognition-data
+
+volumes:
+  recognition-history:
