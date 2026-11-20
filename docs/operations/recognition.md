@@ -213,7 +213,9 @@ finds with an account** in the header explains what is saved and how to
 register. Open the account icon in the top-right corner to sign in or select
 **Register with an invitation** and choose a username and password. Successful matches
 initiated while signed in are automatically saved to that account, up to the
-most recent 500. When you are signed in, your username appears beside the
+most recent 500. The page refreshes your history after each successful match.
+If the same song is recognized twice in a row within 60 seconds, only the
+latest recognition is kept. When you are signed in, your username appears beside the
 account icon. Saved matches appear across the page below the recognition card,
 with title, artists, the date and time they were recognized, and cover art when
 available. Older matches without an artwork reference show a placeholder.

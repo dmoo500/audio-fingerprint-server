@@ -187,6 +187,7 @@ describe("recognition page", () => {
   it("starts recognition anonymously and refreshes private history after a signed-in match", async () => {
     const original = fetchMock.getMockImplementation();
     let items: object[] = [];
+    let recognizedAt = 1699999999;
     fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
       if (url === "/api/account/session")
         return json({ enabled: true, username: null });
@@ -204,7 +205,7 @@ describe("recognition page", () => {
             has_artwork: false,
             title: "Test track",
             artists: ["Test artist"],
-            recognized_at: 1700000000,
+            recognized_at: ++recognizedAt,
           },
         ];
       return original?.(url, options);
@@ -248,6 +249,16 @@ describe("recognition page", () => {
     );
     expect(view.get(`${history} time`).attributes("datetime")).toBe(
       new Date(1700000000000).toISOString(),
+    );
+    await view.get("#listen").trigger("click");
+    await flushPromises();
+    expect(view.findAll(`${history} li`)).toHaveLength(1);
+    expect(view.get(`${history} time`).attributes("datetime")).toBe(
+      new Date(1700000001000).toISOString(),
+    );
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/account/history",
+      expect.objectContaining({ cache: "no-store" }),
     );
     await account.trigger("click");
     expect(panel.find("ol").exists()).toBe(false);

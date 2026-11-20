@@ -41,6 +41,7 @@ function resetForm() {
 async function request<T>(path: string, body?: object): Promise<T> {
   const response = await fetch(`/api/account/${path}`, {
     credentials: "same-origin",
+    cache: "no-store",
     signal: AbortSignal.timeout(10000),
     ...(body === undefined
       ? {}

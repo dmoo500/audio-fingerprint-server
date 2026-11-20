@@ -109,6 +109,25 @@ async def test_history_is_private_and_anonymous_recognition_is_not_saved(tmp_pat
         assert (await restarted.get(artwork_path)).status_code == 404
 
 
+def test_history_replaces_only_consecutive_matches_within_60_seconds(tmp_path: Path) -> None:
+    history = History(tmp_path / "history.sqlite")
+    history.initialize()
+    assert history.register("listener", PASSWORD, history.invite())
+    token = history.login("listener", PASSWORD, "")
+    assert token
+    song = {"title": "Song", "artists": ["Artist"], "recognized_at": 100}
+    reference = "a" * 64
+    history.save(token, song, reference)
+    original = history.recent(token)[0]
+    history.save(token, {**song, "recognized_at": 160}, reference)
+    assert history.recent(token) == [{**original, "recognized_at": 160}]
+
+    history.save(token, {**song, "recognized_at": 221}, reference)
+    history.save(token, {**song, "recognized_at": 222, "title": "Another song"}, "b" * 64)
+    history.save(token, {**song, "recognized_at": 223}, reference)
+    assert [hit["recognized_at"] for hit in history.recent(token)] == [223, 222, 221, 160]
+
+
 def test_history_retains_exactly_the_latest_500_matches(tmp_path: Path) -> None:
     history = History(tmp_path / "history.sqlite")
     history.initialize()

@@ -14,6 +14,7 @@ from typing import TypedDict
 from aiohttp import web
 
 SESSION_SECONDS = 7 * 86400
+MATCH_REPEAT_SECONDS = 60
 COOKIE = "fp_recognition"
 APPLICATION_ID = 0x46505248
 
@@ -143,29 +144,56 @@ class History:
         return str(row[0]) if row else None
 
     def save(self, token: str, hit: Hit, artwork_reference: str | None = None) -> None:
-        """Save a match only if the initiating session remains valid."""
+        """Save a match or replace the latest consecutive repeat for this account."""
+        recognized_at = hit["recognized_at"]
+        title = hit["title"]
+        artists = json.dumps(hit["artists"])
         with self.connection(write=True) as db:
-            cursor = db.execute(
-                "INSERT INTO hits(account,at,title,artists,artwork_reference) "
-                "SELECT account,?,?,?,? FROM sessions WHERE digest = ? AND expires > ?",
-                (
-                    hit["recognized_at"],
-                    hit["title"],
-                    json.dumps(hit["artists"]),
-                    artwork_reference,
-                    _digest(token),
-                    int(time.time()),
-                ),
-            )
-            if cursor.rowcount:
-                db.execute(
-                    "DELETE FROM hits WHERE account = "
-                    "(SELECT account FROM sessions WHERE digest = ?) "
-                    "AND id < (SELECT id FROM hits WHERE account = "
-                    "(SELECT account FROM sessions WHERE digest = ?) "
-                    "ORDER BY id DESC LIMIT 1 OFFSET 499)",
-                    (_digest(token), _digest(token)),
+            session = db.execute(
+                "SELECT account FROM sessions WHERE digest = ? AND expires > ?",
+                (_digest(token), int(time.time())),
+            ).fetchone()
+            if session is None:
+                return
+            (account,) = session
+            previous = db.execute(
+                "SELECT id,at,title,artists,artwork_reference FROM hits "
+                "WHERE account = ? ORDER BY id DESC LIMIT 1",
+                (account,),
+            ).fetchone()
+            if previous is not None:
+                previous_id, previous_at, previous_title, previous_artists, previous_reference = (
+                    previous
                 )
+                same_song = (
+                    artwork_reference == previous_reference
+                    if artwork_reference is not None and previous_reference is not None
+                    else title == previous_title and hit["artists"] == json.loads(previous_artists)
+                )
+                if same_song and 0 <= recognized_at - previous_at <= MATCH_REPEAT_SECONDS:
+                    db.execute(
+                        "UPDATE hits SET at = ?, title = ?, artists = ?, artwork_reference = ? "
+                        "WHERE id = ?",
+                        (
+                            recognized_at,
+                            title,
+                            artists,
+                            artwork_reference or previous_reference,
+                            previous_id,
+                        ),
+                    )
+                    return
+
+            db.execute(
+                "INSERT INTO hits(account,at,title,artists,artwork_reference) VALUES (?,?,?,?,?)",
+                (account, recognized_at, title, artists, artwork_reference),
+            )
+            db.execute(
+                "DELETE FROM hits WHERE account = ? "
+                "AND id < (SELECT id FROM hits WHERE account = ? "
+                "ORDER BY id DESC LIMIT 1 OFFSET 499)",
+                (account, account),
+            )
 
     def recent(self, token: str) -> list[HistoryItem]:
         """Return at most 500 private matches, newest first."""
