@@ -133,15 +133,27 @@ onMounted(() => {
           database</span
         ><strong
           >{{
-            (current.overview.database_bytes / 1073741824).toFixed(2)
+            (current.overview.database_bytes / 1073741824).toLocaleString(
+              undefined,
+              { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+            )
           }}
           GiB</strong
         ><small>Excludes WAL</small>
       </div>
       <div class="card">
         <span class="subheader">Acoustic references</span
-        ><strong>{{ current.overview.references.published }} published</strong
-        ><small>{{ current.overview.references.stored }} stored</small>
+        ><strong
+          >{{
+            current.overview.references.published.toLocaleString()
+          }}
+          published</strong
+        ><small
+          >{{
+            current.overview.references.stored.toLocaleString()
+          }}
+          stored</small
+        >
       </div>
       <div class="card">
         <span class="subheader">Searchable recordings</span>
@@ -162,8 +174,9 @@ onMounted(() => {
         <span class="subheader">{{ label }}</span>
         <strong>{{
           key === "manual_review"
-            ? (current.overview.manual_review ?? "Unavailable")
-            : (current.overview.submissions[key] ?? 0)
+            ? (current.overview.manual_review?.toLocaleString() ??
+              "Unavailable")
+            : (current.overview.submissions[key] ?? 0).toLocaleString()
         }}</strong
         ><a
           v-if="link"
@@ -201,7 +214,7 @@ onMounted(() => {
           :aria-label="
             total
               ? `Submission counts: ${Object.entries(submissions)
-                  .map(([s, c]) => `${s}: ${c}`)
+                  .map(([s, c]) => `${s}: ${c.toLocaleString()}`)
                   .join(', ')}`
               : 'No submissions yet'
           "
@@ -235,7 +248,7 @@ onMounted(() => {
                 <span :style="{ color: colors[state] ?? '#868e96' }">●</span>
                 {{ state }}
               </td>
-              <td>{{ count }}</td>
+              <td>{{ count.toLocaleString() }}</td>
             </tr>
           </tbody>
         </table>

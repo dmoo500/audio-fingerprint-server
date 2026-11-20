@@ -5,6 +5,7 @@ import App from "../src/App.vue";
 import Credentials from "../src/components/Credentials.vue";
 import DataTable from "../src/components/DataTable.vue";
 import HistoryCharts from "../src/components/HistoryCharts.vue";
+import Overview from "../src/components/Overview.vue";
 import Reviews from "../src/components/Reviews.vue";
 
 const response = (data: unknown, status = 200) => ({
@@ -214,6 +215,55 @@ describe("notifications", () => {
 });
 
 describe("overview", () => {
+  it.each(["de-DE", "de-CH", "en-US"])(
+    "formats dashboard numbers with the browser default (%s)",
+    async (locale) => {
+      const nativeFormat = Number.prototype.toLocaleString;
+      vi.spyOn(Number.prototype, "toLocaleString").mockImplementation(function (
+        this: number,
+        locales,
+        options,
+      ) {
+        return nativeFormat.call(this, locales ?? locale, options);
+      });
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        response({ charts: [] }) as Response,
+      );
+      const wrapper = mount(Overview, {
+        props: {
+          snapshot: {
+            ...snapshot,
+            overview: {
+              ...snapshot.overview,
+              database_bytes: 1234.5 * 1073741824,
+              references: { published: 12345, stored: 23456 },
+              searchable_recordings: 34567,
+              submissions: { queued: 45678 },
+              manual_review: 56789,
+            },
+          },
+        },
+      });
+      await flushPromises();
+      const format = (n: number) => nativeFormat.call(n, locale);
+      for (const n of [12345, 23456, 34567, 45678, 56789]) {
+        expect(wrapper.text()).toContain(format(n));
+      }
+      expect(wrapper.get(".records-table td:last-child").text()).toBe(
+        format(45678),
+      );
+      expect(wrapper.get(".donut").attributes("aria-label")).toContain(
+        format(45678),
+      );
+      expect(wrapper.text()).toContain(
+        nativeFormat.call(1234.5, locale, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }),
+      );
+      wrapper.unmount();
+    },
+  );
   it("shows searchable recordings separately from acoustic references", async () => {
     vi.mocked(globalThis.fetch).mockImplementation(
       async (input) =>
@@ -705,7 +755,7 @@ describe("reviews and history", () => {
           [
             "Queue",
             {
-              maximum: 3,
+              maximum: 12345,
               start: "start",
               end: "end",
               last_at: "last",
@@ -718,7 +768,7 @@ describe("reviews and history", () => {
                     [0, 1],
                     [3, 4],
                   ],
-                  last: 2,
+                  last: 1234,
                 },
               ],
             },
@@ -730,6 +780,10 @@ describe("reviews and history", () => {
       "M0,1 L1,2 M3,4",
     );
     expect(wrapper.findAll("circle")).toHaveLength(2);
+    expect(wrapper.get(".chart-axis").text()).toContain(
+      (12345).toLocaleString(),
+    );
+    expect(wrapper.get(".legend strong").text()).toBe((1234).toLocaleString());
     wrapper.unmount();
   });
 });

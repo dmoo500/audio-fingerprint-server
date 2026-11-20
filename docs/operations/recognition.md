@@ -16,7 +16,10 @@ flowchart LR
     Result --> History["Signed in? Match saved to private history"]
 ```
 
-![Example song result and private recognition history in dark mode](images/recognition-history.png)
+![Recognition start page in dark mode](images/recognition-home.png)
+
+Screenshots use synthetic song details, an illustrative collection count and
+an original demonstration cover; no private account or recording is shown.
 
 The theme icon switches between System, Light and Dark. The footer links back
 to this guide.
@@ -84,6 +87,15 @@ at the right of each row. Hover or focus it to see the link label. Both links
 open Music Assistant Share in a new tab.
 Sharing works without a cover. Links carry the song details and, when loaded,
 the public cover URL, but no provider links, fingerprints, account data or dates.
+
+![Song result with album artwork, the labeled Share link and compact history links on the right](images/recognition-history.png)
+
+<details>
+<summary>Mobile result and private history</summary>
+
+![Recognition result and history on a 390-pixel mobile viewport](images/recognition-mobile.png)
+
+</details>
 
 ## Album artwork
 

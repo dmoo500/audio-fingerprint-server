@@ -25,8 +25,8 @@ defineProps<{ charts: [string, Chart | null][] }>();
         <h3>{{ title }}</h3>
         <div class="chart-area">
           <div class="chart-axis">
-            <span>{{ chart.maximum }}</span
-            ><span>0</span>
+            <span>{{ chart.maximum.toLocaleString() }}</span
+            ><span>{{ (0).toLocaleString() }}</span>
           </div>
           <svg
             width="100%"
@@ -70,7 +70,7 @@ defineProps<{ charts: [string, Chart | null][] }>();
         <ul class="legend">
           <li v-for="series in chart.series" :key="series.label">
             <span :style="{ color: series.color }">●</span> {{ series.label }}:
-            <strong>{{ series.last }}</strong>
+            <strong>{{ series.last.toLocaleString() }}</strong>
           </li>
         </ul>
       </template>

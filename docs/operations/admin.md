@@ -125,6 +125,9 @@ does not delete them.
 
 ## Live updates
 
+Dashboard counts, chart values and database size use the browser's default
+number format, including thousands and decimal separators.
+
 The overview updates automatically. Tables keep your current rows until you
 choose **Newer data available - refresh**. Refresh keeps search, sorting,
 page and scroll position but clears selected rows.
