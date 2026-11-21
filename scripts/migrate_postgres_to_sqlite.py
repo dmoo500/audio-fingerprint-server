@@ -96,6 +96,10 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
         actual.setdefault(table, set()).add(column)
     extensions = tuple(name for name in EXTENSION_TABLES if name in actual)
     expected.update({name: set(EXTENSION_TABLES[name]["columns"]) for name in extensions})
+    if "artwork_requests" in actual and "reason" not in actual["artwork_requests"]:
+        expected["artwork_requests"].remove("reason")
+    if "admin_hourly_metrics" in actual and "cached_artwork" not in actual["admin_hourly_metrics"]:
+        expected["admin_hourly_metrics"].remove("cached_artwork")
     if actual != expected:
         raise ValueError("Unexpected PostgreSQL source layout")
     if ("application_key_schema" in actual) != ("application_keys" in actual):
@@ -112,6 +116,28 @@ def copy_metadata(db: psycopg.Connection, target: sqlite3.Connection, name: str)
     spec = (TABLES | EXTENSION_TABLES)[name]
     columns = spec["columns"]
     fields = sql.SQL(",").join(map(sql.Identifier, columns))
+    if name == "artwork_requests":
+        has_reason = db.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() "
+            "AND table_name='artwork_requests' AND column_name='reason'"
+        ).fetchone()
+        if has_reason is None:
+            fields = sql.SQL(",").join(
+                sql.SQL('NULL AS "reason"') if column == "reason" else sql.Identifier(column)
+                for column in columns
+            )
+    if name == "admin_hourly_metrics":
+        has_artwork = db.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() "
+            "AND table_name='admin_hourly_metrics' AND column_name='cached_artwork'"
+        ).fetchone()
+        if has_artwork is None:
+            fields = sql.SQL(",").join(
+                sql.SQL('NULL AS "cached_artwork"')
+                if column == "cached_artwork"
+                else sql.Identifier(column)
+                for column in columns
+            )
     target_fields = ",".join(
         '"rowid"' if field == "queue_order" else f'"{field}"' for field in columns
     )

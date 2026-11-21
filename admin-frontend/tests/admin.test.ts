@@ -31,6 +31,15 @@ const snapshot = {
     searchable_recordings: 2,
     submissions: { queued: 1 },
     manual_review: 0,
+    artwork: {
+      eligible: 10,
+      ready: 3,
+      missing: 1,
+      pending: 1,
+      unavailable: 1,
+      expired: 1,
+      unqueried: 3,
+    },
   },
   revisions: { submissions: "one" },
   updated_at: new Date().toISOString(),
@@ -215,6 +224,43 @@ describe("notifications", () => {
 });
 
 describe("overview", () => {
+  it("distinguishes cached lookup success from eligible reference coverage", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({ charts: [] }) as Response,
+    );
+    const wrapper = mount(Overview, { props: { snapshot } });
+    await flushPromises();
+    expect(wrapper.text()).toContain(
+      (0.75).toLocaleString(undefined, {
+        style: "percent",
+        maximumFractionDigits: 1,
+      }),
+    );
+    expect(wrapper.text()).toContain("3 / 10");
+    expect(wrapper.text()).toContain("Not counted as completed lookups");
+    wrapper.unmount();
+  });
+
+  it("does not show a success percentage before a completed lookup", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({ charts: [] }) as Response,
+    );
+    const wrapper = mount(Overview, {
+      props: {
+        snapshot: {
+          ...snapshot,
+          overview: {
+            ...snapshot.overview,
+            artwork: { ...snapshot.overview.artwork, ready: 0, missing: 0 },
+          },
+        },
+      },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Not measured");
+    wrapper.unmount();
+  });
+
   it.each(["de-DE", "de-CH", "en-US"])(
     "formats dashboard numbers with the browser default (%s)",
     async (locale) => {
@@ -784,6 +830,42 @@ describe("reviews and history", () => {
       (12345).toLocaleString(),
     );
     expect(wrapper.get(".legend strong").text()).toBe((1234).toLocaleString());
+    wrapper.unmount();
+  });
+
+  it("shows cached covers against a separately labelled right axis", () => {
+    const wrapper = mount(HistoryCharts, {
+      props: {
+        charts: [
+          [
+            "Submission backlog",
+            {
+              maximum: 3,
+              secondary_maximum: 1000,
+              start: "start",
+              end: "end",
+              last_at: "last",
+              series: [
+                {
+                  label: "Cached covers",
+                  color: "#0c8599",
+                  path: "M0,20",
+                  dots: [[0, 20]],
+                  last: 800,
+                  axis: "right",
+                },
+              ],
+            },
+          ],
+        ],
+      },
+    });
+    expect(wrapper.get('[aria-label="Cached covers scale"]').text()).toContain(
+      (1000).toLocaleString(),
+    );
+    expect(wrapper.get(".legend").text()).toContain("Cached covers");
+    expect(wrapper.get(".legend").text()).toContain("right axis");
+    expect(wrapper.get('path[stroke="#0c8599"]').attributes("d")).toBe("M0,20");
     wrapper.unmount();
   });
 });

@@ -6,7 +6,7 @@ import logging
 import sqlite3
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -62,7 +62,13 @@ def online_settings(tmp_path: Path) -> Any:
     return settings(tmp_path, musicbrainz_enabled=True, musicbrainz_contact="test@example.invalid")
 
 
-async def run_until_idle(worker: Worker, store: Store, identifier: str) -> dict[str, Any]:
+async def run_until_idle(
+    worker: Worker,
+    store: Store,
+    identifier: str,
+    *,
+    completed: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     task = asyncio.create_task(worker.run())
     try:
         async with asyncio.timeout(8):
@@ -72,6 +78,7 @@ async def run_until_idle(worker: Worker, store: Store, identifier: str) -> dict[
                     row
                     and row["state"] not in ("queued", "processing")
                     and not (row["state"] == "pending_metadata" and row["error"] is None)
+                    and (completed is None or completed())
                 ):
                     return row
                 await asyncio.sleep(0.01)
@@ -476,7 +483,12 @@ async def test_publication_logged_only_after_verification(
     store.submit("valid", json.dumps(document()), 10)
     async with httpx.AsyncClient(transport=httpx.MockTransport(api)) as client:
         result = await run_until_idle(
-            Worker(store, online_settings(tmp_path), client), store, "valid"
+            Worker(store, online_settings(tmp_path), client),
+            store,
+            "valid",
+            completed=lambda: (
+                "Submission valid verified with MusicBrainz and published" in caplog.text
+            ),
         )
     assert result["state"] == "processed"
     assert "Submission valid verified with MusicBrainz and published" in caplog.text

@@ -23,12 +23,17 @@ fingerprint_server/
   database/
     __init__.py          Backend selection
     sqlite.py            SQLite queue and acoustic reference store
+    sqlite_queue.py      SQLite submission lifecycle and publication
     postgres.py          PostgreSQL store and shared runtime coordination
+    postgres_queue.py    PostgreSQL submission lifecycle and publication
     migrations.py        SQLite schema upgrades and verification versions
     postgres_schema.py   PostgreSQL table definitions and format version
     postgres_postings.py Experimental compact layout (not deployed)
     logic.py             Backend-independent coverage and matching decisions
-  musicbrainz.py         Metadata verification, batching, cache and cooldown
+  musicbrainz.py         Metadata verification and identifier batching
+  musicbrainz_client.py  Shared HTTP transport, cache, pacing and cooldown
+  musicbrainz_parsing.py Pure recording/release response validation
+  musicbrainz_errors.py  Typed verification and upstream failure outcomes
   worker.py              Ingestion lifecycle
   runtime.py             Process ownership and shutdown
 scripts/                 Offline migration, benchmark and maintenance tools
@@ -53,6 +58,11 @@ own authenticated routes and the shared storage adapters.
 Storage modules are internal; their imports now live under
 `fingerprint_server.database`. No stored schema, API or fingerprint format changes
 are involved in this reorganization.
+
+Keep productive Python modules at most 500 lines by separating coherent
+responsibilities rather than compressing formatting. MusicBrainz verification
+retains its public service and exception imports; parsing is synchronous and
+IO-free, while transport keeps the same shared client and cooldown state.
 
 ## Pre-commit and credential safeguards
 

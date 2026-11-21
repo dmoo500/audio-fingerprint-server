@@ -2,48 +2,37 @@
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 import logging
 import math
 import re
-import time
 import unicodedata
-from datetime import UTC, date
 from difflib import SequenceMatcher
-from email.utils import parsedate_to_datetime
 from typing import Any
 from uuid import UUID
 
-import httpx
-
-from fingerprint_server.async_utils import run_sync
-from fingerprint_server.database import Storage
+from fingerprint_server.musicbrainz_client import MusicBrainzClient
+from fingerprint_server.musicbrainz_errors import (
+    EnrichmentError as EnrichmentError,
+)
+from fingerprint_server.musicbrainz_errors import (
+    MissingIdentifierVerification as MissingIdentifierVerification,
+)
+from fingerprint_server.musicbrainz_errors import (
+    MusicBrainzUnavailable as MusicBrainzUnavailable,
+)
+from fingerprint_server.musicbrainz_errors import (
+    RecordingReviewRequired as RecordingReviewRequired,
+)
+from fingerprint_server.musicbrainz_errors import (
+    UnresolvableVerification as UnresolvableVerification,
+)
+from fingerprint_server.musicbrainz_errors import (
+    VerificationPending as VerificationPending,
+)
 from fingerprint_server.schemas import ISRC_PATTERN, metadata_searchable
-from fingerprint_server.settings import Settings
 
 LOGGER = logging.getLogger(__name__)
-MUSICBRAINZ_CACHE_VERSION = 7
-
-
-def _official_album_date(release: dict[str, Any]) -> str | None:
-    """Return a known release date for an official album linked to the recording."""
-    group = release.get("release-group")
-    if (
-        release.get("status") != "Official"
-        or not isinstance(group, dict)
-        or group.get("primary-type") != "Album"
-    ):
-        return None
-    value = release.get("date")
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}(?:-[0-9]{2}){0,2}", value):
-        return None
-    try:
-        date.fromisoformat(value + "-01" * (2 - value.count("-")))
-    except ValueError:
-        return None
-    return value
 
 
 def _normalized_name(value: str) -> str:
@@ -154,75 +143,8 @@ def _present(value: Any) -> bool:
     return bool(value)
 
 
-class EnrichmentError(Exception):
-    """Malformed or unusable MusicBrainz data that may be retried later."""
-
-
-class VerificationPending(EnrichmentError):
-    """A valid MusicBrainz result cannot yet resolve a unique complete recording."""
-
-
-class RecordingReviewRequired(VerificationPending):
-    """Multiple recordings matched the submission metadata."""
-
-    def __init__(self, candidates: list[dict[str, Any]]) -> None:
-        super().__init__("MusicBrainz recording requires manual selection")
-        self.candidates = candidates
-
-
-class UnresolvableVerification(EnrichmentError):
-    """The supplied identifiers are absent or definitively conflict with MusicBrainz."""
-
-
-class MissingIdentifierVerification(UnresolvableVerification):
-    """Neither a recording identifier nor an ISRC is available."""
-
-
-class MusicBrainzUnavailable(Exception):
-    """A MusicBrainz response requiring a service-wide cooldown."""
-
-    def __init__(self, status: int, delay: float) -> None:
-        self.status = status
-        self.delay = delay
-        super().__init__(f"MusicBrainz HTTP {status}; retry in {delay} seconds")
-
-
-def _retry_after(value: str | None) -> float:
-    if not value:
-        return 0.0
-    value = value.strip()
-    if value.isascii() and value.isdigit():
-        try:
-            seconds = float(value)
-        except ValueError:
-            return 0.0
-        return seconds if math.isfinite(seconds) else 0.0
-    try:
-        date = parsedate_to_datetime(value)
-        if date.tzinfo is None:
-            date = date.replace(tzinfo=UTC)
-        return max(0.0, date.timestamp() - time.time())
-    except (ValueError, TypeError, OverflowError, OSError):
-        return 0.0
-
-
-class MusicBrainzService:
+class MusicBrainzService(MusicBrainzClient):
     """Verify recording identifiers with bounded, cached and globally paced requests."""
-
-    def __init__(self, store: Storage, settings: Settings, client: httpx.AsyncClient) -> None:
-        self.store = store
-        self.settings = settings
-        self.client = client
-        self.next_lookup = 0.0
-        self.lookup_lock = asyncio.Lock()
-        self.cooldown_until = 0.0
-        self.backoff = 0.0
-        self.last_unavailable_status: int | None = None
-        self.lookup_call = "-"
-        self.batch_recordings: dict[str, dict[str, Any]] = {}
-        self.batch_isrcs: dict[str, list[dict[str, Any]]] = {}
-        self.batch_candidates: dict[str, dict[str, Any]] = {}
-        self.batch_submissions: set[str] = set()
 
     async def prefetch(self, rows: list[dict[str, Any]]) -> None:
         """Fetch positive identifier evidence for up to twenty eligible submissions."""
@@ -281,14 +203,6 @@ class MusicBrainzService:
             len(self.batch_recordings),
             len(self.batch_isrcs),
         )
-
-    async def wait_for_cooldown(self) -> None:
-        """Wait for a service-wide cooldown before the worker claims more work."""
-        await self._wait_until(0)
-
-    async def _wait_until(self, deadline: float) -> None:
-        while (delay := max(deadline, self.cooldown_until) - time.monotonic()) > 0:
-            await asyncio.sleep(delay)
 
     async def verify(
         self, metadata: dict[str, Any], *, selected_mbid: str | None = None
@@ -534,296 +448,3 @@ class MusicBrainzService:
             raise VerificationPending("MusicBrainz metadata search recording not confirmed")
         LOGGER.info("MusicBrainz recording %s resolved by exact metadata", identifier)
         return hydrated["recording"]
-
-    async def lookup(self, kind: str, identifier: str) -> dict[str, Any]:
-        """Fetch and cache a bounded, typed identifier lookup."""
-        if kind == "recording" and identifier in self.batch_recordings:
-            return {"status": "resolved", "recording": self.batch_recordings[identifier]}
-        async with self.lookup_lock:
-            self.lookup_call = (
-                "GET /recording (identifier batch)"
-                if kind == "batch"
-                else f"GET /recording/{identifier} (artwork)"
-                if kind == "artwork"
-                else "GET /recording (metadata search)"
-                if kind == "search"
-                else f"GET /{kind}/{identifier}"
-            )
-            return await self._lookup(kind, identifier)
-
-    async def _lookup(self, kind: str, identifier: str) -> dict[str, Any]:
-        """Perform a rate-limited lookup using a parser-versioned cache namespace."""
-        endpoint = hashlib.sha256(
-            str(self.settings.musicbrainz_base_url).rstrip("/").encode()
-        ).hexdigest()
-        cache_identifier = (
-            hashlib.sha256(identifier.encode()).hexdigest()
-            if kind in ("search", "batch")
-            else identifier
-        )
-        cache_kind = "artwork-v2" if kind == "artwork" else kind
-        key = f"musicbrainz:v{MUSICBRAINZ_CACHE_VERSION}:{endpoint}:{cache_kind}:{cache_identifier}"
-        if (cached := await run_sync(self.store.cached_enrichment, key)) is not None:
-            return cached
-        await self._wait_until(self.next_lookup)
-        self.next_lookup = time.monotonic() + 1.1
-        async with self.client.stream(
-            "GET",
-            (
-                f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/recording/{identifier}"
-                if kind == "artwork"
-                else f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/recording"
-                if kind in ("search", "batch")
-                else f"{str(self.settings.musicbrainz_base_url).rstrip('/')}/{kind}/{identifier}"
-            ),
-            params={"query": identifier, "limit": "100" if kind == "batch" else "25", "fmt": "json"}
-            if kind in ("search", "batch")
-            else {
-                "inc": "releases+release-groups"
-                if kind == "artwork"
-                else "artists+isrcs+releases+release-groups"
-                if kind == "recording"
-                else "artists+releases",
-                "fmt": "json",
-            },
-            headers={"User-Agent": f"MA-Fingerprint/0.1 ({self.settings.musicbrainz_contact})"},
-            follow_redirects=False,
-        ) as response:
-            if response.status_code in (429, 502, 503):
-                if response.status_code == 503:
-                    self.backoff = (
-                        min(900.0, self.backoff + 10)
-                        if self.last_unavailable_status == 503 and self.backoff
-                        else 60.0
-                    )
-                else:
-                    self.backoff = min(900.0, max(30.0, self.backoff * 2))
-                self.last_unavailable_status = response.status_code
-                delay = max(self.backoff, _retry_after(response.headers.get("Retry-After")))
-                now = time.monotonic()
-                self.cooldown_until = max(self.cooldown_until, now + delay)
-                raise MusicBrainzUnavailable(response.status_code, self.cooldown_until - now)
-            if response.status_code == 404:
-                self.backoff = 0.0
-                self.last_unavailable_status = None
-                result: dict[str, Any] = {"status": "not found"}
-            elif 300 <= response.status_code < 400:
-                raise EnrichmentError("MusicBrainz identifier redirected; verification required")
-            else:
-                response.raise_for_status()
-                self.backoff = 0.0
-                self.last_unavailable_status = None
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    if len(body) + len(chunk) > 2_000_000:
-                        raise EnrichmentError("MusicBrainz response exceeds size limit")
-                    body.extend(chunk)
-                try:
-                    document = await run_sync(json.loads, body)
-                    if not isinstance(document, dict):
-                        raise ValueError
-                    if kind == "artwork":
-                        releases = document.get("releases")
-                        if not isinstance(releases, list) or len(releases) > 1000:
-                            raise ValueError("Invalid artwork releases")
-                        result = {
-                            "status": "resolved",
-                            "releases": [
-                                {
-                                    "title": item["title"],
-                                    "group": str(UUID(item["release-group"]["id"])),
-                                    **(
-                                        {"id": str(UUID(item["id"]))}
-                                        if isinstance(item.get("id"), str)
-                                        else {}
-                                    ),
-                                    **(
-                                        {"group_title": item["release-group"]["title"]}
-                                        if isinstance(item["release-group"].get("title"), str)
-                                        else {}
-                                    ),
-                                }
-                                for item in releases
-                                if isinstance(item.get("title"), str)
-                                and isinstance(item.get("release-group"), dict)
-                            ],
-                        }
-                    elif kind == "recording":
-                        result = {"status": "resolved", "recording": self.parse_recording(document)}
-                    elif kind in ("search", "batch"):
-                        recordings = document.get("recordings")
-                        count, offset = document.get("count"), document.get("offset")
-                        if (
-                            not isinstance(recordings, list)
-                            or len(recordings) > (100 if kind == "batch" else 25)
-                            or type(count) is not int
-                            or count < len(recordings)
-                            or type(offset) is not int
-                            or offset != 0
-                        ):
-                            raise ValueError
-                        result = {
-                            "status": "resolved" if recordings else "not found",
-                            "recordings": [self.parse_recording(item) for item in recordings],
-                            "complete": count == len(recordings),
-                        }
-                    else:
-                        response_isrc = document.get("isrc")
-                        if (
-                            not isinstance(response_isrc, str)
-                            or response_isrc.upper() != identifier
-                        ):
-                            raise ValueError
-                        recordings = document.get("recordings")
-                        if not isinstance(recordings, list) or len(recordings) > 1000:
-                            raise ValueError
-                        has_count = "recording-count" in document
-                        has_offset = "recording-offset" in document
-                        count = document.get("recording-count")
-                        offset = document.get("recording-offset", 0)
-                        if (
-                            (has_count and (type(count) is not int or count < 0))
-                            or type(offset) is not int
-                            or offset < 0
-                            or (type(count) is int and offset + len(recordings) > count)
-                        ):
-                            raise ValueError
-                        complete = (
-                            count == len(recordings) and offset == 0
-                            if has_count
-                            else not has_offset
-                        )
-                        result = {
-                            "status": "not found" if complete and not recordings else "resolved",
-                            "recordings": [self.parse_recording(item) for item in recordings],
-                            "complete": complete,
-                        }
-                except (
-                    ValueError,
-                    TypeError,
-                    AttributeError,
-                    KeyError,
-                    UnicodeError,
-                    RecursionError,
-                ) as err:
-                    raise EnrichmentError("Invalid MusicBrainz response") from err
-        await run_sync(self.store.cache_enrichment, key, result)
-        return result
-
-    @staticmethod
-    def parse_recording(value: Any) -> dict[str, Any]:
-        """Extract only validated recording data from a MusicBrainz response."""
-        if not isinstance(value, dict) or not isinstance(value.get("id"), str):
-            raise ValueError("Invalid recording")
-        result: dict[str, Any] = {"id": str(UUID(value["id"]))}
-        disambiguation = value.get("disambiguation", "")
-        if not isinstance(disambiguation, str) or len(disambiguation) > 1000:
-            raise ValueError("Invalid recording disambiguation")
-        result["disambiguation"] = disambiguation
-        title = value.get("title")
-        if title is not None:
-            if not isinstance(title, str) or len(title) > 500:
-                raise ValueError("Invalid recording title")
-            result["title"] = title
-        length = value.get("length")
-        if length is not None:
-            if type(length) is not int or length < 0:
-                raise ValueError("Invalid recording length")
-            result["length"] = length
-        credits = value.get("artist-credit", [])
-        if not isinstance(credits, list) or len(credits) > 30:
-            raise ValueError("Invalid artists")
-        artists = []
-        artist_names = []
-        credit_names = []
-        for credit in credits:
-            if not isinstance(credit, dict):
-                raise ValueError("Invalid artist")
-            artist = credit.get("artist") or {}
-            if not isinstance(artist, dict):
-                raise ValueError("Invalid artist")
-            name = credit.get("name") or artist.get("name")
-            if not isinstance(name, str) or len(name) > 500:
-                raise ValueError("Invalid artist name")
-            if name.strip():
-                artists.append(name)
-                artist_names.append(name)
-            names = [name]
-            canonical = artist.get("name")
-            if isinstance(canonical, str) and canonical.strip():
-                artist_names.append(canonical)
-                names.append(canonical)
-            aliases = artist.get("aliases", [])
-            if not isinstance(aliases, list) or len(aliases) > 100:
-                raise ValueError("Invalid artist aliases")
-            for alias in aliases:
-                if not isinstance(alias, dict) or not isinstance(alias.get("name"), str):
-                    raise ValueError("Invalid artist alias")
-                if len(alias["name"]) > 500:
-                    raise ValueError("Invalid artist alias")
-                artist_names.append(alias["name"])
-                names.append(alias["name"])
-            if name.strip():
-                credit_names.append(names)
-        result["artists"] = artists
-        result["artist_names"] = artist_names
-        result["credit_names"] = credit_names
-        releases = value.get("releases", [])
-        if not isinstance(releases, list) or len(releases) > 1000:
-            raise ValueError("Invalid releases")
-        albums = set()
-        release_names = set()
-        release_ids: list[tuple[str | None, str | None]] = []
-        dated_albums: list[tuple[str, str]] = []
-        for release in releases:
-            if not isinstance(release, dict) or not isinstance(release.get("title"), str):
-                raise ValueError("Invalid release")
-            album = release["title"]
-            if len(album) > 500:
-                raise ValueError("Invalid release title")
-            if album.strip():
-                albums.add(album)
-                release_names.add(album)
-                if release_date := _official_album_date(release):
-                    dated_albums.append((release_date, album))
-            group = release.get("release-group")
-            if isinstance(group, dict) and isinstance(group.get("title"), str):
-                release_names.add(group["title"][:500])
-            release_id = release.get("id")
-            group_id = group.get("id") if isinstance(group, dict) else None
-            release_ids.append(
-                (
-                    release_id.lower() if isinstance(release_id, str) else None,
-                    group_id.lower() if isinstance(group_id, str) else None,
-                )
-            )
-        release_count = value.get("release-count")
-        release_offset = value.get("release-offset", 0)
-        result["albums"] = sorted(release_names)
-        result["release_ids"] = release_ids
-        if dated_albums:
-            release_date, title = min(dated_albums)
-            result["earliest_album"] = {"title": title, "date": release_date}
-        result["albums_complete"] = type(release_count) is int and (
-            release_count == len(releases) and type(release_offset) is int and release_offset == 0
-        )
-        if (
-            len(albums) == 1
-            and type(release_count) is int
-            and release_count == len(releases)
-            and type(release_offset) is int
-            and release_offset == 0
-        ):
-            result["album"] = albums.pop()
-        isrcs = value.get("isrcs")
-        if isrcs is not None and (
-            not isinstance(isrcs, list)
-            or len(isrcs) > 1000
-            or any(
-                not isinstance(code, str) or re.fullmatch(ISRC_PATTERN, code) is None
-                for code in isrcs
-            )
-        ):
-            raise ValueError("Invalid ISRC list")
-        result["isrcs"] = [code.upper() for code in isrcs] if isrcs is not None else None
-        return result

@@ -278,7 +278,9 @@ def test_submission_list_sorts_text_and_only_reads_cached_artwork(data: SQLiteAd
         else:
             with data.store.connect() as db:
                 db.execute(
-                    "INSERT INTO artwork_requests VALUES(?,'pending',NULL,0,0)", (reference,)
+                    "INSERT INTO artwork_requests(reference_key,state,url,due_at,expires_at) "
+                    "VALUES(?,'pending',NULL,0,0)",
+                    (reference,),
                 )
         queue.finish(reference, image if index != 0 else "https://not-archive.example/cover")
 

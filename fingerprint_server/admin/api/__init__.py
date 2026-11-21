@@ -10,7 +10,7 @@ from fingerprint_server.admin.api import credentials, reviews, tables
 from fingerprint_server.admin.api.dependencies import data_for
 from fingerprint_server.admin.api.request import parse_model
 from fingerprint_server.admin.errors import LoginFailed
-from fingerprint_server.admin.history import QUEUE, RECORDINGS, chart
+from fingerprint_server.admin.history import ARTWORK, QUEUE, RECORDINGS, chart
 from fingerprint_server.admin.state import AUTH_KEY, LIVE_KEY
 from fingerprint_server.aiohttp_support import HTTPError
 from fingerprint_server.async_utils import run_sync
@@ -60,7 +60,7 @@ async def history(request: web.Request) -> web.Response:
         {
             "charts": [
                 ("Searchable recordings", chart(samples, hour, RECORDINGS)),
-                ("Submission backlog", chart(samples, hour, QUEUE)),
+                ("Submission backlog", chart(samples, hour, QUEUE, ARTWORK)),
             ],
         }
     )

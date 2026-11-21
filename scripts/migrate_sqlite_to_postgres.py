@@ -76,6 +76,14 @@ def source_rows(source: sqlite3.Connection, name: str) -> sqlite3.Cursor:
     if name == "submissions":
         columns.append("rowid")
     fields = ",".join("rowid" if name == "rowid" else f'"{name}"' for name in columns)
+    if name == "artwork_requests":
+        installed = {row[1] for row in source.execute("PRAGMA table_info(artwork_requests)")}
+        if "reason" not in installed:
+            fields = fields.replace('"reason"', 'NULL AS "reason"')
+    if name == "admin_hourly_metrics":
+        installed = {row[1] for row in source.execute("PRAGMA table_info(admin_hourly_metrics)")}
+        if "cached_artwork" not in installed:
+            fields = fields.replace('"cached_artwork"', 'NULL AS "cached_artwork"')
     return source.execute(f'SELECT {fields} FROM "{name}" ORDER BY {spec["source_order"]}')
 
 

@@ -62,6 +62,15 @@ export type Snapshot = {
     searchable_recordings: number;
     submissions: Record<string, number>;
     manual_review: number | null;
+    artwork: {
+      eligible: number;
+      ready: number;
+      missing: number;
+      pending: number;
+      unavailable: number;
+      expired: number;
+      unqueried: number;
+    } | null;
   };
   revisions: Record<string, string>;
   updated_at: string;

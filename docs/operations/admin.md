@@ -29,6 +29,27 @@ Some show an earlier layout.
 
 Use **Refresh charts** for the latest saved samples. The worker saves hourly
 samples for 30 days; missing hours stay blank.
+The **Submission backlog** chart also shows cached covers against its right-hand
+axis. Cover history starts when this measurement is enabled; earlier hours are
+not reconstructed. It counts current eligible reference covers, not unique albums.
+
+### Artwork coverage
+
+**Album artwork** separates two measurements:
+
+- **Resolved lookups** is ready covers divided by ready plus missing results
+  in the current cache. Pending jobs, temporary failures, expired results and
+  references without a cached lookup are excluded. No completed results means
+  **Not measured**, not 0%.
+- **References with a cached cover** compares ready entries with all published
+  references that have a recording ID and album and are eligible for lookup.
+  Several acoustic variants can count separately; this is not an album count.
+
+The panel also shows missing results, pending/temporarily unavailable requests,
+expired results and references without a cached lookup. The bounded, expiring
+cache does not provide a lifetime success rate or measure whether a browser
+successfully displayed the image. Missing results include ambiguous albums and
+searches stopped at the safety limit, not only albums without artwork.
 
 ### MusicBrainz reviews
 

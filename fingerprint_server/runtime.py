@@ -24,22 +24,27 @@ async def runtime(
 ]:
     """Start selected roles and retain ownership until their blocking work has stopped."""
     store = create_store(settings)
-    await run_sync(store.initialize)
-    if settings.database_backend == "sqlite" and settings.gateway_enabled:
-        from fingerprint_server.database.application_keys import ApplicationKeys, initialize
-
-        def initialize_keys() -> None:
-            with ApplicationKeys(store).connection(write=True) as db:
-                initialize(db)
-
-        await run_sync(initialize_keys)
-    await run_sync(ArtworkStore(store).initialize)
     owners = ExitStack()
     worker_task: asyncio.Task[None] | None = None
     history_task: asyncio.Task[None] | None = None
     monitor: asyncio.Task[None] | None = None
     worker: Worker | None = None
     try:
+        if settings.database_backend == "sqlite":
+            from fingerprint_server.database.sqlite import Store
+
+            assert isinstance(store, Store)
+            await run_sync(owners.enter_context, store.owner())
+        await run_sync(store.initialize)
+        if settings.database_backend == "sqlite" and settings.gateway_enabled:
+            from fingerprint_server.database.application_keys import ApplicationKeys, initialize
+
+            def initialize_keys() -> None:
+                with ApplicationKeys(store).connection(write=True) as db:
+                    initialize(db)
+
+            await run_sync(initialize_keys)
+        await run_sync(ArtworkStore(store).initialize)
         if settings.database_backend == "postgres":
             from fingerprint_server.database.postgres import PostgresStore
 

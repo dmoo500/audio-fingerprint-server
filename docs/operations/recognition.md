@@ -129,11 +129,21 @@ pending responses use three-second intervals to limit backend traffic.
 The public token expires after ten minutes and does not reveal the reference ID.
 
 The existing ingestion worker resolves the recording's releases through its
-shared, throttled MusicBrainz client. It compares the supplied album name with
-release and release-group titles and requires one unique group. If that group
-has no front cover, it checks up to three matching releases in the group. This is representative
-album art; known parenthesized edition labels such as "Deluxe Edition" and
-"Deluxe Version" are ignored
+shared, throttled MusicBrainz client. A supplied release or release-group MBID
+is used only when MusicBrainz associates it with the recording; conflicting
+IDs do not select a cover. A verified release gets its own cover first, then
+the group's representative cover. Without these hints, album-name matching
+requires a complete release list and one unique group.
+
+The worker browses up to three pages of 100 recording-associated releases.
+If the list remains incomplete, it does not infer an unambiguous group from
+the partial list; positively verified hints can still select a cover.
+If the group has no front cover, it checks up to three other releases in that
+group, preferring MusicBrainz front-cover evidence, official releases, matching
+album titles and earlier release dates, with the release ID as a stable tie-breaker.
+This is representative
+album art; known edition labels such as "Deluxe Edition", "Remastered",
+"Bonus Track Version", and trailing " - EP" or " - Single" are ignored
 when comparing album names. Live/version titles are not stripped. This is
 not a guarantee of the exact edition. Ambiguous albums or absent
 covers leave the text result intact. Enable MusicBrainz and configure its contact
@@ -158,23 +168,48 @@ Recognition credentials are never sent to them.
 <details>
 <summary>Edition matching backlog, schema and rollout notes</summary>
 
-Startup installs the independently versioned artwork extension (version 1), like
+Startup installs the independently versioned artwork extension (version 3), like
 the application credential registry: `artwork_requests` plus the `artwork_schema`
-entry in existing service state. Installation is transactional and idempotent on
-SQLite and PostgreSQL. Existing reference rows, fingerprint formats and core
+entry in existing service state. Version 2 adds a nullable `reason` column.
+The transactional, idempotent upgrade accepts version 1 and an interrupted
+upgrade with the column already present. Existing ready covers and pending
+requests are retained; old missing/unavailable entries are marked `legacy_retry`
+and expired once, allowing demand-driven or idle, paced rechecks.
+Version 3 expires only `album_not_found` results once, marking them
+`edition_retry` for a prioritized, paced recheck using the improved edition matching.
+Existing reference rows, fingerprint formats and core
 database versions are unchanged; there is no rescan or bulk MusicBrainz lookup.
 When the worker has no submissions or requested artwork to process, it prepares
 at most one published reference every 15 seconds. It caches the URL or lookup
 result, not image files. This stops at 3,072 entries so that on-demand lookups
 have room in the shared 4,096-entry queue/cache. Idle retries after a temporary
 error wait at least an hour; an explicit artwork request can retry sooner.
-The offline database import/export transfers this optional cache.
+The offline database import/export transfers this optional cache and its reasons,
+including older version-one caches without a reason column.
+
+Lookup reasons are stored for operator diagnostics and logged when a lookup
+finishes; the public artwork response remains unchanged. Reasons distinguish
+`ready_release`, `ready_group`, `album_not_found`, `recording_not_found`,
+`ambiguous_album`, `release_hint_not_found`, `conflicting_release_hint`,
+`no_cover`, `search_limit`, `incomplete_releases`, `upstream_unavailable` and
+`upstream_error`. An incomplete list is retryable, not proof of a missing cover.
+`search_limit` means no cover was found within the bounded edition search,
+not that every edition has been checked. To inspect an offline SQLite backup:
+
+```sql
+SELECT state, reason, COUNT(*) AS entries
+FROM artwork_requests
+GROUP BY state, reason
+ORDER BY entries DESC;
+```
 
 Deploy the updated worker, API and recognition service and update the gateway's
 read-authenticated `/api/v1/dejavu/artwork/*` route. Multiple API replicas share the
 queue; only the owned ingestion worker calls MusicBrainz or Cover Art Archive.
-If rolling back, retain the additive table and state entry. A server older than
-this extension may reject the additional SQLite table during schema validation.
+Back up the fingerprint database before activation. Older artwork workers
+reject version 3; roll back with the pre-upgrade backup rather than manually
+downgrading the version marker. A server older than this extension may reject
+the additional SQLite table during schema validation.
 
 </details>
 

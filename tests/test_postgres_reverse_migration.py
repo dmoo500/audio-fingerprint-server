@@ -76,10 +76,11 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
     revoked_id, revoked_key = keys.issue("revoked")
     keys.revoke(revoked_id)
     with sqlite3.connect(source) as db:
-        db.execute("INSERT INTO admin_hourly_metrics VALUES (1000,1,2,3,4,1)")
+        db.execute("INSERT INTO admin_hourly_metrics VALUES (1000,1,2,3,4,1,17)")
         db.execute("INSERT INTO musicbrainz_reviews VALUES ('second','[]',NULL)")
         db.execute(
-            "INSERT INTO artwork_requests VALUES ('reference','ready','https://example.com',1,2)"
+            "INSERT INTO artwork_requests VALUES "
+            "('reference','ready','https://example.com',1,2,'ready_release')"
         )
     imported(source, postgres, migration)
     with postgres.transaction():
@@ -117,14 +118,14 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
         ).fetchone() == ("processing", 1, 1, 42)
         assert db.execute("SELECT max(reference_id) FROM landmarks").fetchone()[0] == 5000000000
         assert db.execute("SELECT * FROM admin_hourly_metrics").fetchall() == [
-            (1000, 1, 2, 3, 4, 1)
+            (1000, 1, 2, 3, 4, 1, 17)
         ]
         assert db.execute("SELECT * FROM musicbrainz_reviews").fetchall() == [
             ("second", "[]", None)
         ]
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("SELECT * FROM artwork_requests").fetchall() == [
-            ("reference", "ready", "https://example.com", 1, 2)
+            ("reference", "ready", "https://example.com", 1, 2, "ready_release")
         ]
     # Export back to PostgreSQL proves all mapped fields, landmarks and FIFO survive both ways.
     with sqlite3.connect(output) as db:
@@ -143,6 +144,84 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
             "INSERT INTO submissions(id,document,state,created_at) VALUES ('next','{}','queued',2)"
         )
         assert db.execute("SELECT rowid FROM submissions WHERE id='next'").fetchone()[0] == 51
+
+
+def test_legacy_artwork_cache_roundtrip_and_postgres_upgrade(
+    source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path
+) -> None:
+    from fingerprint_server.database.postgres import PostgresStore
+    from fingerprint_server.settings import Settings
+
+    with sqlite3.connect(source) as db:
+        db.execute(
+            "CREATE TABLE artwork_requests(reference_key text PRIMARY KEY,state text NOT NULL,"
+            "url text,due_at double precision NOT NULL,expires_at double precision NOT NULL)"
+        )
+        db.execute("INSERT INTO artwork_requests VALUES ('old','missing',NULL,1,9999999999)")
+        db.execute("INSERT INTO service_state VALUES ('artwork_schema','1')")
+    imported(source, postgres, migration)
+    with postgres.transaction():
+        postgres.execute("SET LOCAL search_path TO reverse_test,pg_catalog")
+        assert postgres.execute("SELECT reason FROM artwork_requests").fetchone() == (None,)
+        postgres.execute("ALTER TABLE artwork_requests DROP COLUMN reason")
+    output = tmp_path / "legacy.db"
+    reverse["export_sqlite"](postgres, "reverse_test", output)
+    with sqlite3.connect(output) as db:
+        assert db.execute("SELECT * FROM artwork_requests").fetchone() == (
+            "old",
+            "missing",
+            None,
+            1,
+            9999999999,
+            None,
+        )
+    config = Settings(
+        database_backend="postgres",
+        postgres_dsn="",
+        postgres_schema="reverse_test",
+        upload_key="synthetic-upload-key-for-tests",
+        read_key="synthetic-read-key-for-tests",
+    )
+    queue = ArtworkStore(PostgresStore(config))
+    queue.initialize()
+    queue.initialize()
+    with queue.store.connect() as db:
+        row = db.execute("SELECT reason,expires_at FROM artwork_requests").fetchone()
+        assert row["reason"] == "legacy_retry"
+        assert row["expires_at"] == 0
+        assert (
+            db.execute("SELECT value FROM service_state WHERE key='artwork_schema'").fetchone()[
+                "value"
+            ]
+            == "3"
+        )
+
+
+def test_legacy_metrics_roundtrip(
+    source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path
+) -> None:
+    with sqlite3.connect(source) as db:
+        db.execute("ALTER TABLE admin_hourly_metrics DROP COLUMN cached_artwork")
+        db.execute("INSERT INTO admin_hourly_metrics VALUES (1000,1,2,3,4,5)")
+    imported(source, postgres, migration)
+    with postgres.transaction():
+        postgres.execute("SET LOCAL search_path TO reverse_test,pg_catalog")
+        assert postgres.execute("SELECT cached_artwork FROM admin_hourly_metrics").fetchone() == (
+            None,
+        )
+        postgres.execute("ALTER TABLE admin_hourly_metrics DROP COLUMN cached_artwork")
+    output = tmp_path / "legacy-metrics.db"
+    reverse["export_sqlite"](postgres, "reverse_test", output)
+    with sqlite3.connect(output) as db:
+        assert db.execute("SELECT * FROM admin_hourly_metrics").fetchone() == (
+            1000,
+            1,
+            2,
+            3,
+            4,
+            5,
+            None,
+        )
 
 
 @pytest.mark.parametrize(

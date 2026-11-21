@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 
+from fingerprint_server.admin.artwork import artwork_statistics
 from fingerprint_server.admin.data import STATES, TEXT_FIELDS, AdminFilters, Dataset, Filter
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
@@ -188,6 +189,7 @@ class SQLiteAdminData(AdminFilters):
             "format_version": version,
             "worker_available": healthy,
             "database_backend": "sqlite",
+            "artwork": artwork_statistics(self.store),
         }
 
     def hourly_history(self, hour: int) -> list[dict[str, Any]]:
@@ -197,10 +199,13 @@ class SQLiteAdminData(AdminFilters):
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='admin_hourly_metrics'"
             ).fetchone():
                 return []
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(admin_hourly_metrics)")}
+            artwork = "cached_artwork" if "cached_artwork" in columns else "NULL AS cached_artwork"
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT hour,recordings,queued,processing,pending_metadata,manual_review "
+                    "SELECT hour,recordings,queued,processing,pending_metadata,manual_review,"
+                    f"{artwork} "
                     "FROM admin_hourly_metrics WHERE hour BETWEEN ? AND ? ORDER BY hour",
                     (hour - HISTORY_HOURS + 1, hour),
                 )

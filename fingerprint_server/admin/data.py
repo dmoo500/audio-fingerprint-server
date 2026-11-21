@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any, Literal
 
+from fingerprint_server.admin.artwork import artwork_statistics
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
 from fingerprint_server.database.postgres import PostgresStore
@@ -231,6 +232,7 @@ class AdminData(AdminFilters):
             "manual_review": review["count"] if review is not None else None,
             **sizes,
             "worker_available": self.store.worker_available(),
+            "artwork": artwork_statistics(self.store),
         }
 
     def hourly_history(self, hour: int) -> list[dict[str, Any]]:
@@ -243,8 +245,14 @@ class AdminData(AdminFilters):
             assert table is not None
             if not table["installed"]:
                 return []
+            column = db.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() "
+                "AND table_name='admin_hourly_metrics' AND column_name='cached_artwork'"
+            ).fetchone()
+            artwork = "cached_artwork" if column else "NULL AS cached_artwork"
             return db.execute(
-                "SELECT hour,recordings,queued,processing,pending_metadata,manual_review "
+                "SELECT hour,recordings,queued,processing,pending_metadata,manual_review,"
+                f"{artwork} "
                 "FROM admin_hourly_metrics WHERE hour BETWEEN %s AND %s ORDER BY hour",
                 (hour - HISTORY_HOURS + 1, hour),
             ).fetchall()

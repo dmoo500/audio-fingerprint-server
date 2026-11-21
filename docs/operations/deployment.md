@@ -57,6 +57,20 @@ The build context is the parent directory; use the clone directory name shown ab
 
 SQLite/WAL remains the default and requires **one application process**. PostgreSQL supports a combined process or separate API/worker roles, plus an [opt-in two-API deployment](replicas.md) behind APISIX; ingestion still has exactly one worker. Never delete the SQLite volume during upgrades; back up the database with SQLite's backup API (or with the service stopped), not by copying a live database without its WAL. Startup upgrades recognized older SQLite databases before starting the worker or serving requests; see the version and recovery policy below. Incomplete historical references remain excluded from recognition and their formerly processed uploads become `pending_metadata`. Malformed historical coverage is counted as partial for otherwise complete references.
 
+The SQLite service takes an exclusive operating-system lock before any migration
+or interrupted-job recovery. A second service using the same database fails
+startup without requeuing the active worker's submissions. The separate Admin
+process can still access the database. The lock is held through worker shutdown
+and outstanding blocking work; process exit also releases it.
+
+This guard requires Linux or macOS and a local filesystem with working `flock`
+semantics. Do not place the SQLite database on a network filesystem, give the
+same database different hard-link names, or delete its adjacent `.lock` file
+while a service is running. The empty lock file remains after shutdown and is
+not a stale lock. Older service versions do not honor it, so stop them before
+activating the updated service. It does not protect against manual offline tools
+or other programs that ignore the service lock.
+
 Never run two receiver workers against the same database. Keep credentials, collection backups and machine-specific Compose overrides outside version control. If MA already binds port 8097, use a local override for the gateway's published port; do not publish the backend.
 
 ### MusicBrainz capacity planning before public operation

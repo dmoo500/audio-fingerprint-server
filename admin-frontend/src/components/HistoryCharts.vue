@@ -1,6 +1,7 @@
 <script setup lang="ts">
 export type Chart = {
   maximum: number;
+  secondary_maximum?: number | null;
   start: string;
   end: string;
   last_at: string;
@@ -10,6 +11,7 @@ export type Chart = {
     path: string;
     dots: [number, number][];
     last: number;
+    axis?: "left" | "right";
   }[];
 };
 defineProps<{ charts: [string, Chart | null][] }>();
@@ -61,6 +63,14 @@ defineProps<{ charts: [string, Chart | null][] }>();
               />
             </g>
           </svg>
+          <div
+            v-if="chart.secondary_maximum != null"
+            class="chart-axis"
+            aria-label="Cached covers scale"
+          >
+            <span>{{ chart.secondary_maximum.toLocaleString() }}</span>
+            <span>0</span>
+          </div>
         </div>
         <div class="chart-dates">
           <span>{{ chart.start }}</span
@@ -71,6 +81,7 @@ defineProps<{ charts: [string, Chart | null][] }>();
           <li v-for="series in chart.series" :key="series.label">
             <span :style="{ color: series.color }">●</span> {{ series.label }}:
             <strong>{{ series.last.toLocaleString() }}</strong>
+            <small v-if="series.axis === 'right'"> (right axis)</small>
           </li>
         </ul>
       </template>

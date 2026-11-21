@@ -42,13 +42,13 @@ EXTENSION_TABLES: dict[str, TableSpec] = {
         ),
     },
     "artwork_requests": {
-        "columns": ("reference_key", "state", "url", "due_at", "expires_at"),
+        "columns": ("reference_key", "state", "url", "due_at", "expires_at", "reason"),
         "source_order": "reference_key",
         "target_order": "reference_key",
         "definition": (
             "CREATE TABLE artwork_requests ("
             "reference_key text PRIMARY KEY, state text NOT NULL, url text, "
-            "due_at double precision NOT NULL, expires_at double precision NOT NULL)"
+            "due_at double precision NOT NULL, expires_at double precision NOT NULL, reason text)"
         ),
     },
     "musicbrainz_reviews": {
@@ -65,6 +65,7 @@ EXTENSION_TABLES: dict[str, TableSpec] = {
             "processing",
             "pending_metadata",
             "manual_review",
+            "cached_artwork",
         ),
         "source_order": "hour",
         "target_order": "hour",

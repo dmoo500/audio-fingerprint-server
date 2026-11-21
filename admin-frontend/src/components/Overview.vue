@@ -35,6 +35,12 @@ const queue: {
   },
 ];
 const submissions = computed(() => current.value?.overview.submissions ?? {});
+const artwork = computed(() => current.value?.overview.artwork);
+const artworkRate = computed(() => {
+  if (!artwork.value) return null;
+  const completed = artwork.value.ready + artwork.value.missing;
+  return completed ? artwork.value.ready / completed : null;
+});
 const total = computed(() =>
   Object.values(submissions.value).reduce((a, b) => a + b, 0),
 );
@@ -168,6 +174,56 @@ onMounted(() => {
         ><small>Admin does not migrate the database</small>
       </div>
     </div>
+    <h2>Album artwork</h2>
+    <template v-if="artwork">
+      <div class="grid stats">
+        <div class="card">
+          <span class="subheader">Resolved lookups</span>
+          <strong>{{
+            artworkRate === null
+              ? "Not measured"
+              : artworkRate.toLocaleString(undefined, {
+                  style: "percent",
+                  maximumFractionDigits: 1,
+                })
+          }}</strong>
+          <small>Ready covers / completed cached lookups</small>
+        </div>
+        <div class="card">
+          <span class="subheader">References with a cached cover</span>
+          <strong
+            >{{ artwork.ready.toLocaleString() }} /
+            {{ artwork.eligible.toLocaleString() }}</strong
+          >
+          <small>Published references with recording ID and album</small>
+        </div>
+        <div class="card">
+          <span class="subheader">Without a resolved cover</span>
+          <strong>{{ artwork.missing.toLocaleString() }}</strong>
+          <small
+            >Includes missing covers, ambiguous albums and bounded
+            searches</small
+          >
+        </div>
+        <div class="card">
+          <span class="subheader">Pending / temporarily unavailable</span>
+          <strong
+            >{{ artwork.pending.toLocaleString() }} /
+            {{ artwork.unavailable.toLocaleString() }}</strong
+          >
+          <small>Not counted as completed lookups</small>
+        </div>
+      </div>
+      <p class="muted">
+        {{ artwork.unqueried.toLocaleString() }} without a cached lookup;
+        {{ artwork.expired.toLocaleString() }} expired results. This bounded,
+        expiring cache is not a lifetime success rate or a count of unique
+        albums.
+      </p>
+    </template>
+    <p v-else class="muted">
+      Artwork statistics are unavailable: the artwork cache is not installed.
+    </p>
     <h2>Ingestion queue</h2>
     <div class="grid stats">
       <div v-for="{ key, label, link } in queue" :key="key" class="card">

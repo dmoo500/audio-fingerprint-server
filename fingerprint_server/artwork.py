@@ -10,6 +10,7 @@ import time
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -26,7 +27,7 @@ from fingerprint_server.musicbrainz import (
 )
 
 LOGGER = logging.getLogger(__name__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 QUEUE_LIMIT = 4096
 PREWARM_LIMIT = 3072
 PREWARM_INTERVAL = 15
@@ -35,8 +36,16 @@ RELEASE_FALLBACK_LIMIT = 3
 TABLE = (
     "CREATE TABLE IF NOT EXISTS artwork_requests ("
     "reference_key text PRIMARY KEY, state text NOT NULL, url text, "
-    "due_at double precision NOT NULL, expires_at double precision NOT NULL)"
+    "due_at double precision NOT NULL, expires_at double precision NOT NULL, reason text)"
 )
+
+
+@dataclass(frozen=True)
+class ArtworkResult:
+    """Artwork URL and the reason for its selection or absence."""
+
+    url: str | None
+    reason: str
 
 
 class ArtworkStore:
@@ -61,22 +70,46 @@ class ArtworkStore:
         return statement if isinstance(self.store, Store) else statement.replace("?", "%s")
 
     def initialize(self) -> None:
-        """Apply the additive version-one artwork migration idempotently."""
+        """Install or upgrade the optional artwork cache without changing fingerprints."""
         with self.connection() as db:
             row = db.execute(
                 "SELECT value FROM service_state WHERE key='artwork_schema'"
             ).fetchone()
-            if row is not None and row["value"] != str(SCHEMA_VERSION):
+            if row is not None and row["value"] not in ("1", "2", str(SCHEMA_VERSION)):
                 raise RuntimeError("Unsupported artwork schema version")
             db.execute(TABLE)
+            columns = (
+                {item["name"] for item in db.execute("PRAGMA table_info(artwork_requests)")}
+                if isinstance(self.store, Store)
+                else {
+                    item["column_name"]
+                    for item in db.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema=current_schema() AND table_name='artwork_requests'"
+                    )
+                }
+            )
+            if "reason" not in columns:
+                db.execute("ALTER TABLE artwork_requests ADD COLUMN reason text")
+            if row is None or row["value"] == "1":
+                db.execute(
+                    "UPDATE artwork_requests SET expires_at=0,reason='legacy_retry' "
+                    "WHERE state IN ('missing','unavailable') AND reason IS NULL"
+                )
+            if row is not None and row["value"] in ("1", "2"):
+                db.execute(
+                    "UPDATE artwork_requests SET expires_at=0,reason='edition_retry' "
+                    "WHERE state='missing' AND reason='album_not_found'"
+                )
             db.execute("CREATE INDEX IF NOT EXISTS artwork_due ON artwork_requests(state,due_at)")
             db.execute(
-                "SELECT reference_key,state,url,due_at,expires_at FROM artwork_requests LIMIT 0"
+                "SELECT reference_key,state,url,due_at,expires_at,reason "
+                "FROM artwork_requests LIMIT 0"
             )
             db.execute(
                 self.sql(
                     "INSERT INTO service_state(key,value) VALUES('artwork_schema',?) "
-                    "ON CONFLICT(key) DO NOTHING"
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
                 ),
                 (str(SCHEMA_VERSION),),
             )
@@ -163,7 +196,8 @@ class ArtworkStore:
                     f"WHERE t.publication_ready=1 AND trim({album})<>'' AND trim({mbid})<>'' "
                     "AND (a.reference_key IS NULL OR "
                     "(a.expires_at<=? AND a.state<>'unavailable') OR a.expires_at<=?) "
-                    "ORDER BY CASE WHEN a.reference_key IS NULL THEN 0 ELSE 1 END, "
+                    "ORDER BY CASE WHEN a.reason='edition_retry' THEN 0 "
+                    "WHEN a.reference_key IS NULL THEN 1 ELSE 2 END, "
                     "t.id DESC LIMIT 1"
                 ),
                 (now, now - PREWARM_RETRY_DELAY),
@@ -172,17 +206,21 @@ class ArtworkStore:
                 return dict(row)
             return None
 
-    def finish(self, reference: str, url: str | None, *, failed: bool = False) -> None:
+    def finish(
+        self, reference: str, url: str | None, *, failed: bool = False, reason: str | None = None
+    ) -> None:
         """Cache absence separately from transient failure, which retries on later demand."""
         with self.connection() as db:
             db.execute(
                 self.sql(
-                    "UPDATE artwork_requests SET state=?,url=?,expires_at=? WHERE reference_key=?"
+                    "UPDATE artwork_requests SET state=?,url=?,expires_at=?,reason=? "
+                    "WHERE reference_key=?"
                 ),
                 (
                     "unavailable" if failed else "ready" if url else "missing",
                     url,
                     time.time() + (60 if failed else (30 if url else 7) * 86400),
+                    reason,
                     reference,
                 ),
             )
@@ -193,21 +231,26 @@ class ArtworkStore:
             db.execute(self.sql("DELETE FROM artwork_requests WHERE reference_key=?"), (reference,))
 
     def _enqueue(self, db: Any, reference: str, now: float, limit: int) -> bool:
+        existing = db.execute(
+            self.sql("SELECT 1 FROM artwork_requests WHERE reference_key=?"), (reference,)
+        ).fetchone()
         db.execute(
             self.sql(
                 "DELETE FROM artwork_requests WHERE expires_at<=? AND "
-                "(state<>'unavailable' OR expires_at<=? OR reference_key=?)"
+                "(state<>'unavailable' OR expires_at<=? OR reference_key=?) AND "
+                "(reason IS NULL OR reason<>'edition_retry' OR reference_key=?)"
             ),
-            (now, now - PREWARM_RETRY_DELAY, reference),
+            (now, now - PREWARM_RETRY_DELAY, reference, reference),
         )
         count = db.execute("SELECT count(*) AS total FROM artwork_requests").fetchone()["total"]
-        if count >= limit:
+        if count >= limit and existing is None:
             return False
         db.execute(
             self.sql(
-                "INSERT INTO artwork_requests VALUES(?,'pending',NULL,?,?) "
+                "INSERT INTO artwork_requests(reference_key,state,url,due_at,expires_at,reason) "
+                "VALUES(?,'pending',NULL,?,?,NULL) "
                 "ON CONFLICT(reference_key) DO UPDATE SET state='pending',url=NULL,"
-                "due_at=excluded.due_at,expires_at=excluded.expires_at"
+                "due_at=excluded.due_at,expires_at=excluded.expires_at,reason=NULL"
             ),
             (reference, now, now + 86400),
         )
@@ -217,10 +260,11 @@ class ArtworkStore:
 def normalized(value: str) -> str:
     """Compare album names without punctuation, case or accent differences."""
     value = re.sub(
-        r"\s*[\[(](?:deluxe|special|expanded|anniversary|collector'?s)"
-        r"(?:\s+(?:edition|version))?[\])]\s*$",
+        r"\s*(?:[\[(](?:(?:\d+(?:st|nd|rd|th)\s+)?anniversary(?:\s+deluxe)?|"
+        r"deluxe|special|expanded|collector'?s|remaster(?:ed)?|bonus track)"
+        r"(?:\s+(?:edition|version))?[\])]|-\s+(?:ep|single))\s*$",
         "",
-        value,
+        unicodedata.normalize("NFKC", value),
         flags=re.IGNORECASE,
     )
     return "".join(c for c in unicodedata.normalize("NFKD", value).casefold() if c.isalnum())
@@ -251,22 +295,63 @@ class ArtworkResolver:
             mbid = str(UUID(metadata["recording_mbid"]))
             album = normalized(metadata["album"])
             result = await self.musicbrainz.lookup("artwork", mbid)
-            releases = result.get("releases", [])
-            url = await self.album_cover(album, releases)
+            resolved = (
+                ArtworkResult(None, "recording_not_found")
+                if result.get("status") == "not found"
+                else await self.album_cover(
+                    album,
+                    result["releases"],
+                    release_hint=metadata.get("release_mbid"),
+                    group_hint=metadata.get("release_group_mbid"),
+                    complete=result["complete"],
+                )
+            )
         except MusicBrainzUnavailable as err:
             LOGGER.warning("Artwork lookup deferred by MusicBrainz: HTTP %s", err.status)
-            await run_sync(self.queue.finish, reference, None, failed=True)
+            await run_sync(
+                self.queue.finish, reference, None, failed=True, reason="upstream_unavailable"
+            )
             return
         except (httpx.HTTPError, EnrichmentError, ValueError, KeyError, TypeError) as err:
             LOGGER.warning("Artwork lookup failed: %s", type(err).__name__)
-            await run_sync(self.queue.finish, reference, None, failed=True)
+            await run_sync(self.queue.finish, reference, None, failed=True, reason="upstream_error")
             return
-        await run_sync(self.queue.finish, reference, url)
+        LOGGER.info("Artwork lookup completed: reference=%s reason=%s", reference, resolved.reason)
+        await run_sync(
+            self.queue.finish,
+            reference,
+            resolved.url,
+            reason=resolved.reason,
+            failed=resolved.reason == "incomplete_releases",
+        )
 
-    async def album_cover(self, album: str, releases: list[dict[str, str]]) -> str | None:
-        """Find a cover only when the album maps to an unambiguous release group."""
+    async def album_cover(
+        self,
+        album: str,
+        releases: list[dict[str, Any]],
+        *,
+        release_hint: str | None = None,
+        group_hint: str | None = None,
+        complete: bool = True,
+    ) -> ArtworkResult:
+        """Find artwork using recording-associated editions or an unambiguous album group."""
         if not album:
-            return None
+            return ArtworkResult(None, "album_not_found")
+        release_hint = str(UUID(release_hint)) if release_hint else None
+        group_hint = str(UUID(group_hint)) if group_hint else None
+        hinted = next((item for item in releases if item.get("id") == release_hint), None)
+        if release_hint:
+            if hinted is None:
+                return ArtworkResult(
+                    None, "release_hint_not_found" if complete else "incomplete_releases"
+                )
+            if group_hint and hinted["group"] != group_hint:
+                return ArtworkResult(None, "conflicting_release_hint")
+            group_hint = hinted["group"]
+        if group_hint and not any(item["group"] == group_hint for item in releases):
+            return ArtworkResult(
+                None, "release_hint_not_found" if complete else "incomplete_releases"
+            )
         matching = [release for release in releases if normalized(release["title"]) == album]
         candidates = {release["group"] for release in matching}
         candidates.update(
@@ -274,16 +359,44 @@ class ArtworkResolver:
             for release in releases
             if normalized(release.get("group_title", "")) == album
         )
-        if len(candidates) != 1:
-            return None
-        if url := await self.cover(next(iter(candidates))):
-            return url
-        for release_id in sorted({release["id"] for release in matching if "id" in release})[
-            :RELEASE_FALLBACK_LIMIT
-        ]:
-            if url := await self.cover(release_id, release=True):
-                return url
-        return None
+        if not group_hint:
+            if not complete:
+                return ArtworkResult(None, "incomplete_releases")
+            if not candidates:
+                return ArtworkResult(None, "album_not_found")
+            if len(candidates) != 1:
+                return ArtworkResult(None, "ambiguous_album")
+            group_hint = next(iter(candidates))
+        if release_hint and (url := await self.cover(release_hint, release=True)):
+            return ArtworkResult(url, "ready_release")
+        if url := await self.cover(group_hint):
+            return ArtworkResult(url, "ready_group")
+        editions = {
+            item["id"]: item
+            for item in releases
+            if item["group"] == group_hint and item.get("id") and item["id"] != release_hint
+        }
+        ranked = sorted(
+            editions.values(),
+            key=lambda item: (
+                not item.get("front", False),
+                item.get("status") != "Official",
+                normalized(item["title"]) != album,
+                item.get("date") or "9999",
+                item["id"],
+            ),
+        )
+        for edition in ranked[:RELEASE_FALLBACK_LIMIT]:
+            if url := await self.cover(edition["id"], release=True):
+                return ArtworkResult(url, "ready_release")
+        return ArtworkResult(
+            None,
+            "incomplete_releases"
+            if not complete
+            else "search_limit"
+            if len(ranked) > RELEASE_FALLBACK_LIMIT
+            else "no_cover",
+        )
 
     async def cover(self, identifier: str, *, release: bool = False) -> str | None:
         """Resolve the archive redirect without downloading the image."""
