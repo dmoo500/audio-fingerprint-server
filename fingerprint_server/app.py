@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
+import time
 from collections.abc import AsyncIterator
 
 from aiohttp import web
@@ -22,7 +24,16 @@ from fingerprint_server.api import (
 from fingerprint_server.api import (
     parse_submission as parse_submission,
 )
-from fingerprint_server.api_state import OWNERSHIP_TASK, SETTINGS, STORE, WORKER, WORKER_TASK
+from fingerprint_server.api_state import (
+    OWNERSHIP_TASK,
+    RECOGNITION_OUTCOME,
+    SETTINGS,
+    STORE,
+    WORKER,
+    WORKER_TASK,
+)
+from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database.recognition_metrics import record_attempt, record_outcome
 from fingerprint_server.openapi import build_schema
 from fingerprint_server.runtime import runtime
 from fingerprint_server.settings import Settings
@@ -62,6 +73,40 @@ def create_app(configuration: Settings | None = None) -> web.Application:
             return web.json_response({"detail": "Database process ownership lost"}, status=503)
         return await handler(request)
 
+    @web.middleware
+    async def recognition_metrics(request: web.Request, handler: Handler) -> web.StreamResponse:
+        if request.method != "POST" or request.path not in (
+            "/api/v1/dejavu/recognize",
+            "/api/v1/dejavu/recognize/landmarks",
+        ):
+            return await handler(request)
+        database_error: type[Exception] = sqlite3.Error
+        if request.app[SETTINGS].database_backend == "postgres":
+            from psycopg import Error
+
+            database_error = Error
+        minute = int(time.time()) // 60
+        recorded = False
+        try:
+            await run_sync(record_attempt, request.app[STORE], minute)
+            recorded = True
+        except database_error:
+            LOGGER.exception("Could not persist recognition attempt; statistics are incomplete")
+        try:
+            response = await handler(request)
+            if response.status >= 400:
+                request[RECOGNITION_OUTCOME] = "failed"
+            return response
+        finally:
+            if recorded:
+                outcome = request.get(RECOGNITION_OUTCOME, "failed")
+                try:
+                    await run_sync(record_outcome, request.app[STORE], minute, outcome)
+                except database_error:
+                    LOGGER.exception(
+                        "Could not persist recognition outcome; statistics are incomplete"
+                    )
+
     async def security_headers(request: web.Request, response: web.StreamResponse) -> None:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Cache-Control"] = "no-store"
@@ -85,6 +130,7 @@ def create_app(configuration: Settings | None = None) -> web.Application:
     application = web.Application(
         middlewares=[
             error_responses,
+            recognition_metrics,
             check_ownership,
             web.normalize_path_middleware(
                 append_slash=False,

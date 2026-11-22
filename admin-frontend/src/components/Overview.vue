@@ -5,6 +5,7 @@ import HistoryCharts, { type Chart } from "./HistoryCharts.vue";
 import { useToast } from "../composables/useToast";
 import { useTableSort } from "../composables/useTableSort";
 import SortHeader from "./SortHeader.vue";
+import RecognitionStatistics from "./RecognitionStatistics.vue";
 
 const props = defineProps<{ snapshot: Snapshot | null }>();
 defineEmits<{ navigate: [path: string] }>();
@@ -255,6 +256,7 @@ onMounted(() => {
     <p class="muted">
       Manual MusicBrainz review is a subset of pending metadata.
     </p>
+    <RecognitionStatistics />
     <div class="section-heading">
       <div>
         <h2>30-day history</h2>

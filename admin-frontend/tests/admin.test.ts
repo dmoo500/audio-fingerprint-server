@@ -6,6 +6,7 @@ import Credentials from "../src/components/Credentials.vue";
 import DataTable from "../src/components/DataTable.vue";
 import HistoryCharts from "../src/components/HistoryCharts.vue";
 import Overview from "../src/components/Overview.vue";
+import RecognitionStatistics from "../src/components/RecognitionStatistics.vue";
 import Reviews from "../src/components/Reviews.vue";
 
 const response = (data: unknown, status = 200) => ({
@@ -77,6 +78,31 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("shows recognition periods and handles unavailable statistics", async () => {
+  const fetch = vi.mocked(globalThis.fetch);
+  fetch.mockResolvedValueOnce(
+    response({
+      available: true,
+      bucket_minutes: 60,
+      buckets: [
+        { bucket: 30000000, attempts: 5, matched: 2, no_match: 1, ambiguous: 1, failed: 1 },
+      ],
+    }) as Response,
+  );
+  fetch.mockResolvedValueOnce(response({ available: false, buckets: [] }) as Response);
+  const wrapper = mount(RecognitionStatistics);
+  await flushPromises();
+  expect(fetch.mock.calls[0]?.[0]).toBe("/admin/api/recognition-statistics?period=day");
+  expect(wrapper.text()).toContain("5");
+  expect(wrapper.text()).toContain("Times are UTC");
+  expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+  await wrapper.get("#recognition-period").setValue("all");
+  await flushPromises();
+  expect(fetch.mock.calls[1]?.[0]).toBe("/admin/api/recognition-statistics?period=all");
+  expect(wrapper.text()).toContain("not installed yet");
+  wrapper.unmount();
 });
 
 it("shows artwork for a published reference on its detail page only", async () => {

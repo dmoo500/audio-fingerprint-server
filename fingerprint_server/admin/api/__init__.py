@@ -15,6 +15,7 @@ from fingerprint_server.admin.state import AUTH_KEY, LIVE_KEY
 from fingerprint_server.aiohttp_support import HTTPError
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database.metrics import HOUR
+from fingerprint_server.database.recognition_metrics import PERIODS, recognition_history
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +67,14 @@ async def history(request: web.Request) -> web.Response:
     )
 
 
+async def recognition_statistics(request: web.Request) -> web.Response:
+    """Return anonymous recognition counters for a supported period."""
+    period = request.query.get("period", "day")
+    if period not in PERIODS:
+        raise HTTPError(400, "Invalid recognition period")
+    return web.json_response(await run_sync(recognition_history, data_for(request).store, period))
+
+
 async def pending_review(request: web.Request) -> web.Response:
     """Schedule a non-destructive review of pending submissions."""
     await run_sync(data_for(request).store.request_pending_recheck)
@@ -81,6 +90,7 @@ def routes() -> list[web.RouteDef]:
         web.post("/admin/api/logout", logout, name="audit-logout"),
         web.get("/admin/api/overview", overview),
         web.get("/admin/api/history", history),
+        web.get("/admin/api/recognition-statistics", recognition_statistics),
         web.post("/admin/api/pending-review", pending_review, name="audit-pending-review"),
         web.get("/admin/api/tables/{dataset}", tables.table),
         web.get("/admin/api/tables/{dataset}/{identifier}", tables.detail),

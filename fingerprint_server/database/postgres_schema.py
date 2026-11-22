@@ -6,6 +6,7 @@ import psycopg
 from psycopg import sql
 
 from fingerprint_server.database.metrics import METRICS_TABLE
+from fingerprint_server.database.recognition_metrics import RECOGNITION_TABLE
 from fingerprint_server.database.review_schema import REVIEW_TABLE
 
 FORMAT_VERSION = 1
@@ -70,6 +71,12 @@ EXTENSION_TABLES: dict[str, TableSpec] = {
         "source_order": "hour",
         "target_order": "hour",
         "definition": METRICS_TABLE,
+    },
+    "recognition_metrics": {
+        "columns": ("minute", "attempts", "matched", "no_match", "ambiguous", "failed"),
+        "source_order": "minute",
+        "target_order": "minute",
+        "definition": RECOGNITION_TABLE,
     },
 }
 

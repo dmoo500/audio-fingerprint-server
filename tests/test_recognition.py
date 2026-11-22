@@ -462,7 +462,9 @@ async def test_public_audio_path_extracts_landmarks_on_real_api(
     from test_server import READ, audio, document, submit
     from test_server import settings as api_settings
 
+    from fingerprint_server.api_state import STORE
     from fingerprint_server.app import create_app as create_api
+    from fingerprint_server.database.recognition_metrics import recognition_history
 
     api = create_api(api_settings(tmp_path))
     async with AsyncClient(api, base_url="http://index.test") as producer:
@@ -503,6 +505,8 @@ async def test_public_audio_path_extracts_landmarks_on_real_api(
             )
             assert response.status_code == 200
             assert response.json()["status"] == direct.json()["status"]
+            buckets = recognition_history(api[STORE], "all")["buckets"]
+            assert sum(bucket["attempts"] for bucket in buckets) == 2
             if direct.json()["status"] == "no_match":
                 assert response.json() == {"status": "no_match", "match": None}
                 return

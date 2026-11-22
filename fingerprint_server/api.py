@@ -21,7 +21,14 @@ from audio_fingerprint.codec import ENCODING_ID, decode_document
 from pydantic import BaseModel, Field, ValidationError
 
 from fingerprint_server.aiohttp_support import HTTPError, bounded_body
-from fingerprint_server.api_state import OWNERSHIP_TASK, SETTINGS, STORE, WORKER, WORKER_TASK
+from fingerprint_server.api_state import (
+    OWNERSHIP_TASK,
+    RECOGNITION_OUTCOME,
+    SETTINGS,
+    STORE,
+    WORKER,
+    WORKER_TASK,
+)
 from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage
@@ -337,7 +344,9 @@ def create_router() -> web.RouteTableDef:
         async with recognition_slot(request):
             raw = await bounded_body(request, min(MAX_PCM_BYTES, 15 * sample_rate * channels * 4))
             query = await run_sync(extract_query, raw, sample_rate, channels)
-            return web.json_response(await match_query(request, query))
+            result = await match_query(request, query)
+            request[RECOGNITION_OUTCOME] = result["status"]
+            return web.json_response(result)
 
     @router.post("/api/v1/dejavu/recognize/landmarks")
     async def recognize_landmarks(request: web.Request) -> web.Response:
@@ -350,7 +359,9 @@ def create_router() -> web.RouteTableDef:
                 query = LandmarkQuery.model_validate_json(raw)
             except (ValidationError, ValueError) as err:
                 raise HTTPError(422, "Invalid landmark query or capture coverage") from err
-            return web.json_response(await match_query(request, query.fingerprints))
+            result = await match_query(request, query.fingerprints)
+            request[RECOGNITION_OUTCOME] = result["status"]
+            return web.json_response(result)
 
     async def match_query(request: web.Request, query: list[tuple[str, int]]) -> dict[str, Any]:
         if not query:

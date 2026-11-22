@@ -213,6 +213,18 @@ def test_hourly_history(data: SQLiteAdminData) -> None:
     assert data.hourly_history(1720) == []
 
 
+def test_recognition_statistics_requires_session(data: SQLiteAdminData) -> None:
+    with data.store.connect() as db:
+        db.execute("INSERT INTO recognition_metrics VALUES (1000,2,1,1,0,0)")
+    with TestClient(create_admin(data.settings)) as client:
+        assert client.get("/admin/api/recognition-statistics?period=all").status_code == 401
+        assert login(client).status_code == 200
+        result = client.get("/admin/api/recognition-statistics?period=all")
+        assert result.status_code == 200
+        assert result.json()["buckets"][0]["attempts"] == 2
+        assert client.get("/admin/api/recognition-statistics?period=invalid").status_code == 400
+
+
 def test_full_admin_starts_with_sqlite(data: SQLiteAdminData) -> None:
     with data.store.connect() as db:
         db.execute(

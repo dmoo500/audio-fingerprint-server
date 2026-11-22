@@ -33,6 +33,28 @@ The **Submission backlog** chart also shows cached covers against its right-hand
 axis. Cover history starts when this measurement is enabled; earlier hours are
 not reconstructed. It counts current eligible reference covers, not unique albums.
 
+### Recognition activity
+
+The overview counts requests reaching either fingerprint recognition endpoint,
+including requests from the Recognition website and direct API clients. Requests
+rejected by a gateway or the website before reaching the service are not counted.
+Attempts and their outcomes are saved immediately as anonymous per-minute totals,
+without audio, IP addresses or individual events. Results are retained indefinitely
+and start when the updated fingerprint service is first started; earlier activity
+cannot be reconstructed.
+
+The available windows are the last hour, 24 hours, 30 days, 365 days and all time.
+Windows are rounded to UTC minutes, and larger display intervals may be partial at
+their edges. Failed requests include validation, authentication and service errors.
+Attempts without an outcome may still be running or may have been interrupted by
+a process failure. A database write error is logged and can leave the statistics
+incomplete; recognition continues. The two writes per attempt may also wait for
+other database writers. The SQLite/PostgreSQL migration tools preserve these totals.
+The fingerprint service creates this optional table on startup, without changing
+the main schema version or making an automatic upgrade backup. Older SQLite
+service versions may reject the database because they do not recognize this
+table, so keep a current backup and plan the rollback before upgrading.
+
 ### Artwork coverage
 
 **Album artwork** separates two measurements:
