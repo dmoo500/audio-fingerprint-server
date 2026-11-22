@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api, errorMessage, type Snapshot } from "../api";
 import HistoryCharts, { type Chart } from "./HistoryCharts.vue";
 import { useToast } from "../composables/useToast";
+import { useTableSort } from "../composables/useTableSort";
+import SortHeader from "./SortHeader.vue";
 
 const props = defineProps<{ snapshot: Snapshot | null }>();
 defineEmits<{ navigate: [path: string] }>();
@@ -35,6 +37,15 @@ const queue: {
   },
 ];
 const submissions = computed(() => current.value?.overview.submissions ?? {});
+const sorting = useTableSort("state");
+const sortedSubmissions = computed(() =>
+  Object.entries(submissions.value).sort(
+    ([stateA, countA], [stateB, countB]) =>
+      sorting.field.value === "count"
+        ? sorting.compare(countA, countB)
+        : sorting.compare(stateA, stateB),
+  ),
+);
 const artwork = computed(() => current.value?.overview.artwork);
 const artworkRate = computed(() => {
   if (!artwork.value) return null;
@@ -233,8 +244,7 @@ onMounted(() => {
             ? (current.overview.manual_review?.toLocaleString() ??
               "Unavailable")
             : (current.overview.submissions[key] ?? 0).toLocaleString()
-        }}</strong
-        ><a
+        }}</strong><a
           v-if="link"
           :href="link.href"
           @click.exact.prevent="$emit('navigate', link.href)"
@@ -276,8 +286,9 @@ onMounted(() => {
           "
         >
           <div>
-            <strong>{{ total.toLocaleString() }}</strong
-            ><small>Total submissions</small>
+            <strong>{{ total.toLocaleString() }}</strong><small
+              >Total submissions</small
+            >
           </div>
         </div>
         <p>
@@ -294,12 +305,28 @@ onMounted(() => {
         <table class="records-table" aria-label="Submission counts by state">
           <thead>
             <tr>
-              <th>State</th>
-              <th>Count</th>
+              <SortHeader
+                label="State"
+                :direction="
+                  sorting.field.value === 'state'
+                    ? sorting.direction.value
+                    : undefined
+                "
+                @sort="sorting.sort('state')"
+              />
+              <SortHeader
+                label="Count"
+                :direction="
+                  sorting.field.value === 'count'
+                    ? sorting.direction.value
+                    : undefined
+                "
+                @sort="sorting.sort('count')"
+              />
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(count, state) in submissions" :key="state">
+            <tr v-for="[state, count] in sortedSubmissions" :key="state">
               <td>
                 <span :style="{ color: colors[state] ?? '#868e96' }">●</span>
                 {{ state }}

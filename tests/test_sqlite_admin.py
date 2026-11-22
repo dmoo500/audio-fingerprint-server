@@ -110,6 +110,41 @@ def test_queries_actions_and_revisions(data: SQLiteAdminData) -> None:
         data.read("submissions", order_by=["id;drop table submissions desc"])
 
 
+def test_unfiltered_count_does_not_read_submission_documents(
+    data: SQLiteAdminData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    insert_examples(data)
+    monkeypatch.setattr(
+        data,
+        "source",
+        Mock(side_effect=AssertionError("Unfiltered count must not load documents")),
+    )
+    assert data.read("submissions", count=True) == 6
+    assert data.read("submissions", "", count=True) == 6
+    with pytest.raises(ActionFailed):
+        data.read("submissions", count=True, order_by=["not_a_field asc"])
+
+
+@pytest.mark.parametrize(
+    "order",
+    [None, ["state asc"], ["state desc", "created_at asc"], ["id desc"]],
+)
+def test_unfiltered_page_matches_filtered_query(
+    data: SQLiteAdminData, order: list[str] | None
+) -> None:
+    insert_examples(data)
+    for offset in (0, 2, 5):
+        page = data.read("submissions", skip=offset, limit=2, order_by=order)
+        filtered = data.read(
+            "submissions",
+            {"id": {"not_contains": "not-present"}},
+            skip=offset,
+            limit=2,
+            order_by=order,
+        )
+        assert page == filtered
+
+
 def test_review_selection_is_atomic_and_state_guarded(data: SQLiteAdminData) -> None:
     insert_examples(data)
     with data.store.connect() as db:

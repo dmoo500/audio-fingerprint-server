@@ -14,6 +14,7 @@ import {
   onMounted,
   onUnmounted,
   ref,
+  nextTick,
   shallowRef,
   toRaw,
   watch,
@@ -126,12 +127,7 @@ const appliedFilter = ref<Record<string, unknown> | null>(
 );
 const skip = ref(restored?.skip ?? 0);
 const limit = ref(restored?.limit ?? 50);
-const lastOffset = computed(
-  () =>
-    Math.floor(Math.max(0, result.value.total - 1) / limit.value) * limit.value,
-);
 const displayedOffset = ref(0);
-const displayedLimit = ref(limit.value);
 const order = ref<ListView["order"]>(
   (restored?.order ?? []).map((item) => ({ ...item })),
 );
@@ -143,6 +139,7 @@ const displayedOrder = computed<ListView["order"]>(() =>
 const selected = ref<string[]>([]);
 const status = ref("Loading table…");
 const failed = ref(false);
+const moreFailed = ref(false);
 const busy = ref(false);
 const loadedRevision = ref<string | undefined>();
 let sequence = 0;
@@ -152,6 +149,16 @@ const displayedView = shallowRef<ListView>();
 const neighborRequest = new AbortController();
 const navigating = ref(false);
 const navigationError = ref("");
+const sentinel = ref<HTMLElement | null>(null);
+let observer: IntersectionObserver | undefined;
+let restoring = false;
+let mounted = true;
+const canLoadMore = computed(
+  () =>
+    result.value.items.length > 0 &&
+    displayedOffset.value + result.value.items.length < result.value.total &&
+    displayedOffset.value + result.value.items.length <= 1_000_000,
+);
 const latestRevision = computed(() => props.snapshot?.revisions[props.dataset]);
 const changed = computed(
   () =>
@@ -163,13 +170,26 @@ watch(latestRevision, (value) => {
   if (!loadedRevision.value && value && !busy.value)
     loadedRevision.value = value;
 });
-async function load() {
+async function load(append = false, retry = false) {
+  if (
+    append &&
+    (busy.value ||
+      (failed.value && !retry) ||
+      changed.value ||
+      !canLoadMore.value)
+  )
+    return;
   const request = ++sequence;
   const revision = latestRevision.value;
   busy.value = true;
-  status.value = "Loading table… Previous rows remain until results arrive.";
+  moreFailed.value = false;
+  status.value = append
+    ? "Loading more records…"
+    : "Loading table… Previous rows remain until results arrive.";
   const params = new URLSearchParams({
-    skip: String(skip.value),
+    skip: String(
+      append ? displayedOffset.value + result.value.items.length : skip.value,
+    ),
     limit: String(limit.value),
   });
   let where: unknown = search.value.trim() || null;
@@ -193,22 +213,50 @@ async function load() {
   try {
     const data = await api<TableResult>(`/tables/${props.dataset}?${params}`);
     if (request !== sequence) return;
-    result.value = data;
-    displayedQuery = params.toString();
-    displayedView.value = view;
-    displayedOffset.value = Number(params.get("skip"));
-    displayedLimit.value = Number(params.get("limit"));
-    selected.value = [];
-    loadedRevision.value =
-      revision ?? (latestRevision.value ? "__unknown__" : undefined);
+    if (append) {
+      if (
+        revision !== latestRevision.value ||
+        data.total !== result.value.total
+      ) {
+        status.value = "The table changed. Refresh to load more records.";
+        failed.value = true;
+        return;
+      }
+      const existing = new Set(result.value.items.map((row) => String(row.id)));
+      if (
+        !data.items.length ||
+        data.items.some((row) => existing.has(String(row.id)))
+      ) {
+        status.value = "The table changed. Refresh to load more records.";
+        failed.value = true;
+        return;
+      }
+      result.value = { ...data, items: [...result.value.items, ...data.items] };
+    } else {
+      result.value = data;
+      displayedQuery = params.toString();
+      displayedView.value = view;
+      displayedOffset.value = Number(params.get("skip"));
+      selected.value = [];
+      loadedRevision.value =
+        revision ?? (latestRevision.value ? "__unknown__" : undefined);
+    }
     failed.value = false;
     status.value = `${data.total.toLocaleString()} ${where ? "matching " : ""}records.`;
   } catch (e) {
     if (request !== sequence) return;
     failed.value = true;
+    moreFailed.value = append;
     status.value = `Table request failed: ${errorMessage(e)}. Previous rows may be outdated.`;
   } finally {
-    if (request === sequence) busy.value = false;
+    if (request === sequence) {
+      busy.value = false;
+      await nextTick();
+      if (sentinel.value && observer) {
+        observer.unobserve(sentinel.value);
+        observer.observe(sentinel.value);
+      }
+    }
   }
 }
 async function loadDetail() {
@@ -277,10 +325,6 @@ function sort(field: string, multi: boolean) {
   skip.value = 0;
   void load();
 }
-function page(delta: number) {
-  skip.value = Math.max(0, skip.value + delta);
-  void load();
-}
 function detailPath(id: string) {
   return `/admin/${props.dataset}/detail/${encodeURIComponent(id)}`;
 }
@@ -294,7 +338,12 @@ function openDetail(id: string) {
   const current: SubmissionNavigation = {
     dataset: props.dataset,
     listPath,
-    view: { ...displayedView.value, hiddenFields: [...hiddenFields.value] },
+    view: {
+      ...displayedView.value,
+      hiddenFields: [...hiddenFields.value],
+      loadedCount: result.value.items.length,
+      scrollY: window.scrollY,
+    },
     query: displayedQuery,
     offset: displayedOffset.value,
     ids: result.value.items.map((row) => String(row.id)),
@@ -373,7 +422,13 @@ function toggleColumn(field: string) {
     : [...hiddenFields.value, field];
 }
 async function action(operation: "retry" | "delete", ids: string[]) {
-  if (!ids.length || busy.value || (!props.id && failed.value)) return;
+  if (
+    !ids.length ||
+    ids.length > 100 ||
+    busy.value ||
+    (!props.id && failed.value)
+  )
+    return;
   const explanation =
     operation === "delete"
       ? "Delete the selected submissions? Acoustic references and landmarks are retained."
@@ -402,10 +457,48 @@ async function action(operation: "retry" | "delete", ids: string[]) {
   }
 }
 onMounted(() => {
+  if (!props.id && typeof IntersectionObserver !== "undefined") {
+    observer = new IntersectionObserver(
+      (entries) => {
+        if (!restoring && entries.some((entry) => entry.isIntersecting))
+          void load(true);
+      },
+      { rootMargin: "200px" },
+    );
+    if (sentinel.value) observer.observe(sentinel.value);
+  }
   if (props.id) void loadDetail();
-  else void load();
+  else
+    void (async () => {
+      restoring = true;
+      await load();
+      while (
+        mounted &&
+        restored?.loadedCount &&
+        result.value.items.length < restored.loadedCount &&
+        canLoadMore.value &&
+        !busy.value &&
+        !failed.value &&
+        !changed.value
+      ) {
+        const count = result.value.items.length;
+        await load(true);
+        if (result.value.items.length === count) break;
+      }
+      if (mounted && restored?.scrollY !== undefined) {
+        await nextTick();
+        window.scrollTo(0, restored.scrollY);
+      }
+      restoring = false;
+      if (mounted && sentinel.value && observer) {
+        observer.unobserve(sentinel.value);
+        observer.observe(sentinel.value);
+      }
+    })();
 });
 onUnmounted(() => {
+  mounted = false;
+  observer?.disconnect();
   neighborRequest.abort();
   sequence++;
   if (timer) clearTimeout(timer);
@@ -499,7 +592,7 @@ onUnmounted(() => {
       <button
         class="secondary"
         :disabled="busy || (!changed && !failed)"
-        @click="load"
+        @click="load()"
       >
         {{
           failed
@@ -507,8 +600,7 @@ onUnmounted(() => {
             : changed
               ? "Newer data available — refresh"
               : "Table is up to date"
-        }}</button
-      ><span class="muted"
+        }}</button><span class="muted"
         >Updates never replace your current rows automatically.</span
       >
     </div>
@@ -590,20 +682,6 @@ onUnmounted(() => {
         </details>
       </div>
       <div class="table-controls">
-        <div class="table-size">
-          <select
-            v-model.number="limit"
-            aria-label="Rows per page"
-            @change="
-              skip = 0;
-              load();
-            "
-          >
-            <option :value="25">Show 25 rows</option>
-            <option :value="50">Show 50 rows</option>
-            <option :value="100">Show 100 rows</option>
-          </select>
-        </div>
         <div class="table-search">
           <Search :size="18" aria-hidden="true" />
           <input
@@ -634,17 +712,25 @@ onUnmounted(() => {
       >
         <button
           class="secondary"
-          :disabled="!selected.length || busy || failed"
+          :disabled="
+            !selected.length || selected.length > 100 || busy || failed
+          "
           @click="action('retry', selected)"
         >
           Retry selected</button
         ><button
           class="danger"
-          :disabled="!selected.length || busy || failed"
+          :disabled="
+            !selected.length || selected.length > 100 || busy || failed
+          "
           @click="action('delete', selected)"
         >
           Delete selected</button
-        ><span>{{ selected.length }} selected</span>
+        ><span
+          >{{ selected.length }} selected<span v-if="selected.length > 100">
+            — select at most 100 for an action</span
+          ></span
+        >
       </div>
       <div
         class="table-wrap"
@@ -659,7 +745,7 @@ onUnmounted(() => {
               <th v-if="dataset !== 'references'">
                 <input
                   type="checkbox"
-                  aria-label="Select all rows"
+                  aria-label="Select all loaded rows"
                   :checked="
                     result.items.length > 0 &&
                     selected.length === result.items.length
@@ -820,43 +906,19 @@ onUnmounted(() => {
           {{ result.items.length ? displayedOffset + result.items.length : 0 }}
           of {{ result.total }} entries</span
         >
-        <nav class="table-pages" aria-label="Table pages">
-          <button
-            class="secondary"
-            :disabled="skip === 0 || busy"
-            @click="page(-skip)"
-          >
-            First
-          </button>
-          <button
-            class="secondary"
-            :disabled="skip === 0 || busy"
-            @click="page(-limit)"
-          >
-            Previous
-          </button>
-          <span
-            class="current-page"
-            :aria-label="`Page ${Math.floor(displayedOffset / displayedLimit) + 1}`"
-            aria-current="page"
-            >{{ Math.floor(displayedOffset / displayedLimit) + 1 }}</span
-          >
-          <button
-            class="secondary"
-            :disabled="skip >= lastOffset || skip + limit > 1_000_000 || busy"
-            @click="page(limit)"
-          >
-            Next
-          </button>
-          <button
-            class="secondary"
-            :disabled="skip >= lastOffset || lastOffset > 1_000_000 || busy"
-            @click="page(lastOffset - skip)"
-          >
-            Last
-          </button>
-        </nav>
+        <button
+          v-if="canLoadMore"
+          class="secondary"
+          :disabled="busy || (failed && !moreFailed) || changed"
+          @click="load(true, moreFailed)"
+        >
+          {{ moreFailed ? "Retry loading more" : "Load more" }}
+        </button>
+        <span v-else-if="displayedOffset + result.items.length < result.total"
+          >Use search or filters to narrow the results.</span
+        >
       </div>
+      <div ref="sentinel" aria-hidden="true"></div>
     </div>
     <dialog
       ref="cellDialog"

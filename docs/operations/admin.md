@@ -77,11 +77,12 @@ flowchart LR
     Open --> Detail["Submission detail"]
     Detail --> Browse["Previous / Next in the same list order"]
     Browse --> Detail
-    Detail --> Back["Back: restore original page and filters"]
+    Detail --> Back["Back: restore loaded entries and filters"]
 ```
 
 - **Search:** `ACDC` finds `AC/DC`. **X** clears only the search; **Filter** matches a specific field.
 - **Sort:** Click a heading to change direction; Shift-click adds another column. Empty values stay last.
+- **Load more:** Scroll to load more records automatically, or use **Load more**. Refresh the table if its data has changed. At most 100 submissions can be selected for one bulk action.
 - **Artwork:** Both lists show cached covers in a non-sortable column. Reload to see newly cached covers. Submission details display the same cached image; published reference details can also request one and show its status.
 - **Details:** **Previous / Next** can cross pages. Direct detail links have no list context. Hover over shortened values or open underlined previews to read the full text.
 - **Retry and delete:** Row and bulk actions require confirmation. Deleting a submission does **not** delete its acoustic reference. References are read-only.
@@ -93,7 +94,7 @@ flowchart LR
 - **Unresolved ISRC submissions** includes retained entries with an ISRC whose state is not `processed`. It does not certify ISRC validity or show how a processed recording was verified.
 - A pending review preserves unresolved entries and their completed recheck counts. Normal housekeeping is separate.
 - Queued and processing entries cannot be changed. Retry is limited to failed or unresolved submissions, respects admission budgets and resets attempts but not completed rechecks.
-- Tables show up to 100 records per page and scroll within their own area. Raw fingerprints are never returned. Reviews do not send data back to MusicBrainz; worker cooldown is not shown in Admin.
+- Tables load records in batches. Narrow the search or filters to reach records beyond the supported offset. Raw fingerprints are never returned. Reviews do not send data back to MusicBrainz; worker cooldown is not shown in Admin.
 
 </details>
 

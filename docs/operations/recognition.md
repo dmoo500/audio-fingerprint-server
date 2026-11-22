@@ -106,8 +106,9 @@ Cover Art Archive or archive.org, which receives the browser's IP address.
 For a local deployment with Admin and Recognition, append
 [compose.artwork-cache.yaml](../../compose.artwork-cache.yaml) after the other
 overlays and rebuild both services. They then share a separate, disposable
-image cache. The first view still fetches the image from the archive;
-subsequent views can serve it locally. When local delivery fails, the browser
+image cache. The first view fetches the image from the archive, following up to
+three redirects only to trusted archive HTTPS hosts; subsequent views can serve
+it locally. When local delivery fails, the browser
 falls back to the public archive URL and the archive can see the browser's IP
 address. Share links keep the public archive URL. Up to 256 images (512 KiB
 each, about 128 MiB of image data plus SQLite overhead) are eligible to be

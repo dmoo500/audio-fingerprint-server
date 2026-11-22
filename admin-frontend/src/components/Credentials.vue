@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api, errorMessage, type Row } from "../api";
 import { useToast } from "../composables/useToast";
+import { useTableSort } from "../composables/useTableSort";
+import SortHeader from "./SortHeader.vue";
 
 const props = defineProps<{ kind: "keys" | "applications" }>();
 const notify = useToast();
@@ -13,6 +15,23 @@ const newKey = ref("");
 const error = ref("");
 const busy = ref(false);
 const confirmed = ref<Record<string, boolean>>({});
+const sorting = useTableSort("name");
+const sortedItems = computed(() =>
+  [...items.value].sort((a, b) => {
+    const value = (item: Row) => {
+      if (sorting.field.value === "name")
+        return String(props.kind === "keys" ? item.username : item.name);
+      if (sorting.field.value === "status")
+        return props.kind === "keys"
+          ? String(item.role)
+          : item.revoked_at == null
+            ? "Active"
+            : "Revoked";
+      return String(item.id);
+    };
+    return sorting.compare(value(a), value(b));
+  }),
+);
 async function load() {
   const response = await api<{ items: Row[]; legacy_configured?: boolean }>(
     `/${props.kind}`,
@@ -138,15 +157,40 @@ onMounted(async () => {
       >
         <thead>
           <tr>
-            <th>Name</th>
-            <th v-if="kind === 'applications'">ID</th>
-            <th>{{ kind === "keys" ? "Permissions" : "Status" }}</th>
+            <SortHeader
+              label="Name"
+              :direction="
+                sorting.field.value === 'name'
+                  ? sorting.direction.value
+                  : undefined
+              "
+              @sort="sorting.sort('name')"
+            />
+            <SortHeader
+              v-if="kind === 'applications'"
+              label="ID"
+              :direction="
+                sorting.field.value === 'id'
+                  ? sorting.direction.value
+                  : undefined
+              "
+              @sort="sorting.sort('id')"
+            />
+            <SortHeader
+              :label="kind === 'keys' ? 'Permissions' : 'Status'"
+              :direction="
+                sorting.field.value === 'status'
+                  ? sorting.direction.value
+                  : undefined
+              "
+              @sort="sorting.sort('status')"
+            />
             <th class="revoke-column">Revoke</th>
           </tr>
         </thead>
         <tbody>
           <tr
-            v-for="item in items"
+            v-for="item in sortedItems"
             :key="String(kind === 'keys' ? item.username : item.id)"
           >
             <td class="record-value">

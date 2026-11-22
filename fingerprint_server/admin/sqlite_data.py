@@ -109,13 +109,18 @@ class SQLiteAdminData(AdminFilters):
         """Read a filtered page or count without exposing stored documents."""
         if skip < 0 or skip > 1_000_000 or not 1 <= limit <= 100:
             raise ActionFailed("Page size must be 1 to 100 and offset 0 to 1000000")
+        order = self.sort_clause(dataset, order_by)
+        if count and dataset == "submissions" and where in (None, "") and pks is None:
+            with self.store.connect() as db:
+                row = db.execute("SELECT count(*) FROM submissions").fetchone()
+                assert row is not None
+                return int(row[0])
         clause, args = self.predicate(dataset, where)
         if pks is not None:
             if len(pks) > 100:
                 raise ActionFailed("Select at most 100 entries")
             clause += " AND id IN (" + ",".join("?" for _ in pks) + ")"
             args.extend(pks)
-        order = self.sort_clause(dataset, order_by)
         source = self.source(dataset)
         with self.store.connect() as db:
             if count:
@@ -129,11 +134,38 @@ class SQLiteAdminData(AdminFilters):
                 if dataset == "references"
                 else "state,error,attempts,pending_rechecks,retry_at,pending_due_at,reference_id"
             )
-            result = db.execute(
-                f"SELECT id,created_at,metadata,{columns} FROM ({source}) entries WHERE {clause} "
-                f"ORDER BY {order} LIMIT ? OFFSET ?",
-                [*args, limit, skip],
-            ).fetchall()
+            native_fields = {
+                "id",
+                "created_at",
+                "state",
+                "error",
+                "reference_id",
+                "attempts",
+                "pending_rechecks",
+            }
+            if (
+                dataset == "submissions"
+                and where in (None, "")
+                and pks is None
+                and all(
+                    item.split()[0] in native_fields for item in (order_by or ["created_at desc"])
+                )
+            ):
+                result = db.execute(
+                    "WITH page AS MATERIALIZED ("
+                    "SELECT id,created_at,state,error,attempts,pending_rechecks,retry_at,"
+                    "pending_due_at,reference_id,json_extract(document,'$.metadata') AS metadata "
+                    "FROM submissions WHERE id IN "
+                    f"(SELECT id FROM submissions ORDER BY {order} LIMIT ? OFFSET ?)) "
+                    f"SELECT id,created_at,metadata,{columns} FROM page ORDER BY {order}",
+                    (limit, skip),
+                ).fetchall()
+            else:
+                result = db.execute(
+                    f"SELECT id,created_at,metadata,{columns} FROM ({source}) entries "
+                    f"WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+                    [*args, limit, skip],
+                ).fetchall()
         rows = [dict(row) for row in result]
         for row in rows:
             try:

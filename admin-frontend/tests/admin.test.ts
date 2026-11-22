@@ -224,6 +224,33 @@ describe("notifications", () => {
 });
 
 describe("overview", () => {
+  it("sorts submission counts numerically without changing the chart", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({ charts: [] }) as Response,
+    );
+    const wrapper = mount(Overview, {
+      props: {
+        snapshot: {
+          ...snapshot,
+          overview: {
+            ...snapshot.overview,
+            submissions: { queued: 10, failed: 2 },
+          },
+        },
+      },
+    });
+    await flushPromises();
+    const table = wrapper.get('table[aria-label="Submission counts by state"]');
+    const chart = wrapper.get(".donut");
+    const style = chart.attributes("style");
+    await table.findAll("th button")[1]!.trigger("click");
+    expect(table.findAll("tbody tr")[0]!.text()).toContain("failed");
+    expect(table.findAll("th")[1]!.attributes("aria-sort")).toBe("ascending");
+    await table.findAll("th button")[1]!.trigger("click");
+    expect(table.findAll("tbody tr")[0]!.text()).toContain("queued");
+    expect(chart.attributes("style")).toBe(style);
+    wrapper.unmount();
+  });
   it("distinguishes cached lookup success from eligible reference coverage", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValue(
       response({ charts: [] }) as Response,
@@ -338,6 +365,186 @@ describe("overview", () => {
 });
 
 describe("table", () => {
+  it("requires a refresh instead of appending after the data revision changes", async () => {
+    const items = Array.from({ length: 60 }, (_, n) => ({
+      id: String(n),
+      title: `Title ${n}`,
+    }));
+    const fetch = vi.mocked(globalThis.fetch);
+    fetch.mockResolvedValue(
+      response({ ...rows, total: 60, items: items.slice(0, 50) }) as Response,
+    );
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", snapshot },
+    });
+    await flushPromises();
+    await wrapper.setProps({
+      snapshot: { ...snapshot, revisions: { submissions: "two" } },
+    });
+    expect(
+      wrapper.get(".table-footer button").attributes("disabled"),
+    ).toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("loads more on intersection and retries a failed batch only on request", async () => {
+    let intersect: IntersectionObserverCallback;
+    class MockObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        intersect = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("IntersectionObserver", MockObserver);
+    const fetch = vi.mocked(globalThis.fetch);
+    const items = Array.from({ length: 60 }, (_, n) => ({
+      id: String(n),
+      title: `Title ${n}`,
+    }));
+    fetch.mockImplementation(async (input) => {
+      const skip = Number(
+        new URL(String(input), location.origin).searchParams.get("skip"),
+      );
+      if (skip === 50 && fetch.mock.calls.length === 2)
+        throw new Error("offline");
+      return response({
+        ...rows,
+        total: items.length,
+        items: items.slice(skip, skip + 50),
+      }) as Response;
+    });
+    const wrapper = mount(DataTable, {
+      attachTo: document.body,
+      props: { dataset: "references", snapshot },
+    });
+    await flushPromises();
+    intersect!(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver,
+    );
+    await flushPromises();
+    expect(wrapper.text()).toContain("offline");
+    intersect!(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver,
+    );
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await wrapper.get(".table-footer button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Showing 1 to 60 of 60");
+    expect(wrapper.find('[aria-label="View 59"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("does not append a stale response after changing the sort", async () => {
+    const fetch = vi.mocked(globalThis.fetch);
+    let resolveMore: (value: Response) => void = () => {};
+    const first = Array.from({ length: 50 }, (_, n) => ({
+      id: String(n),
+      title: `Title ${n}`,
+    }));
+    fetch.mockImplementation(async (input) => {
+      const url = new URL(String(input), location.origin);
+      if (url.searchParams.get("skip") === "50")
+        return new Promise<Response>((resolve) => {
+          resolveMore = resolve;
+        });
+      if (url.searchParams.has("order_by")) return response(rows) as Response;
+      return response({ ...rows, items: first, total: 60 }) as Response;
+    });
+    const wrapper = mount(DataTable, {
+      props: { dataset: "references", snapshot },
+    });
+    await flushPromises();
+    await wrapper.get(".table-footer button").trigger("click");
+    await wrapper.get("button.sort").trigger("click");
+    await flushPromises();
+    resolveMore(
+      response({
+        ...rows,
+        total: 60,
+        items: [{ id: "stale", title: "stale" }],
+      }) as Response,
+    );
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("stale");
+    expect(wrapper.text()).toContain("AC/DC");
+    wrapper.unmount();
+  });
+
+  it("limits bulk actions to 100 loaded records", async () => {
+    const items = Array.from({ length: 101 }, (_, n) => ({
+      id: String(n),
+      title: `Title ${n}`,
+    }));
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const skip = Number(
+        new URL(String(input), location.origin).searchParams.get("skip"),
+      );
+      return response({
+        ...rows,
+        total: items.length,
+        items: items.slice(skip, skip + 50),
+      }) as Response;
+    });
+    const wrapper = mount(DataTable, {
+      props: { dataset: "submissions", snapshot },
+    });
+    await flushPromises();
+    await wrapper.get(".table-footer button").trigger("click");
+    await flushPromises();
+    await wrapper.get(".table-footer button").trigger("click");
+    await flushPromises();
+    await wrapper.get('[aria-label="Select all loaded rows"]').setValue(true);
+    expect(wrapper.text()).toContain("select at most 100");
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Retry selected")!
+        .attributes("disabled"),
+    ).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it("restores loaded records when returning from a detail", async () => {
+    history.replaceState(null, "", "/admin/submissions/list");
+    const items = Array.from({ length: 60 }, (_, n) => ({
+      id: String(n),
+      title: `Title ${n}`,
+    }));
+    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+      const request = new URL(String(input), location.origin);
+      if (request.pathname.endsWith("/session"))
+        return response({ authenticated: true }) as Response;
+      if (request.pathname.endsWith("/overview"))
+        return response(snapshot) as Response;
+      if (request.pathname === "/admin/api/tables/submissions") {
+        const skip = Number(request.searchParams.get("skip"));
+        return response({
+          ...rows,
+          total: items.length,
+          items: items.slice(skip, skip + 50),
+        }) as Response;
+      }
+      return response({ id: request.pathname.split("/").at(-1) }) as Response;
+    });
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get(".table-footer button").trigger("click");
+    await flushPromises();
+    await wrapper.get('[aria-label="View 59"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Detail navigation"] a').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Showing 1 to 60 of 60");
+    expect(wrapper.find('[aria-label="View 59"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("navigates submissions in list order across pages and restores the original list", async () => {
     history.replaceState(
       null,
@@ -871,6 +1078,26 @@ describe("reviews and history", () => {
 });
 
 describe("credentials", () => {
+  it("sorts credentials without changing their actions", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({
+        items: [
+          { username: "zulu", role: "read" },
+          { username: "alpha", role: "upload" },
+        ],
+      }) as Response,
+    );
+    const wrapper = mount(Credentials, { props: { kind: "keys" } });
+    await flushPromises();
+    const rows = () => wrapper.findAll("tbody tr").map((row) => row.text());
+    expect(rows()[0]).toContain("alpha");
+    await wrapper.get("th[aria-sort] button").trigger("click");
+    expect(rows()[0]).toContain("zulu");
+    expect(wrapper.get("th[aria-sort]").attributes("aria-sort")).toBe(
+      "descending",
+    );
+    wrapper.unmount();
+  });
   it.each(["keys", "applications"] as const)(
     "shows %s secrets once and requires revocation confirmation",
     async (kind) => {

@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urljoin
 
 import httpx
 from aiohttp import web
@@ -19,6 +20,7 @@ from fingerprint_server.http_utils import trusted_image
 LOGGER = logging.getLogger(__name__)
 MAX_BYTES = 512 * 1024
 MAX_IMAGES = 256
+MAX_REDIRECTS = 3
 TTL = 7 * 86400
 
 
@@ -85,20 +87,38 @@ class ImageCache:
             )
 
     async def _download(self, url: str) -> tuple[str, bytes]:
-        async with self.client.stream(
-            "GET", url, headers={"Accept-Encoding": "identity"}, follow_redirects=False
-        ) as res:
-            res.raise_for_status()
-            if (
-                res.status_code != 200
-                or res.headers.get("content-encoding", "identity") != "identity"
-            ):
-                raise ValueError("Unexpected artwork response")
-            body = bytearray()
-            async for chunk in res.aiter_raw(chunk_size=16384):
-                body.extend(chunk)
-                if len(body) > MAX_BYTES:
-                    raise ValueError("Artwork exceeds the local cache limit")
+        for redirects in range(MAX_REDIRECTS + 1):
+            async with self.client.stream(
+                "GET", url, headers={"Accept-Encoding": "identity"}, follow_redirects=False
+            ) as res:
+                if res.status_code in (301, 302, 303, 307, 308):
+                    location = res.headers.get("location", "")
+                    if (
+                        redirects == MAX_REDIRECTS
+                        or not location
+                        or "\\" in location
+                        or any(ord(char) <= 32 or ord(char) == 127 for char in location)
+                    ):
+                        raise ValueError("Invalid artwork redirect")
+                    target = urljoin(url, location)
+                    if not trusted_image(target):
+                        raise ValueError("Untrusted artwork redirect")
+                    url = target
+                    continue
+                res.raise_for_status()
+                if (
+                    res.status_code != 200
+                    or res.headers.get("content-encoding", "identity") != "identity"
+                ):
+                    raise ValueError("Unexpected artwork response")
+                body = bytearray()
+                async for chunk in res.aiter_raw(chunk_size=16384):
+                    body.extend(chunk)
+                    if len(body) > MAX_BYTES:
+                        raise ValueError("Artwork exceeds the local cache limit")
+                break
+        else:
+            raise ValueError("Too many artwork redirects")
         if body.startswith(b"\xff\xd8\xff"):
             return "image/jpeg", bytes(body)
         if body.startswith(b"\x89PNG\r\n\x1a\n"):

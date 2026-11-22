@@ -8,6 +8,8 @@ export type ListView = {
   skip: number;
   limit: number;
   hiddenFields: string[];
+  loadedCount?: number;
+  scrollY?: number;
 };
 
 export type SubmissionNavigation = {
