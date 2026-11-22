@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 from uuid import UUID
 
@@ -152,7 +152,7 @@ def rank_matches(
 
 
 def coverage_statistics(
-    rows: Sequence[Mapping[str, Any]], uploads: dict[str, int]
+    rows: Iterable[Mapping[str, Any]], uploads: dict[str, int]
 ) -> dict[str, Any]:
     """Count acoustic references and logical recordings from a consistent snapshot."""
     coverage = {"total": 0, "partial": 0, "full": 0, "excluded": 0}

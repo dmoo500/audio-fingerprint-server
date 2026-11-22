@@ -261,8 +261,8 @@ class Store(StoreQueueMixin):
                 "s.document,t.metadata FROM reference_tracks t "
                 "LEFT JOIN representatives r ON t.reference_key=r.reference_id "
                 "LEFT JOIN submissions s ON s.id=r.id"
-            ).fetchall()
-            return coverage_statistics([dict(row) for row in rows], uploads)
+            )
+            return coverage_statistics((dict(row) for row in rows), uploads)
 
     def cached_enrichment(self, key: str) -> dict[str, Any] | None:
         """Return unexpired MusicBrainz lookup data."""
