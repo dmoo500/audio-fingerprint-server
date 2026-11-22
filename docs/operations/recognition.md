@@ -1,5 +1,9 @@
 # What's That Song? — public microphone recognition app
 
+The public service serves `/robots.txt` disallowing all crawlers and sends
+`X-Robots-Tag: noindex, nofollow`. These are requests to cooperating crawlers,
+not access controls, and cannot guarantee removal from search results.
+
 [Home](../../README.md) · [Documentation](../README.md)
 
 What's That Song? is an independent song recognition app for Music Assistant.

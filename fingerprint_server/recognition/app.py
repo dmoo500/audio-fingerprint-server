@@ -61,10 +61,14 @@ def create_app(
         response.headers["Permissions-Policy"] = "microphone=(self), camera=(), geolocation=()"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
         response.headers["Cache-Control"] = "no-store"
 
     async def health(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
+
+    async def robots(request: web.Request) -> web.Response:
+        return web.Response(text="User-agent: *\nDisallow: /\n", content_type="text/plain")
 
     async def index(request: web.Request) -> web.StreamResponse:
         settings = request.app[SETTINGS_KEY]
@@ -84,6 +88,7 @@ def create_app(
     application.cleanup_ctx.append(image_cache_context)
     application.on_response_prepare.append(browser_headers)
     application.router.add_get("/health", health, allow_head=False)
+    application.router.add_get("/robots.txt", robots)
     application.router.add_get("/", index, allow_head=False)
     application.router.add_get("/assets/{name}", asset, allow_head=False)
     create_routes(application)

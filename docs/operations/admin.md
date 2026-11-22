@@ -44,6 +44,10 @@ and start when the updated fingerprint service is first started; earlier activit
 cannot be reconstructed.
 
 The available windows are the last hour, 24 hours, 30 days, 365 days and all time.
+The overview shows totals and an attempts chart for the selected window; open
+**Recognition activity** in the menu for the totals and interval table. Both
+views load on opening and update when changing the window or using **Refresh**;
+they are not part of the automatic live snapshot.
 Windows are rounded to UTC minutes, and larger display intervals may be partial at
 their edges. Failed requests include validation, authentication and service errors.
 Attempts without an outcome may still be running or may have been interrupted by
@@ -90,6 +94,12 @@ still show their album credits but have no highlight.
 ![MusicBrainz review comparing a studio recording and an alternate mix, with album hints and one expanded list of album credits](images/admin-musicbrainz-review.png)
 
 ### Search and sort
+
+SQLite schema 9 keeps a derived submission metadata projection for faster
+search and sorting. The fingerprint service creates it during the database
+upgrade, after making the usual pre-upgrade backup. Allow disk space and time
+for the backup and migration; older server versions cannot open schema 9.
+The admin service does not upgrade the database itself.
 
 ![Submissions table filtered by Midnight, showing one matching example recording](images/admin-search.png)
 

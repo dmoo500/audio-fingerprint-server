@@ -10,7 +10,7 @@ from fingerprint_server.database.recognition_metrics import RECOGNITION_TABLE
 from fingerprint_server.database.review_schema import REVIEW_TABLE
 
 FORMAT_VERSION = 1
-SQLITE_SCHEMA_VERSION = 8
+SQLITE_SCHEMA_VERSION = 9
 
 
 class TableSpec(TypedDict):

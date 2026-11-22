@@ -278,6 +278,7 @@ def create_admin(configuration: AdminSettings | None = None) -> web.Application:
     for path in (
         "/admin/",
         "/admin/login",
+        "/admin/recognition",
         "/admin/musicbrainz-reviews",
         "/admin/keys",
         "/admin/applications",

@@ -8,6 +8,7 @@ import DataTable from "./components/DataTable.vue";
 import type { SubmissionNavigation } from "./submissionNavigation";
 import Reviews from "./components/Reviews.vue";
 import Credentials from "./components/Credentials.vue";
+import RecognitionStatistics from "./components/RecognitionStatistics.vue";
 import { provideToast } from "./composables/useToast";
 import {
   nextColorTheme,
@@ -412,6 +413,10 @@ onUnmounted(() => {
           @browse="browse"
         />
         <Reviews v-else-if="route === '/admin/musicbrainz-reviews'" />
+        <RecognitionStatistics
+          v-else-if="route === '/admin/recognition'"
+          detail
+        />
         <Credentials
           v-else-if="route === '/admin/keys' || route === '/admin/applications'"
           :key="route"

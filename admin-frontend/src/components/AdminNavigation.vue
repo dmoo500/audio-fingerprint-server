@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   AudioLines,
+  AudioWaveform,
   Boxes,
   CircleHelp,
   ClipboardCheck,
@@ -17,6 +18,11 @@ const emit = defineEmits<{ navigate: [path: string] }>();
 const expanded = ref(false);
 const links = [
   { label: "Overview", path: "/admin/", icon: LayoutDashboard },
+  {
+    label: "Recognition activity",
+    path: "/admin/recognition",
+    icon: AudioWaveform,
+  },
   { label: "Submissions", path: "/admin/submissions/list", icon: ListMusic },
   {
     label: "Unresolved ISRC",

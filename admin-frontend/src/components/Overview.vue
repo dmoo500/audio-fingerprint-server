@@ -245,7 +245,8 @@ onMounted(() => {
             ? (current.overview.manual_review?.toLocaleString() ??
               "Unavailable")
             : (current.overview.submissions[key] ?? 0).toLocaleString()
-        }}</strong><a
+        }}</strong
+        ><a
           v-if="link"
           :href="link.href"
           @click.exact.prevent="$emit('navigate', link.href)"
@@ -256,7 +257,7 @@ onMounted(() => {
     <p class="muted">
       Manual MusicBrainz review is a subset of pending metadata.
     </p>
-    <RecognitionStatistics />
+    <RecognitionStatistics @navigate="$emit('navigate', $event)" />
     <div class="section-heading">
       <div>
         <h2>30-day history</h2>
@@ -288,9 +289,8 @@ onMounted(() => {
           "
         >
           <div>
-            <strong>{{ total.toLocaleString() }}</strong><small
-              >Total submissions</small
-            >
+            <strong>{{ total.toLocaleString() }}</strong
+            ><small>Total submissions</small>
           </div>
         </div>
         <p>

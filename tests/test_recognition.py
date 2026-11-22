@@ -60,6 +60,17 @@ def settings(**overrides: object) -> RecognitionSettings:
     )
 
 
+def test_search_crawlers_are_disallowed() -> None:
+    with TestClient(create_app(settings()), base_url=ORIGIN) as client:
+        response = client.get("/robots.txt")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert response.text == "User-agent: *\nDisallow: /\n"
+        assert response.headers["x-robots-tag"] == "noindex, nofollow"
+        assert client.portal.call(client.client.head, "/robots.txt").status_code == 200
+        assert client.get("/").headers["x-robots-tag"] == "noindex, nofollow"
+
+
 def test_missing_frontend_build_fails_at_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -13,11 +13,12 @@ from uuid import UUID
 
 from audio_fingerprint.codec import encode_document
 
+from fingerprint_server.database.sqlite_metadata import FIELDS, install_projection
 from fingerprint_server.schemas import decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 8
+DB_SCHEMA_VERSION = 9
 MUSICBRAINZ_VERIFICATION_VERSION = 1
 
 SCHEMA = """
@@ -71,25 +72,29 @@ LEGACY_COLUMNS = {
 }
 
 
-def initialize_database(db: sqlite3.Connection, path: Path) -> None:
+def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bool = True) -> None:
     """
     Upgrade a recognized database before the service starts.
 
     :param db: Connection with foreign keys enabled and no active transaction.
     :param path: Database path used for a pre-upgrade SQLite backup.
+    :param create_backup: Create a backup before upgrading an existing database.
     """
     version = db.execute("PRAGMA user_version").fetchone()[0]
     empty = _validate_schema(db, version)
     if not empty and version < DB_SCHEMA_VERSION:
-        backup_path = path.with_name(f"{path.name}.pre-v{version}-{time.time_ns()}.bak")
-        os.close(os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-        try:
-            with closing(sqlite3.connect(backup_path)) as backup:
-                db.backup(backup)
-        except sqlite3.Error:
-            backup_path.unlink()
-            raise
-        LOGGER.warning("Backing up fingerprint database before upgrade: %s", backup_path)
+        if create_backup:
+            backup_path = path.with_name(f"{path.name}.pre-v{version}-{time.time_ns()}.bak")
+            os.close(os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            try:
+                with closing(sqlite3.connect(backup_path)) as backup:
+                    db.backup(backup)
+            except sqlite3.Error:
+                backup_path.unlink()
+                raise
+            LOGGER.warning("Backing up fingerprint database before upgrade: %s", backup_path)
+        else:
+            LOGGER.warning("Upgrading fingerprint database without a backup: %s", path)
         LOGGER.info("Upgrading fingerprint DB schema from %s to %s", version, DB_SCHEMA_VERSION)
 
     db.execute("PRAGMA journal_mode=WAL")
@@ -101,6 +106,7 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
             for statement in SCHEMA.split(";"):
                 if statement.strip():
                     db.execute(statement)
+            install_projection(db)
             db.execute(f"PRAGMA user_version={DB_SCHEMA_VERSION}")
         else:
             if version < 1:
@@ -133,6 +139,9 @@ def initialize_database(db: sqlite3.Connection, path: Path) -> None:
                     "CREATE INDEX IF NOT EXISTS landmarks_reference ON landmarks(reference_id)"
                 )
                 db.execute("PRAGMA user_version=8")
+            if version < 9:
+                install_projection(db)
+                db.execute("PRAGMA user_version=9")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
@@ -174,6 +183,7 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
             "musicbrainz_reviews",
             "admin_hourly_metrics",
             "recognition_metrics",
+            "submission_metadata",
             "application_key_schema",
             "application_keys",
         }
@@ -182,8 +192,31 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
         raise RuntimeError("Incomplete application key registry; refusing to migrate")
     if version >= 4:
         expected_tables.add("service_state")
+    if version >= 9:
+        expected_tables.add("submission_metadata")
     if tables != expected_tables:
         raise RuntimeError("Unrecognized fingerprint database tables; refusing to migrate")
+    if "submission_metadata" in tables and {
+        row[1] for row in db.execute("PRAGMA table_info(submission_metadata)")
+    } != {"id", "metadata", *FIELDS}:
+        raise RuntimeError("Unrecognized submission metadata projection")
+    if version >= 9:
+        triggers = {
+            row[0]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='submissions'"
+            )
+        }
+        if (
+            not {
+                "submission_metadata_insert",
+                "submission_metadata_update",
+                "submission_metadata_fields",
+                "submission_metadata_delete",
+            }
+            <= triggers
+        ):
+            raise RuntimeError("Incomplete submission metadata projection triggers")
     for table, legacy in LEGACY_COLUMNS.items():
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         expected = legacy.copy()

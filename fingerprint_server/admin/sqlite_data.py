@@ -79,8 +79,7 @@ class SQLiteAdminData(AdminFilters):
         else:
             source = (
                 "SELECT id,state,error,attempts,pending_rechecks,created_at,retry_at,"
-                "pending_due_at,reference_id,json_extract(document,'$.metadata') AS metadata "
-                "FROM submissions"
+                "pending_due_at,reference_id,metadata FROM submission_metadata"
             )
         return (
             f"WITH metadata_entries AS MATERIALIZED ({source}) SELECT *,"
@@ -154,9 +153,9 @@ class SQLiteAdminData(AdminFilters):
                 result = db.execute(
                     "WITH page AS MATERIALIZED ("
                     "SELECT id,created_at,state,error,attempts,pending_rechecks,retry_at,"
-                    "pending_due_at,reference_id,json_extract(document,'$.metadata') AS metadata "
-                    "FROM submissions WHERE id IN "
-                    f"(SELECT id FROM submissions ORDER BY {order} LIMIT ? OFFSET ?)) "
+                    "pending_due_at,reference_id,metadata "
+                    "FROM submission_metadata WHERE id IN "
+                    f"(SELECT id FROM submission_metadata ORDER BY {order} LIMIT ? OFFSET ?)) "
                     f"SELECT id,created_at,metadata,{columns} FROM page ORDER BY {order}",
                     (limit, skip),
                 ).fetchall()

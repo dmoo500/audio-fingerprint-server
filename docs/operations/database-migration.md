@@ -3,8 +3,10 @@
 [Home](../../README.md) · [Documentation](../README.md) · [Deployment](deployment.md)
 
 Only the fingerprint service database is moved. Music Assistant's own library
-database is unrelated and remains unchanged. SQLite schema 8 and PostgreSQL
+database is unrelated and remains unchanged. SQLite schema 9 and PostgreSQL
 formats 1 and 2 store the same collection using different physical layouts.
+The SQLite submission metadata projection is rebuilt from the stored documents
+when exporting from PostgreSQL; it is not an independent source of truth.
 
 ## PostgreSQL compact layout and rollback
 
@@ -135,7 +137,7 @@ database directory and configure its worker health URL as described in the
 
 Metadata is compared field by field. Every landmark is checked against the
 source-stream SHA-256 digest and row count. The exporter then builds SQLite's
-secondary indexes, checks integrity and foreign keys, sets schema 8 and analyzes
+secondary indexes, checks integrity and foreign keys, sets schema 9 and analyzes
 the result. It does **not** run worker recovery or rewrite processing states;
 ordinary SQLite startup performs its existing recovery afterward.
 

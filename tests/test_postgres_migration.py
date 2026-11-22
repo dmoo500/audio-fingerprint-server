@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from test_metadata_gate import document
 
+from fingerprint_server.database.postgres_schema import SQLITE_SCHEMA_VERSION
 from fingerprint_server.database.sqlite import Store
 
 
@@ -128,7 +129,7 @@ def test_command_line(source: Path, postgres: object) -> None:
 def test_refuses_wrong_schema(source: Path, migration: dict) -> None:
     with sqlite3.connect(source) as db:
         db.execute("PRAGMA user_version=7")
-        with pytest.raises(ValueError, match="schema 8"):
+        with pytest.raises(ValueError, match=f"schema {SQLITE_SCHEMA_VERSION}"):
             migration["validate_source"](db)
 
 

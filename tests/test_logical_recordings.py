@@ -9,6 +9,7 @@ from uuid import UUID
 
 from audio_fingerprint import SAMPLE_RATE
 
+from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
 from fingerprint_server.database.sqlite import Store
 
 RECORDING_ID = "e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"
@@ -253,7 +254,7 @@ def test_schema_six_upgrade_groups_only_currently_verified_mbid_without_data_los
 
     store.initialize()
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
         assert [
             tuple(row)
             for row in db.execute(

@@ -284,6 +284,14 @@ def test_schema_four_migration_preserves_all_rows_and_grace(
     pending(store)
     with store.connect() as db:
         db.execute("UPDATE submissions SET document='not-json',created_at=1")
+        for trigger in (
+            "submission_metadata_insert",
+            "submission_metadata_update",
+            "submission_metadata_fields",
+            "submission_metadata_delete",
+        ):
+            db.execute(f"DROP TRIGGER {trigger}")
+        db.execute("DROP TABLE submission_metadata")
         db.execute("DROP INDEX references_recording")
         db.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         db.execute("DROP INDEX submissions_fifo")

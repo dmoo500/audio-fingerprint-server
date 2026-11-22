@@ -710,3 +710,13 @@ def test_postgres_search_normalization_and_numeric_column_sort(postgres):
         ]
     assert data.read("submissions", {"artists": {"contains": "ACDC"}}, count=True) == 0
     assert data.read("submissions", "'; DROP TABLE submissions;--", count=True) == 0
+
+
+def test_recognition_page_is_served_on_direct_navigation(client, monkeypatch, tmp_path):
+    (tmp_path / "index.html").write_text("<html>admin</html>")
+    monkeypatch.setattr(
+        importlib.import_module("fingerprint_server.admin.app"), "FRONTEND", tmp_path
+    )
+    response = client.get("/admin/recognition")
+    assert response.status_code == 200
+    assert response.text == "<html>admin</html>"

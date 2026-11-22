@@ -26,6 +26,7 @@ from fingerprint_server.database.postgres_schema import (
     SQLITE_SCHEMA_VERSION,
     TABLES,
 )
+from fingerprint_server.database.sqlite_metadata import install_projection
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,6 +76,8 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
     if versions not in (
         [(FORMAT_VERSION, SQLITE_SCHEMA_VERSION)],
         [(POSTINGS_VERSION, SQLITE_SCHEMA_VERSION)],
+        [(FORMAT_VERSION, 8)],
+        [(POSTINGS_VERSION, 8)],
     ):
         raise ValueError(f"Unsupported PostgreSQL format/provenance: {versions}")
     expected = {name: set(spec["columns"]) for name, spec in TABLES.items()}
@@ -227,6 +230,7 @@ def export_sqlite(db: psycopg.Connection, schema: str, destination: Path) -> dic
                 for name in TABLES:
                     counts[name] = copy_metadata(db, target, name)
                     LOGGER.info("Verified %s: %s rows", name, counts[name])
+                install_projection(target)
                 for name in extensions:
                     target.execute(EXTENSION_TABLES[name]["definition"])
                     counts[name] = copy_metadata(db, target, name)

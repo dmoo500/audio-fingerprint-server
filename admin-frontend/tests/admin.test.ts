@@ -87,21 +87,108 @@ it("shows recognition periods and handles unavailable statistics", async () => {
       available: true,
       bucket_minutes: 60,
       buckets: [
-        { bucket: 30000000, attempts: 5, matched: 2, no_match: 1, ambiguous: 1, failed: 1 },
+        {
+          bucket: 30000000,
+          attempts: 5,
+          matched: 2,
+          no_match: 1,
+          ambiguous: 1,
+          failed: 1,
+        },
       ],
     }) as Response,
   );
-  fetch.mockResolvedValueOnce(response({ available: false, buckets: [] }) as Response);
-  const wrapper = mount(RecognitionStatistics);
+  fetch.mockResolvedValueOnce(
+    response({ available: false, buckets: [] }) as Response,
+  );
+  const wrapper = mount(RecognitionStatistics, { props: { detail: true } });
   await flushPromises();
-  expect(fetch.mock.calls[0]?.[0]).toBe("/admin/api/recognition-statistics?period=day");
+  expect(fetch.mock.calls[0]?.[0]).toBe(
+    "/admin/api/recognition-statistics?period=day",
+  );
   expect(wrapper.text()).toContain("5");
   expect(wrapper.text()).toContain("Times are UTC");
   expect(wrapper.findAll("tbody tr")).toHaveLength(1);
   await wrapper.get("#recognition-period").setValue("all");
   await flushPromises();
-  expect(fetch.mock.calls[1]?.[0]).toBe("/admin/api/recognition-statistics?period=all");
+  expect(fetch.mock.calls[1]?.[0]).toBe(
+    "/admin/api/recognition-statistics?period=all",
+  );
   expect(wrapper.text()).toContain("not installed yet");
+  wrapper.unmount();
+});
+
+it("shows recognition totals and a time-scaled chart on the overview", async () => {
+  vi.mocked(globalThis.fetch).mockResolvedValue(
+    response({
+      available: true,
+      bucket_minutes: 60,
+      buckets: [
+        {
+          bucket: 30000000,
+          attempts: 5,
+          matched: 2,
+          no_match: 1,
+          ambiguous: 1,
+          failed: 1,
+        },
+        {
+          bucket: 30000120,
+          attempts: 3,
+          matched: 3,
+          no_match: 0,
+          ambiguous: 0,
+          failed: 0,
+        },
+      ],
+    }) as Response,
+  );
+  const wrapper = mount(RecognitionStatistics);
+  await flushPromises();
+  expect(wrapper.text()).toContain("8");
+  expect(wrapper.findAll("tbody tr")).toHaveLength(0);
+  const bars = wrapper.findAll("svg rect");
+  expect(bars).toHaveLength(2);
+  expect(Number(bars[1]!.attributes("x"))).toBeGreaterThan(
+    Number(bars[0]!.attributes("width")),
+  );
+  await wrapper.get('a[href="/admin/recognition"]').trigger("click");
+  expect(wrapper.emitted("navigate")).toEqual([["/admin/recognition"]]);
+  wrapper.unmount();
+});
+
+it("navigates to recognition details and loads the interval table", async () => {
+  vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
+    const path = String(input);
+    if (path.endsWith("/session"))
+      return response({ authenticated: true }) as Response;
+    if (path.endsWith("/overview")) return response(snapshot) as Response;
+    if (path.endsWith("/history")) return response({ charts: [] }) as Response;
+    return response({
+      available: true,
+      bucket_minutes: 60,
+      buckets: [
+        {
+          bucket: 30000000,
+          attempts: 5,
+          matched: 2,
+          no_match: 1,
+          ambiguous: 1,
+          failed: 1,
+        },
+      ],
+    }) as Response;
+  });
+  const wrapper = mount(App);
+  await flushPromises();
+  await wrapper.get('nav a[href="/admin/recognition"]').trigger("click");
+  await flushPromises();
+  expect(location.pathname).toBe("/admin/recognition");
+  expect(wrapper.get("h1").text()).toBe("Recognition activity");
+  expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+  expect(
+    wrapper.get('nav a[href="/admin/recognition"]').attributes("aria-current"),
+  ).toBe("page");
   wrapper.unmount();
 });
 
@@ -1195,7 +1282,7 @@ describe("navigation", () => {
       "Fingerprint administration",
     );
     const nav = wrapper.get('.sidebar nav[aria-label="Administration"]');
-    expect(nav.findAll("a")).toHaveLength(7);
+    expect(nav.findAll("a")).toHaveLength(8);
     for (const link of nav.findAll("a")) {
       expect(link.get("svg").attributes("aria-hidden")).toBe("true");
       expect(link.get("span").text()).not.toBe("");

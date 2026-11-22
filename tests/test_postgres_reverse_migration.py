@@ -286,6 +286,19 @@ def test_existing_destination_and_unknown_format_are_rejected(
     assert not (tmp_path / "unsupported.db").exists()
 
 
+def test_export_accepts_previous_sqlite_provenance(
+    source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path
+) -> None:
+    imported(source, postgres, migration)
+    with postgres.transaction():
+        postgres.execute("UPDATE reverse_test.migration_info SET sqlite_schema_version=8")
+    output = tmp_path / "previous-provenance.db"
+    reverse["export_sqlite"](postgres, "reverse_test", output)
+    with sqlite3.connect(output) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+        assert db.execute("SELECT count(*) FROM submission_metadata").fetchone()[0] == 2
+
+
 def test_reverse_cli(source: Path, postgres, migration: dict, tmp_path: Path) -> None:
     imported(source, postgres, migration)
     script = Path(__file__).resolve().parents[1] / "scripts" / "migrate_postgres_to_sqlite.py"
