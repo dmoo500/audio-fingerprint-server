@@ -257,7 +257,10 @@ onMounted(() => {
     <p class="muted">
       Manual MusicBrainz review is a subset of pending metadata.
     </p>
-    <RecognitionStatistics @navigate="$emit('navigate', $event)" />
+    <RecognitionStatistics
+      :revision="snapshot?.revisions.recognition"
+      @navigate="$emit('navigate', $event)"
+    />
     <div class="section-heading">
       <div>
         <h2>30-day history</h2>

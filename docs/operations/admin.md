@@ -46,8 +46,11 @@ cannot be reconstructed.
 The available windows are the last hour, 24 hours, 30 days, 365 days and all time.
 The overview shows totals and an attempts chart for the selected window; open
 **Recognition activity** in the menu for the totals and interval table. Both
-views load on opening and update when changing the window or using **Refresh**;
-they are not part of the automatic live snapshot.
+views update when recognition counters change, at most once every five seconds,
+and can also be refreshed manually. Brief interruptions are reconciled
+periodically; the live indicator reports browser connection and sampling
+failures. Notification transport failures are logged while periodic
+reconciliation continues.
 Windows are rounded to UTC minutes, and larger display intervals may be partial at
 their edges. Failed requests include validation, authentication and service errors.
 Attempts without an outcome may still be running or may have been interrupted by

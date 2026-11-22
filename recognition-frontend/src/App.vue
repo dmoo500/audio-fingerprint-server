@@ -204,9 +204,10 @@ const {
         Recognition guide on GitHub
       </a>
       <p>
-        Experimental recognition. Results depend on the recording and indexed
-        song sections. Collection counts group verified recording IDs;
-        unverified references may count separately.
+        Experimental recognition. Our collection stores acoustic fingerprints
+        and song information, not audio recordings. Results depend on the
+        recording and indexed song sections. A recording may be counted more
+        than once.
       </p>
       <span
         >Independent project · Not affiliated with Music Assistant or the Open

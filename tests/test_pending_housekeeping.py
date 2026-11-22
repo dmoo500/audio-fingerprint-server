@@ -70,7 +70,7 @@ async def test_due_missing_identifier_deletes_unused_reference_and_can_rebuild(
         task = asyncio.create_task(Worker(store, config, client).run())
         try:
             async with asyncio.timeout(5):
-                while store.get_submission("legacy") is not None:
+                while "reference deleted with landmarks; landmarks_deleted=1" not in caplog.text:
                     await asyncio.sleep(0.01)
         finally:
             task.cancel()

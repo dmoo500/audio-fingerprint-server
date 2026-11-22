@@ -79,7 +79,11 @@ const pendingMetadataOnly = computed(
 );
 const wantsLive = computed(
   () =>
-    authenticated.value && (route.value === "/admin/" || !!tableRoute.value),
+    authenticated.value &&
+    (route.value === "/admin/" ||
+      route.value === "/admin" ||
+      route.value === "/admin/recognition" ||
+      !!tableRoute.value),
 );
 const detailId = computed(() => {
   const encoded = tableRoute.value?.[3];
@@ -415,6 +419,7 @@ onUnmounted(() => {
         <Reviews v-else-if="route === '/admin/musicbrainz-reviews'" />
         <RecognitionStatistics
           v-else-if="route === '/admin/recognition'"
+          :revision="snapshot?.revisions.recognition"
           detail
         />
         <Credentials

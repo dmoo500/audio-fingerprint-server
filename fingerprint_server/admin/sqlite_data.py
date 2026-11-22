@@ -18,6 +18,7 @@ from fingerprint_server.admin.artwork import artwork_statistics
 from fingerprint_server.admin.data import STATES, TEXT_FIELDS, AdminFilters, Dataset, Filter
 from fingerprint_server.admin.errors import ActionFailed
 from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
+from fingerprint_server.database.notifications import notify_sqlite, track_changes
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.settings import Settings
 
@@ -45,9 +46,13 @@ class AdminStore(Store):
                 char for char in text if char.isalnum()
             ),
         )
+        changes = track_changes(db)
         try:
             with db:
                 yield db
+                written = db.in_transaction and bool(db.total_changes)
+            if written:
+                notify_sqlite(self.path, changes)
         finally:
             db.close()
 

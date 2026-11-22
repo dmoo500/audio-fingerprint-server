@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { api, errorMessage } from "../api";
 
-const props = withDefaults(defineProps<{ detail?: boolean }>(), {
-  detail: false,
-});
+const props = withDefaults(
+  defineProps<{ detail?: boolean; revision?: string }>(),
+  {
+    detail: false,
+  },
+);
 defineEmits<{ navigate: [path: string] }>();
 
 type Bucket = {
@@ -25,6 +28,8 @@ const period = ref("day");
 const statistics = ref<Statistics | null>(null);
 const loading = ref(false);
 const error = ref("");
+let queued = false;
+let mounted = true;
 const totals = computed(() =>
   (statistics.value?.buckets ?? []).reduce(
     (result, bucket) => ({
@@ -59,9 +64,12 @@ const chart = computed(() => {
   };
 });
 async function load() {
+  if (loading.value) {
+    queued = true;
+    return;
+  }
   loading.value = true;
   error.value = "";
-  statistics.value = null;
   try {
     statistics.value = await api<Statistics>(
       `/recognition-statistics?period=${encodeURIComponent(period.value)}`,
@@ -70,12 +78,25 @@ async function load() {
     error.value = errorMessage(e);
   } finally {
     loading.value = false;
+    if (queued && mounted) {
+      queued = false;
+      void load();
+    }
   }
 }
 function utc(minute: number) {
   return new Date(minute * 60000).toISOString().replace("T", " ").slice(0, 16);
 }
 onMounted(load);
+onUnmounted(() => {
+  mounted = false;
+});
+watch(
+  () => props.revision,
+  (value, previous) => {
+    if (value !== undefined && value !== previous) void load();
+  },
+);
 </script>
 
 <template>
@@ -102,7 +123,9 @@ onMounted(load);
       <option value="all">All time</option>
     </select>
     <button class="secondary" :disabled="loading" @click="load">Refresh</button>
-    <p v-if="loading" class="muted">Loading recognition statistics…</p>
+    <p v-if="loading && !statistics" class="muted">
+      Loading recognition statistics…
+    </p>
     <p v-else-if="error" class="alert error" role="alert">{{ error }}</p>
     <p v-else-if="statistics && !statistics.available" class="muted">
       Recognition statistics are not installed yet. Restart the fingerprint

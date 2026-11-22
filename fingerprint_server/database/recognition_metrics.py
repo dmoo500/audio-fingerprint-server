@@ -38,7 +38,7 @@ def record_attempt(store: Storage, minute: int) -> None:
     if isinstance(store, Store):
         context = store.connect()
     else:
-        context = store.connect(write=True)
+        context = store.connect(write=True, notification="recognition")
     with context as db:
         marker = "?" if isinstance(db, sqlite3.Connection) else "%s"
         db.execute(
@@ -57,7 +57,7 @@ def record_outcome(store: Storage, minute: int, outcome: Outcome) -> None:
     if isinstance(store, Store):
         context = store.connect()
     else:
-        context = store.connect(write=True)
+        context = store.connect(write=True, notification="recognition")
     with context as db:
         marker = "?" if isinstance(db, sqlite3.Connection) else "%s"
         db.execute(

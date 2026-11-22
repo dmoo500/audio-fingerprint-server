@@ -157,6 +157,36 @@ it("shows recognition totals and a time-scaled chart on the overview", async () 
   wrapper.unmount();
 });
 
+it("refreshes recognition statistics when the live revision changes", async () => {
+  const fetch = vi.mocked(globalThis.fetch);
+  fetch.mockResolvedValue(
+    response({
+      available: true,
+      bucket_minutes: 60,
+      buckets: [
+        {
+          bucket: 30000000,
+          attempts: 5,
+          matched: 2,
+          no_match: 1,
+          ambiguous: 1,
+          failed: 1,
+        },
+      ],
+    }) as Response,
+  );
+  const wrapper = mount(RecognitionStatistics, {
+    props: { revision: "1", detail: true },
+  });
+  await flushPromises();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  await wrapper.setProps({ revision: "2" });
+  await flushPromises();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+  wrapper.unmount();
+});
+
 it("navigates to recognition details and loads the interval table", async () => {
   vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
     const path = String(input);

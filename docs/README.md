@@ -27,6 +27,7 @@ All shell commands assume the repository root, not this directory. Links are rel
 
 ## Evaluate and develop
 
+- [Ideas for future work](roadmap.md)
 - [Benchmark overview](benchmarks.md) and [historical SQLite growth](benchmarks/sqlite-storage.md)
 - [PostgreSQL storage and query layouts](benchmarks/postgresql-layout.md)
 - [Full-collection migration, runtime and restore checks](benchmarks/postgresql-runtime.md)

@@ -247,12 +247,16 @@ def create_admin(configuration: AdminSettings | None = None) -> web.Application:
             ) as gateway:
                 application[GATEWAY_KEY] = gateway
                 task = asyncio.create_task(live.run())
+                listener = asyncio.create_task(live.listen())
                 try:
                     yield
                 finally:
                     task.cancel()
+                    listener.cancel()
                     with suppress(asyncio.CancelledError):
                         await task
+                    with suppress(asyncio.CancelledError):
+                        await listener
         finally:
             if isinstance(data, SQLiteAdminData):
                 await run_sync(data.close)
@@ -305,6 +309,7 @@ async def events(request: web.Request) -> web.StreamResponse:
     response.headers.update(SECURITY_HEADERS)
     await response.prepare(request)
     live.subscribers += 1
+    live.invalidate("all", reconcile=True)
     try:
         while True:
             if not await auth.is_authenticated(request):

@@ -82,6 +82,64 @@ def test_postgres_hourly_sampling(store) -> None:
     assert_hourly_sampling(store)
 
 
+async def test_committed_notifications_include_recognition_and_exclude_rollbacks(
+    configuration, postgres
+) -> None:
+    import psycopg
+    from psycopg import sql
+
+    from fingerprint_server.admin.data import AdminData
+    from fingerprint_server.admin.live import AdminLive
+    from fingerprint_server.database.notifications import postgres_channel
+    from fingerprint_server.database.postgres import PostgresStore
+    from fingerprint_server.database.recognition_metrics import record_attempt
+
+    store = PostgresStore(configuration)
+    await asyncio.to_thread(store.initialize)
+    listener = await psycopg.AsyncConnection.connect("", autocommit=True)
+    async with listener:
+        await listener.execute(
+            sql.SQL("LISTEN {}").format(
+                sql.Identifier(postgres_channel(configuration.postgres_schema))
+            )
+        )
+        await asyncio.to_thread(record_attempt, store, 100)
+        messages = listener.notifies(timeout=2, stop_after=1)
+        message = await anext(messages)
+        await messages.aclose()
+        assert message.payload == "recognition"
+
+        def rollback() -> None:
+            with store.connect(write=True) as db:
+                db.execute("UPDATE recognition_metrics SET attempts=4")
+                raise ValueError("rollback")
+
+        with pytest.raises(ValueError):
+            await asyncio.to_thread(rollback)
+        messages = listener.notifies(timeout=0.2, stop_after=1)
+        assert [message async for message in messages] == []
+        with store.connect(write=True) as db:
+            db.execute("UPDATE recognition_metrics SET attempts=5")
+        messages = listener.notifies(timeout=2, stop_after=1)
+        message = await anext(messages)
+        await messages.aclose()
+        assert message.payload == "all"
+    live = AdminLive(AdminData(configuration))
+    listener_task = asyncio.create_task(live._listen_postgres())
+    try:
+        await asyncio.wait_for(live.pending.wait(), timeout=3)
+        live.pending.clear()
+        live._recognition_pending = live._overview_pending = False
+        await asyncio.to_thread(record_attempt, store, 101)
+        await asyncio.wait_for(live.pending.wait(), timeout=3)
+        assert live._recognition_pending
+        assert not live._overview_pending
+    finally:
+        listener_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await listener_task
+
+
 def test_shared_hash_publication_and_reference_removal(store) -> None:
     payload = document()
     pairs = [("0" * 20, 0), ("0" * 20, 1024), ("f" * 20, 30000)]

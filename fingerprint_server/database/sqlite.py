@@ -32,6 +32,7 @@ from fingerprint_server.database.migrations import (
     MUSICBRAINZ_VERIFICATION_VERSION,
     initialize_database,
 )
+from fingerprint_server.database.notifications import notify_sqlite, track_changes
 from fingerprint_server.database.review_schema import REVIEW_TABLE
 from fingerprint_server.database.sqlite_queue import StoreQueueMixin
 from fingerprint_server.schemas import (
@@ -89,9 +90,13 @@ class Store(StoreQueueMixin):
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        changes = track_changes(connection)
         try:
             with connection:
                 yield connection
+                written = connection.in_transaction and bool(connection.total_changes)
+            if written:
+                notify_sqlite(self.path, changes)
         finally:
             connection.close()
 

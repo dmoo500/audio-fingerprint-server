@@ -3,13 +3,14 @@
 import asyncio
 import importlib
 import json
-from contextlib import asynccontextmanager
+import time
 from unittest.mock import Mock
 
 import pytest
 from aiohttp_client import AsyncClient
 from test_admin import ADMIN_KEY, AdminData, configuration, create_admin
 
+from fingerprint_server.admin.live import AdminLive
 from fingerprint_server.admin.state import AUTH_KEY, LIVE_KEY
 
 psycopg = pytest.importorskip("psycopg")
@@ -42,6 +43,11 @@ def samples(monkeypatch):
     read_revisions = Mock(side_effect=lambda: counters)
     monkeypatch.setattr(AdminData, "overview", lambda self: read_overview())
     monkeypatch.setattr(AdminData, "revisions", lambda self: read_revisions())
+
+    async def idle(self):
+        await asyncio.Future()
+
+    monkeypatch.setattr(AdminLive, "listen", idle)
     return overview, counters, read_overview, read_revisions
 
 
@@ -67,7 +73,11 @@ async def _login(client: AsyncClient) -> None:
     assert response.status_code == 200
 
 
-async def test_shared_streams_receive_latest_snapshot_and_end_on_logout(samples):
+async def test_shared_streams_receive_latest_snapshot_and_end_on_logout(samples, monkeypatch):
+    async def idle(self):
+        await asyncio.Future()
+
+    monkeypatch.setattr(AdminLive, "run", idle)
     overview, counters, read_overview, read_revisions = samples
     async with AsyncClient(create_admin(configuration())) as client:
         await _login(client)
@@ -110,7 +120,11 @@ async def test_shared_streams_receive_latest_snapshot_and_end_on_logout(samples)
         assert live.subscribers == 0
 
 
-async def test_sampling_failure_is_visible_and_recovers(samples, caplog):
+async def test_sampling_failure_is_visible_and_recovers(samples, caplog, monkeypatch):
+    async def idle(self):
+        await asyncio.Future()
+
+    monkeypatch.setattr(AdminLive, "run", idle)
     _, _, read_overview, _ = samples
     async with AsyncClient(create_admin(configuration())) as client:
         await _login(client)
@@ -139,22 +153,77 @@ async def test_sampler_is_idle_without_browsers_and_stops_cleanly(samples, monke
     _, _, read_overview, _ = samples
     from fingerprint_server.admin import live as module
 
-    original_sleep = asyncio.sleep
-    ticks = asyncio.Queue()
-
-    async def tick(_delay):
-        await ticks.get()
-
-    monkeypatch.setattr(module.asyncio, "sleep", tick)
-    app = create_admin(configuration())
-    async with asynccontextmanager(app.cleanup_ctx[0])(app):
-        live = app[LIVE_KEY]
-        await ticks.put(None)
-        await original_sleep(0)
+    monkeypatch.setattr(module, "UPDATE_INTERVAL", 0.1)
+    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 10)
+    live = AdminLive(AdminData(configuration()))
+    await live.sample()
+    task = asyncio.create_task(live.run())
+    try:
+        live.invalidate("all")
+        await asyncio.sleep(0.02)
         assert read_overview.call_count == 1
         live.subscribers = 2
-        await ticks.put(None)
+        live.invalidate("all")
         async with asyncio.timeout(2):
             while read_overview.call_count < 2:
-                await original_sleep(0.01)
+                await asyncio.sleep(0.01)
+        live.invalidate("recognition")
+        live.invalidate("recognition")
+        await asyncio.sleep(0.03)
+        assert live.recognition_revision == 1
+        async with asyncio.timeout(2):
+            while live.recognition_revision < 2:
+                await asyncio.sleep(0.01)
         assert read_overview.call_count == 2
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_real_update_interval_coalesces_burst(samples):
+    live = AdminLive(AdminData(configuration()))
+    await live.sample()
+    live.subscribers = 1
+    task = asyncio.create_task(live.run())
+    try:
+        live.invalidate("recognition")
+        async with asyncio.timeout(2):
+            while live.recognition_revision < 1:
+                await asyncio.sleep(0.01)
+        first = time.monotonic()
+        for _ in range(10):
+            live.invalidate("recognition")
+        async with asyncio.timeout(7):
+            while live.recognition_revision < 2:
+                await asyncio.sleep(0.01)
+        elapsed = time.monotonic() - first
+        assert elapsed >= 4.9
+        assert elapsed < 6.5
+        assert live.recognition_revision == 2
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_listener_retries_after_clean_disconnect(monkeypatch, caplog):
+    from fingerprint_server.admin import live as module
+
+    calls = 0
+
+    async def disconnected(self):
+        nonlocal calls
+        calls += 1
+
+    async def pause(delay):
+        assert delay == 10
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(AdminLive, "_listen_postgres", disconnected)
+    monkeypatch.setattr(module.asyncio, "sleep", pause)
+    live = AdminLive(AdminData(configuration()))
+    with pytest.raises(asyncio.CancelledError):
+        await live.listen()
+    assert calls == 1
+    assert "listener stopped" in caplog.text

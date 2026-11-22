@@ -31,6 +31,7 @@ from fingerprint_server.database.logic import (
 )
 from fingerprint_server.database.metrics import initialize_metrics
 from fingerprint_server.database.migrations import MUSICBRAINZ_VERIFICATION_VERSION
+from fingerprint_server.database.notifications import postgres_channel
 from fingerprint_server.database.postgres_queue import PostgresStoreQueueMixin
 from fingerprint_server.database.postgres_schema import (
     FORMAT_VERSION,
@@ -71,7 +72,7 @@ class PostgresStore(PostgresStoreQueueMixin):
         self._format_version = FORMAT_VERSION
 
     @contextmanager
-    def connect(self, *, write: bool = False) -> Iterator[Connection]:
+    def connect(self, *, write: bool = False, notification: str = "all") -> Iterator[Connection]:
         """Open a transaction, serializing mutations before reading admission state."""
         with self._open() as db:
             if not write:
@@ -93,6 +94,8 @@ class PostgresStore(PostgresStoreQueueMixin):
                     if row is None or row["value"] != self._worker_token:
                         raise RuntimeError("PostgreSQL ingestion ownership was lost")
             yield db
+            if write:
+                db.execute("SELECT pg_notify(%s,%s)", (postgres_channel(self.schema), notification))
 
     def initialize(self) -> None:
         """Create an empty schema or validate an imported, versioned schema."""
