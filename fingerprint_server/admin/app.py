@@ -321,6 +321,8 @@ async def events(request: web.Request) -> web.StreamResponse:
             await response.write(f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode())
             with suppress(TimeoutError):
                 await asyncio.wait_for(changed.wait(), timeout=10)
+    except ConnectionResetError:
+        LOGGER.debug("Administrator event stream disconnected")
     finally:
         live.subscribers -= 1
     return response

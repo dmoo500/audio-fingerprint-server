@@ -4,7 +4,7 @@ import asyncio
 import importlib
 import json
 import time
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp_client import AsyncClient
@@ -149,6 +149,22 @@ async def test_sampling_failure_is_visible_and_recovers(samples, caplog, monkeyp
         assert live.subscribers == 0
 
 
+@pytest.mark.parametrize("authenticated", [True, False])
+async def test_disconnected_stream_releases_subscriber(monkeypatch, authenticated):
+    module = importlib.import_module("fingerprint_server.admin.app")
+    live = AdminLive(AdminData(configuration()))
+    auth = Mock(is_authenticated=AsyncMock(return_value=authenticated))
+    request = Mock(app={LIVE_KEY: live, AUTH_KEY: auth})
+    response = Mock(
+        headers={},
+        prepare=AsyncMock(),
+        write=AsyncMock(side_effect=ConnectionResetError("client disconnected")),
+    )
+    monkeypatch.setattr(module.web, "StreamResponse", lambda **kwargs: response)
+    assert await module.events(request) is response
+    assert live.subscribers == 0
+
+
 async def test_sampler_is_idle_without_browsers_and_stops_cleanly(samples, monkeypatch):
     _, _, read_overview, _ = samples
     from fingerprint_server.admin import live as module
@@ -165,8 +181,9 @@ async def test_sampler_is_idle_without_browsers_and_stops_cleanly(samples, monke
         live.subscribers = 2
         live.invalidate("all")
         async with asyncio.timeout(2):
-            while read_overview.call_count < 2:
+            while live.recognition_revision < 1:
                 await asyncio.sleep(0.01)
+        assert read_overview.call_count == 2
         live.invalidate("recognition")
         live.invalidate("recognition")
         await asyncio.sleep(0.03)
