@@ -72,6 +72,11 @@ def parse_artwork(value: dict[str, Any], *, offset: int = 0) -> dict[str, Any]:
                     if isinstance(item["release-group"].get("title"), str)
                     else {}
                 ),
+                **(
+                    {"group_type": item["release-group"]["primary-type"]}
+                    if isinstance(item["release-group"].get("primary-type"), str)
+                    else {}
+                ),
                 "status": item.get("status"),
                 "date": item.get("date") if isinstance(item.get("date"), str) else None,
                 "front": isinstance(item.get("cover-art-archive"), dict)
@@ -144,6 +149,7 @@ def parse_recording(value: Any) -> dict[str, Any]:
         raise ValueError("Invalid releases")
     albums = set()
     review_albums = set()
+    review_releases: set[tuple[str, str]] = set()
     album_types_complete = True
     release_names = set()
     release_ids: list[tuple[str | None, str | None]] = []
@@ -157,18 +163,32 @@ def parse_recording(value: Any) -> dict[str, Any]:
         kind = _album_kind(release)
         if kind is None:
             album_types_complete = False
+        group = release.get("release-group")
+        if kind is None:
+            category = "unknown"
+        elif kind:
+            category = "album"
+        elif isinstance(group, dict) and group.get("primary-type") == "Single":
+            category = "single"
+        elif isinstance(group, dict) and group.get("primary-type") == "Album":
+            category = "compilation"
+        else:
+            category = "other"
         if album.strip():
             release_names.add(album)
+            if category != "album":
+                review_releases.add((album, category))
             if kind is True:
                 albums.add(album)
                 review_albums.add(album)
                 if release_date := _official_album_date(release):
                     dated_albums.append((release_date, album))
-        group = release.get("release-group")
         if isinstance(group, dict) and isinstance(group.get("title"), str):
             release_names.add(group["title"][:500])
             if kind is True and group["title"].strip():
                 review_albums.add(group["title"][:500])
+            elif group["title"].strip():
+                review_releases.add((group["title"][:500], category))
         release_id = release.get("id")
         group_id = group.get("id") if isinstance(group, dict) else None
         release_ids.append(
@@ -181,6 +201,9 @@ def parse_recording(value: Any) -> dict[str, Any]:
     release_offset = value.get("release-offset", 0)
     result["albums"] = sorted(release_names)
     result["review_albums"] = sorted(review_albums)
+    result["review_releases"] = [
+        {"title": title, "type": category} for title, category in sorted(review_releases)
+    ]
     result["release_ids"] = release_ids
     if dated_albums:
         release_date, title = min(dated_albums)

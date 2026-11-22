@@ -407,6 +407,9 @@ describe("overview", () => {
       }),
     );
     expect(wrapper.text()).toContain("3 / 10");
+    expect(wrapper.text()).toContain("Completed without a cover");
+    expect(wrapper.text()).toContain("3 not yet looked up");
+    expect(wrapper.text()).toContain("1 expired results awaiting a new lookup");
     expect(wrapper.text()).toContain("Not counted as completed lookups");
     wrapper.unmount();
   });
@@ -1161,6 +1164,38 @@ describe("reviews and history", () => {
     await flushPromises();
     expect(wrapper.text()).not.toContain("Show album credits");
     expect(wrapper.find('input[type="radio"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("shows other and unclassified releases separately from album credits", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({
+        items: [
+          {
+            submission_id: "s1",
+            candidates: [
+              {
+                id: "mbid",
+                albums: ["Studio"],
+                other_releases: [
+                  { title: "Single title", type: "single" },
+                  { title: "Sampler", type: "compilation" },
+                  { title: "Unden!able", type: "unknown" },
+                ],
+              },
+            ],
+          },
+        ],
+        has_more: false,
+      }) as Response,
+    );
+    const wrapper = mount(Reviews);
+    await flushPromises();
+    expect(wrapper.text()).toContain("Show album credits");
+    expect(wrapper.text()).toContain("Show other releases");
+    expect(wrapper.text()).toContain("Single title — single");
+    expect(wrapper.text()).toContain("Sampler — compilation");
+    expect(wrapper.text()).toContain("Unden!able — type unknown");
     wrapper.unmount();
   });
 

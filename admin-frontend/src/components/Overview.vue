@@ -210,11 +210,10 @@ onMounted(() => {
           <small>Published references with recording ID and album</small>
         </div>
         <div class="card">
-          <span class="subheader">Without a resolved cover</span>
+          <span class="subheader">Completed without a cover</span>
           <strong>{{ artwork.missing.toLocaleString() }}</strong>
           <small
-            >Includes missing covers, ambiguous albums and bounded
-            searches</small
+            >Excludes unqueried, expired and pending results</small
           >
         </div>
         <div class="card">
@@ -227,10 +226,11 @@ onMounted(() => {
         </div>
       </div>
       <p class="muted">
-        {{ artwork.unqueried.toLocaleString() }} without a cached lookup;
-        {{ artwork.expired.toLocaleString() }} expired results. This bounded,
-        expiring cache is not a lifetime success rate or a count of unique
-        albums.
+        {{ artwork.unqueried.toLocaleString() }} not yet looked up;
+        {{ artwork.expired.toLocaleString() }} expired results awaiting a new
+        lookup. Completed results without a cover include missing artwork,
+        ambiguous albums and bounded searches. This bounded, expiring cache is
+        not a lifetime success rate or a count of unique albums.
       </p>
     </template>
     <p v-else class="muted">

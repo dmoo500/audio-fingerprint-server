@@ -19,7 +19,7 @@ from fingerprint_server.musicbrainz_errors import EnrichmentError, MusicBrainzUn
 from fingerprint_server.musicbrainz_parsing import parse_artwork, parse_recording
 from fingerprint_server.settings import Settings
 
-MUSICBRAINZ_CACHE_VERSION = 8
+MUSICBRAINZ_CACHE_VERSION = 9
 
 
 def _retry_after(value: str | None) -> float:
@@ -107,7 +107,7 @@ class MusicBrainzClient:
             if kind in ("search", "batch")
             else identifier
         )
-        cache_kind = "artwork-v3" if kind == "artwork" else kind
+        cache_kind = "artwork-v4" if kind == "artwork" else kind
         if kind == "artwork" and page_offset:
             cache_identifier = f"{identifier}:{page_offset}"
         key = f"musicbrainz:v{MUSICBRAINZ_CACHE_VERSION}:{endpoint}:{cache_kind}:{cache_identifier}"

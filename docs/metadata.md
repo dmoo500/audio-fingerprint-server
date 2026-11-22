@@ -80,7 +80,7 @@ does not trigger this fallback.
 
 Searches share the existing worker lock, 1.1-second pacing, endpoint-specific
 seven-day cache, bounded response parser and service-wide cooldowns. Cache
-parser version 8 includes release classification for album selection; older cached
+parser version 9 includes release classification for album selection and review hints; older cached
 values are not reused. Existing pending deadlines, verification versions and stored submissions
 are not migrated or automatically requeued. The normal pending recheck or
 explicit operator pass can retry them. No third-party metadata service is

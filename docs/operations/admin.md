@@ -78,7 +78,10 @@ The panel also shows missing results, pending/temporarily unavailable requests,
 expired results and references without a cached lookup. The bounded, expiring
 cache does not provide a lifetime success rate or measure whether a browser
 successfully displayed the image. Missing results include ambiguous albums and
-searches stopped at the safety limit, not only albums without artwork.
+searches stopped at the safety limit, not only albums without artwork. Eligible
+references are partitioned into ready, missing, pending, temporarily unavailable,
+expired and not-yet-looked-up results. Background lookups run when the worker is
+idle, and MusicBrainz outages or cooldowns can delay them.
 
 ### MusicBrainz reviews
 
@@ -90,11 +93,13 @@ Use the copy icon beside the submission title to copy its title and artist as
 manual copying instead.
 New reviews highlight the earliest dated official, non-compilation album among
 the releases MusicBrainz returned for each candidate. Expand **Show album
-credits** to see known non-compilation albums from the response; singles,
-compilations and releases with unknown types are excluded. The list may be
-incomplete. The highlight is only a hint: it does not select a recording or
-change the submitted album. Existing reviews keep their previously stored
-credits and highlights.
+credits** to see known non-compilation albums from the response. **Show other
+releases** lists singles, compilations and releases whose type is unknown,
+separately labelled as such. MusicBrainz may omit release types or return an
+incomplete list, so an unknown type does not imply the release is a single.
+The highlight is only a hint: it does not select a recording or change the
+submitted album. Existing reviews keep their previously stored credits and
+highlights; entries previously filtered out cannot be recovered from them.
 
 ![MusicBrainz review comparing a studio recording and an alternate mix, with album hints and one expanded list of album credits](images/admin-musicbrainz-review.png)
 

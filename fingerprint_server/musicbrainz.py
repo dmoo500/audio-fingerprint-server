@@ -427,6 +427,7 @@ class MusicBrainzService(MusicBrainzClient):
                             )
                         },
                         "albums": candidate["review_albums"],
+                        "other_releases": candidate["review_releases"],
                     }
                     for candidate in candidates.values()
                 ]

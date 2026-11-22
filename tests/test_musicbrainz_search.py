@@ -177,6 +177,7 @@ async def test_earliest_official_album_is_only_a_review_hint(tmp_path):
         release("Early bootleg", "1980", status="Bootleg"),
         release("Early single", "1981", primary_type="Single"),
         release("Early compilation", "1982", secondary_types=["Compilation"]),
+        {"title": "Unclassified release"},
         release("Invalid date", "1982-02-30"),
         release("Original album", "1985-06"),
     ]
@@ -202,8 +203,41 @@ async def test_earliest_official_album_is_only_a_review_hint(tmp_path):
     assert "Reissue" in candidates[MBID]["albums"]
     assert "Early single" not in candidates[MBID]["albums"]
     assert "Early compilation" not in candidates[MBID]["albums"]
+    assert candidates[MBID]["other_releases"] == [
+        {"title": "Early compilation", "type": "compilation"},
+        {"title": "Early single", "type": "single"},
+        {"title": "Unclassified release", "type": "unknown"},
+    ]
     assert candidates[OTHER]["earliest_album"] is None
     assert "album" not in metadata and "recording_mbid" not in metadata
+
+
+async def test_untyped_search_releases_remain_visible_in_reviews(tmp_path):
+    def reply(request):
+        assert "query" in request.url.params
+        return httpx.Response(
+            200,
+            json={
+                "count": 2,
+                "offset": 0,
+                "recordings": [
+                    candidate(releases=[{"title": "Unden!able"}]),
+                    candidate(OTHER, releases=[{"title": "Unden!able (Deluxe 2.0)"}]),
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        service = MusicBrainzService(online_store(tmp_path), online_settings(tmp_path), client)
+        with pytest.raises(RecordingReviewRequired) as review:
+            await service.verify({key: value for key, value in METADATA.items() if key != "isrc"})
+    assert [item["other_releases"] for item in review.value.candidates] == [
+        [{"title": "Unden!able", "type": "unknown"}],
+        [{"title": "Unden!able (Deluxe 2.0)", "type": "unknown"}],
+    ]
+    assert all(
+        not item["albums"] and not item["earliest_album"] for item in review.value.candidates
+    )
 
 
 @pytest.mark.parametrize("status", [429, 502, 503])

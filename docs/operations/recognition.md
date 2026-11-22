@@ -137,8 +137,15 @@ The existing ingestion worker resolves the recording's releases through its
 shared, throttled MusicBrainz client. A supplied release or release-group MBID
 is used only when MusicBrainz associates it with the recording; conflicting
 IDs do not select a cover. A verified release gets its own cover first, then
-the group's representative cover. Without these hints, album-name matching
-requires a complete release list and one unique group.
+the group's representative cover. Without these hints, album-name matching requires a complete release list and
+one unique group. If the supplied album name explicitly ends in `- Single`,
+`- EP`, `(Single)` or `(EP)`, only groups of that MusicBrainz type are considered;
+if more than one matches, a uniquely earliest official release selects the
+group only when full dates are available. Missing type or date evidence and ties
+remain ambiguous. A supplied `(Deluxe Version)` or `(Expanded Edition)` name
+requires an exact release title and its own cover; it never falls back to the
+standard edition or group cover. Multiple exact releases require a uniquely
+earliest official date.
 
 The worker browses up to three pages of 100 recording-associated releases.
 If the list remains incomplete, it does not infer an unambiguous group from
@@ -146,7 +153,7 @@ the partial list; positively verified hints can still select a cover.
 If the group has no front cover, it checks up to three other releases in that
 group, preferring MusicBrainz front-cover evidence, official releases, matching
 album titles and earlier release dates, with the release ID as a stable tie-breaker.
-This is representative
+Except for the exact edition rules above, this is representative
 album art; known edition labels such as "Deluxe Edition", "Remastered",
 "Bonus Track Version", and trailing " - EP" or " - Single" are ignored
 when comparing album names. Live/version titles are not stripped. This is

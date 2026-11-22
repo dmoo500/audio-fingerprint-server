@@ -295,11 +295,198 @@ def test_album_edition_qualifier_does_not_prevent_representative_cover() -> None
         ("Orthodox (Bonus Track Version)", "Orthodox"),
         ("American Idiot (20th\u00a0Anniversary Deluxe Edition)", "American Idiot"),
         ("Royalty - EP", "Royalty"),
+        ("Royalty (EP)", "Royalty"),
         ("30 - Single", "30"),
+        ("30 (Single)", "30"),
     ],
 )
 def test_common_edition_qualifiers_match(album: str, base: str) -> None:
     assert normalized(album) == normalized(base)
+
+
+@pytest.mark.parametrize(("label", "group_type"), [("Single", "Single"), ("EP", "EP")])
+async def test_explicit_single_or_ep_chooses_earliest_official_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, label: str, group_type: str
+) -> None:
+    store = store_at(tmp_path)
+    newer = str(uuid4())
+    releases = [
+        {
+            "title": "Song",
+            "group": GROUP,
+            "group_type": group_type,
+            "status": "Official",
+            "date": "2018-03-03",
+        },
+        {
+            "title": "Song",
+            "group": newer,
+            "group_type": group_type,
+            "status": "Official",
+            "date": "2021-01-01",
+        },
+        {
+            "title": "Song",
+            "group": str(uuid4()),
+            "group_type": "Album",
+            "status": "Official",
+            "date": "2010-01-01",
+        },
+    ]
+    calls = []
+
+    async def cover(identifier: str, *, release: bool = False) -> str | None:
+        calls.append((identifier, release))
+        return IMAGE
+
+    async with httpx.AsyncClient() as client:
+        resolver = ArtworkResolver(store, MusicBrainzService(store, api_settings(tmp_path), client))
+        monkeypatch.setattr(resolver, "cover", cover)
+        assert (await resolver.album_cover(f"Song - {label}", releases)).url == IMAGE
+        assert calls == [(GROUP, False)]
+        calls.clear()
+        releases[1]["date"] = None
+        assert (await resolver.album_cover(f"Song - {label}", releases)).reason == "ambiguous_album"
+        assert not calls
+        releases[1]["date"] = "2018-03-03"
+        assert (await resolver.album_cover(f"Song - {label}", releases)).reason == "ambiguous_album"
+        releases[1]["date"] = "2021-01-01"
+        releases[2].pop("group_type")
+        assert (await resolver.album_cover(f"Song - {label}", releases)).reason == "ambiguous_album"
+        assert (
+            await resolver.album_cover(f"Song - {label}", [releases[2]])
+        ).reason == "ambiguous_album"
+        releases[2]["group_type"] = "Album"
+        assert (
+            await resolver.album_cover(f"Song - {label}", [releases[2]])
+        ).reason == "album_not_found"
+        assert (
+            await resolver.album_cover(f"Song - {label}", releases, complete=False)
+        ).reason == "incomplete_releases"
+
+
+@pytest.mark.parametrize("edition", ["Deluxe Version", "Expanded Edition"])
+async def test_named_edition_uses_only_exact_release_cover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edition: str
+) -> None:
+    store = store_at(tmp_path)
+    title = f"Record ({edition})"
+    releases = [
+        {"id": RELEASE, "group": GROUP, "title": title},
+        {"id": str(uuid4()), "group": GROUP, "title": "Record"},
+    ]
+    calls = []
+
+    async def cover(identifier: str, *, release: bool = False) -> str | None:
+        calls.append((identifier, release))
+        return None
+
+    async with httpx.AsyncClient() as client:
+        resolver = ArtworkResolver(store, MusicBrainzService(store, api_settings(tmp_path), client))
+        monkeypatch.setattr(resolver, "cover", cover)
+        assert (await resolver.album_cover(title, releases)).reason == "no_cover"
+        assert calls == [(RELEASE, True)]
+        calls.clear()
+        assert (await resolver.album_cover(title, releases[1:])).reason == "album_not_found"
+        assert not calls
+
+
+@pytest.mark.parametrize("edition", ["Deluxe Version", "Expanded Edition"])
+async def test_multiple_exact_edition_releases_use_unique_earliest_official_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edition: str
+) -> None:
+    store = store_at(tmp_path)
+    newer = str(uuid4())
+    title = f"Record ({edition})"
+    releases = [
+        {
+            "id": RELEASE,
+            "group": GROUP,
+            "title": title,
+            "status": "Official",
+            "date": "2018-01-01",
+        },
+        {
+            "id": newer,
+            "group": GROUP,
+            "title": title,
+            "status": "Official",
+            "date": "2021-01-01",
+        },
+    ]
+    calls = []
+
+    async def cover(identifier: str, *, release: bool = False) -> str | None:
+        calls.append((identifier, release))
+        return IMAGE
+
+    async with httpx.AsyncClient() as client:
+        resolver = ArtworkResolver(store, MusicBrainzService(store, api_settings(tmp_path), client))
+        monkeypatch.setattr(resolver, "cover", cover)
+        assert (await resolver.album_cover(title, releases)).url == IMAGE
+        assert calls == [(RELEASE, True)]
+        calls.clear()
+        releases[1]["date"] = None
+        assert (await resolver.album_cover(title, releases)).reason == "ambiguous_album"
+        assert not calls
+
+
+def test_artwork_parser_keeps_release_group_type() -> None:
+    result = MusicBrainzService.parse_artwork(
+        {
+            "release-count": 1,
+            "release-offset": 0,
+            "releases": [
+                {"title": "Song", "release-group": {"id": GROUP, "primary-type": "Single"}}
+            ],
+        }
+    )
+    assert result["releases"][0]["group_type"] == "Single"
+
+
+@pytest.mark.parametrize("edition", ["Deluxe Version", "Expanded Edition"])
+async def test_worker_preserves_edition_name_for_exact_artwork(
+    tmp_path: Path, edition: str
+) -> None:
+    store = store_at(tmp_path)
+    title = f"Record ({edition})"
+    with store.connect() as db:
+        db.execute(
+            "UPDATE reference_tracks SET metadata=? WHERE reference_key=?",
+            (
+                json.dumps({"recording_mbid": RECORDING, "album": title}),
+                REFERENCE,
+            ),
+        )
+    calls = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.host == "musicbrainz.org":
+            return httpx.Response(
+                200,
+                json={
+                    "release-count": 1,
+                    "release-offset": 0,
+                    "releases": [
+                        {
+                            "id": RELEASE,
+                            "title": title,
+                            "release-group": {"id": GROUP, "primary-type": "Album"},
+                        }
+                    ],
+                },
+            )
+        assert request.url.path == f"/release/{RELEASE}/front-500"
+        return httpx.Response(307, headers={"Location": IMAGE})
+
+    queue = ArtworkStore(store)
+    queue.request(REFERENCE)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        resolver = ArtworkResolver(store, MusicBrainzService(store, api_settings(tmp_path), client))
+        await resolver.process_one()
+    assert queue.request(REFERENCE) == {"status": "ready", "url": IMAGE}
+    assert len(calls) == 2
 
 
 async def test_remastered_album_selects_only_unambiguous_recording_release(tmp_path: Path) -> None:

@@ -11,6 +11,10 @@ type Candidate = {
   disambiguation?: string;
   earliest_album?: { title: string; date: string };
   albums?: string | string[];
+  other_releases?: {
+    title: string;
+    type: "single" | "compilation" | "other" | "unknown";
+  }[];
 };
 type Review = {
   submission_id: string;
@@ -181,6 +185,18 @@ onMounted(() => {
         <details v-if="candidate.albums?.length">
           <summary>Show album credits</summary>
           {{ text(candidate.albums) }}
+        </details>
+        <details v-if="candidate.other_releases?.length">
+          <summary>Show other releases</summary>
+          <ul>
+            <li
+              v-for="release in candidate.other_releases"
+              :key="`${release.type}:${release.title}`"
+            >
+              {{ release.title }} —
+              {{ release.type === "unknown" ? "type unknown" : release.type }}
+            </li>
+          </ul>
         </details>
       </div>
       <p v-if="!item.candidates.length">No candidates are available.</p>

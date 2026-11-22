@@ -11,6 +11,7 @@ import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -262,12 +263,39 @@ def normalized(value: str) -> str:
     value = re.sub(
         r"\s*(?:[\[(](?:(?:\d+(?:st|nd|rd|th)\s+)?anniversary(?:\s+deluxe)?|"
         r"deluxe|special|expanded|collector'?s|remaster(?:ed)?|bonus track)"
-        r"(?:\s+(?:edition|version))?[\])]|-\s+(?:ep|single))\s*$",
+        r"(?:\s+(?:edition|version))?[\])]|[\[(](?:ep|single)[\])]|"
+        r"-\s+(?:ep|single))\s*$",
         "",
         unicodedata.normalize("NFKC", value),
         flags=re.IGNORECASE,
     )
     return "".join(c for c in unicodedata.normalize("NFKD", value).casefold() if c.isalnum())
+
+
+def exact_name(value: str) -> str:
+    """Compare release names without removing edition labels."""
+    return "".join(c for c in unicodedata.normalize("NFKD", value).casefold() if c.isalnum())
+
+
+def earliest_official(items: list[dict[str, Any]], key: str) -> str | None:
+    """Select a uniquely earliest official release or release group."""
+    dates: dict[str, date] = {}
+    official = [item for item in items if item.get("status") == "Official"]
+    for item in official:
+        value = item.get("date")
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            return None
+        try:
+            release_date = date.fromisoformat(value)
+        except ValueError:
+            return None
+        identifier = item[key]
+        dates[identifier] = min(dates.get(identifier, release_date), release_date)
+    if not dates or set(dates) != {item[key] for item in items}:
+        return None
+    first = min(dates.values())
+    earliest = [identifier for identifier, value in dates.items() if value == first]
+    return earliest[0] if len(earliest) == 1 else None
 
 
 class ArtworkResolver:
@@ -293,7 +321,7 @@ class ArtworkResolver:
         try:
             metadata = json.loads(job["metadata"])
             mbid = str(UUID(metadata["recording_mbid"]))
-            album = normalized(metadata["album"])
+            album = metadata["album"]
             result = await self.musicbrainz.lookup("artwork", mbid)
             resolved = (
                 ArtworkResult(None, "recording_not_found")
@@ -337,6 +365,16 @@ class ArtworkResolver:
         """Find artwork using recording-associated editions or an unambiguous album group."""
         if not album:
             return ArtworkResult(None, "album_not_found")
+        requested = album
+        album = normalized(album)
+        exact_edition = bool(
+            re.search(
+                r"\(\s*(?:deluxe\s+version|expanded\s+edition)\s*\)\s*$",
+                requested,
+                re.IGNORECASE,
+            )
+        )
+        single_ep = re.search(r"(?:-\s*|\(\s*)(single|ep)\s*\)?\s*$", requested, re.IGNORECASE)
         release_hint = str(UUID(release_hint)) if release_hint else None
         group_hint = str(UUID(group_hint)) if group_hint else None
         hinted = next((item for item in releases if item.get("id") == release_hint), None)
@@ -352,6 +390,28 @@ class ArtworkResolver:
             return ArtworkResult(
                 None, "release_hint_not_found" if complete else "incomplete_releases"
             )
+        if exact_edition:
+            exact = [
+                item
+                for item in releases
+                if item.get("id")
+                and exact_name(item["title"]) == exact_name(requested)
+                and (not group_hint or item["group"] == group_hint)
+                and (not release_hint or item["id"] == release_hint)
+            ]
+            if not complete and not release_hint:
+                return ArtworkResult(None, "incomplete_releases")
+            if not exact:
+                return ArtworkResult(None, "album_not_found")
+            release_ids = {item["id"] for item in exact}
+            selected = (
+                next(iter(release_ids)) if len(release_ids) == 1 else earliest_official(exact, "id")
+            )
+            if selected is None:
+                return ArtworkResult(None, "ambiguous_album")
+            if url := await self.cover(selected, release=True):
+                return ArtworkResult(url, "ready_release")
+            return ArtworkResult(None, "no_cover")
         matching = [release for release in releases if normalized(release["title"]) == album]
         candidates = {release["group"] for release in matching}
         candidates.update(
@@ -364,7 +424,29 @@ class ArtworkResolver:
                 return ArtworkResult(None, "incomplete_releases")
             if not candidates:
                 return ArtworkResult(None, "album_not_found")
-            if len(candidates) != 1:
+            if single_ep:
+                expected_type = single_ep.group(1).upper()
+                expected_type = "Single" if expected_type == "SINGLE" else expected_type
+                typed = [
+                    item
+                    for item in releases
+                    if item["group"] in candidates and item.get("group_type") == expected_type
+                ]
+                if any(
+                    item["group"] in candidates and not item.get("group_type") for item in releases
+                ):
+                    return ArtworkResult(None, "ambiguous_album")
+                if not typed:
+                    return ArtworkResult(None, "album_not_found")
+                typed_groups = {item["group"] for item in typed}
+                if len(typed_groups) == 1:
+                    candidates = typed_groups
+                else:
+                    first_group = earliest_official(typed, "group")
+                    if first_group is None:
+                        return ArtworkResult(None, "ambiguous_album")
+                    candidates = {first_group}
+            elif len(candidates) != 1:
                 return ArtworkResult(None, "ambiguous_album")
             group_hint = next(iter(candidates))
         if release_hint and (url := await self.cover(release_hint, release=True)):
