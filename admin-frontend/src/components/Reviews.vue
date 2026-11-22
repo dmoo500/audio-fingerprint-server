@@ -178,7 +178,7 @@ onMounted(() => {
             ></span
           >
         </label>
-        <details v-if="candidate.albums">
+        <details v-if="candidate.albums?.length">
           <summary>Show album credits</summary>
           {{ text(candidate.albums) }}
         </details>

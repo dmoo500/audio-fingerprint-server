@@ -1144,6 +1144,26 @@ describe("reviews and history", () => {
     wrapper.unmount();
   });
 
+  it("does not show an empty album credits list", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({
+        items: [
+          {
+            submission_id: "s1",
+            title: "Song",
+            candidates: [{ id: "mbid", title: "Song", albums: [] }],
+          },
+        ],
+        has_more: false,
+      }) as Response,
+    );
+    const wrapper = mount(Reviews);
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("Show album credits");
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("renders server paths without bridging missing hours", () => {
     const wrapper = mount(HistoryCharts, {
       props: {

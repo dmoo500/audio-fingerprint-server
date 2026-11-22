@@ -38,7 +38,16 @@ def recording(mbid: str = MBID, albums: list[str] | None = None) -> dict[str, An
         "title": "Title",
         "artist-credit": [{"name": "Artist", "artist": {"name": "Artist"}}],
         "isrcs": [ISRC],
-        "releases": [{"title": title} for title in titles],
+        "releases": [
+            {
+                "title": title,
+                "release-group": {
+                    "primary-type": "Album",
+                    "secondary-types": [],
+                },
+            }
+            for title in titles
+        ],
         "release-count": len(titles),
     }
 
@@ -103,6 +112,131 @@ async def test_identifier_fills_only_missing_fields(
         assert result["recording_mbid"] == MBID
         assert result["duration"] == 12.0
         assert metadata == {"title": " Supplied ", "duration": 12.0, **identifier}
+
+
+@pytest.mark.parametrize("identifier", [{"recording_mbid": MBID}, {"isrc": ISRC}])
+async def test_unique_album_excludes_singles_and_compilations(tmp_path, identifier):
+    source = recording()
+    source["releases"] = [
+        {"title": "Single", "release-group": {"primary-type": "Single"}},
+        {
+            "title": "Sampler",
+            "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]},
+        },
+        {
+            "title": "Studio",
+            "release-group": {"primary-type": "Album", "secondary-types": []},
+        },
+    ]
+    source["release-count"] = len(source["releases"])
+
+    def reply(request):
+        if "/recording/" in request.url.path:
+            return httpx.Response(200, json=source)
+        return httpx.Response(200, json={"isrc": ISRC, "recordings": [source]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        service = MusicBrainzService(online_store(tmp_path), online_settings(tmp_path), client)
+        result = await service.verify(identifier)
+        assert result["album"] == "Studio"
+        supplied = await service.verify({**identifier, "album": "Sampler"})
+        assert supplied["album"] == "Sampler"
+
+
+@pytest.mark.parametrize(
+    "releases,release_count",
+    [
+        ([{"title": "Single", "release-group": {"primary-type": "Single"}}], 1),
+        (
+            [
+                {
+                    "title": "Sampler",
+                    "release-group": {
+                        "primary-type": "Album",
+                        "secondary-types": ["Compilation"],
+                    },
+                }
+            ],
+            1,
+        ),
+        (
+            [
+                {"title": "Studio", "release-group": {"primary-type": "Album"}},
+            ],
+            1,
+        ),
+        (
+            [
+                {
+                    "title": "Studio",
+                    "release-group": {"primary-type": "Album", "secondary-types": []},
+                },
+                {"title": "Unknown"},
+            ],
+            2,
+        ),
+        (
+            [
+                {
+                    "title": "Studio",
+                    "release-group": {"primary-type": "Album", "secondary-types": []},
+                }
+            ],
+            2,
+        ),
+        (
+            [
+                {
+                    "title": name,
+                    "release-group": {"primary-type": "Album", "secondary-types": []},
+                }
+                for name in ("Studio", "Other")
+            ],
+            2,
+        ),
+    ],
+)
+def test_unresolved_album_is_not_guessed(releases, release_count):
+    result = MusicBrainzService.parse_recording(
+        {**recording(), "releases": releases, "release-count": release_count}
+    )
+    assert "album" not in result
+
+
+async def test_worker_publishes_only_after_unique_non_compilation_album(tmp_path):
+    source = recording()
+    source["releases"] = [
+        {"title": "Single", "release-group": {"primary-type": "Single"}},
+        {
+            "title": "Sampler",
+            "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]},
+        },
+        {
+            "title": "Studio",
+            "release-group": {"primary-type": "Album", "secondary-types": []},
+        },
+    ]
+    source["release-count"] = len(source["releases"])
+    payload = document()
+    payload["metadata"].pop("album")
+    store = online_store(tmp_path)
+    store.submit("submission", json.dumps(payload), 10)
+
+    def reply(request):
+        if "/isrc/" in request.url.path:
+            return httpx.Response(200, json={"isrc": ISRC, "recordings": [source]})
+        return httpx.Response(200, json=source)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        row = await run_until_idle(
+            Worker(store, online_settings(tmp_path), client), store, "submission"
+        )
+    assert row["state"] == "processed"
+    with store.connect() as db:
+        saved = db.execute(
+            "SELECT metadata FROM reference_tracks WHERE reference_key=?", (row["reference_id"],)
+        ).fetchone()
+    assert json.loads(saved["metadata"])["album"] == "Studio"
 
 
 async def test_agreement_and_conflict(tmp_path: Path) -> None:

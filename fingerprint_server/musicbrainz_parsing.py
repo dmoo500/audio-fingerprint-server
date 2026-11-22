@@ -10,14 +10,22 @@ from uuid import UUID
 from fingerprint_server.schemas import ISRC_PATTERN
 
 
+def _album_kind(release: dict[str, Any]) -> bool | None:
+    """Identify a non-compilation album, or return None for unknown types."""
+    group = release.get("release-group")
+    if not isinstance(group, dict) or not isinstance(group.get("primary-type"), str):
+        return None
+    if group["primary-type"] != "Album":
+        return False
+    secondary = group.get("secondary-types")
+    if not isinstance(secondary, list) or any(not isinstance(item, str) for item in secondary):
+        return None
+    return "Compilation" not in secondary
+
+
 def _official_album_date(release: dict[str, Any]) -> str | None:
     """Return a known release date for an official album linked to the recording."""
-    group = release.get("release-group")
-    if (
-        release.get("status") != "Official"
-        or not isinstance(group, dict)
-        or group.get("primary-type") != "Album"
-    ):
+    if release.get("status") != "Official" or _album_kind(release) is not True:
         return None
     value = release.get("date")
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}(?:-[0-9]{2}){0,2}", value):
@@ -135,6 +143,8 @@ def parse_recording(value: Any) -> dict[str, Any]:
     if not isinstance(releases, list) or len(releases) > 1000:
         raise ValueError("Invalid releases")
     albums = set()
+    review_albums = set()
+    album_types_complete = True
     release_names = set()
     release_ids: list[tuple[str | None, str | None]] = []
     dated_albums: list[tuple[str, str]] = []
@@ -144,14 +154,21 @@ def parse_recording(value: Any) -> dict[str, Any]:
         album = release["title"]
         if len(album) > 500:
             raise ValueError("Invalid release title")
+        kind = _album_kind(release)
+        if kind is None:
+            album_types_complete = False
         if album.strip():
-            albums.add(album)
             release_names.add(album)
-            if release_date := _official_album_date(release):
-                dated_albums.append((release_date, album))
+            if kind is True:
+                albums.add(album)
+                review_albums.add(album)
+                if release_date := _official_album_date(release):
+                    dated_albums.append((release_date, album))
         group = release.get("release-group")
         if isinstance(group, dict) and isinstance(group.get("title"), str):
             release_names.add(group["title"][:500])
+            if kind is True and group["title"].strip():
+                review_albums.add(group["title"][:500])
         release_id = release.get("id")
         group_id = group.get("id") if isinstance(group, dict) else None
         release_ids.append(
@@ -163,6 +180,7 @@ def parse_recording(value: Any) -> dict[str, Any]:
     release_count = value.get("release-count")
     release_offset = value.get("release-offset", 0)
     result["albums"] = sorted(release_names)
+    result["review_albums"] = sorted(review_albums)
     result["release_ids"] = release_ids
     if dated_albums:
         release_date, title = min(dated_albums)
@@ -172,6 +190,7 @@ def parse_recording(value: Any) -> dict[str, Any]:
     )
     if (
         len(albums) == 1
+        and album_types_complete
         and type(release_count) is int
         and release_count == len(releases)
         and type(release_offset) is int

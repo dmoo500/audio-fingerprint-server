@@ -415,16 +415,18 @@ class MusicBrainzService(MusicBrainzClient):
             raise RecordingReviewRequired(
                 [
                     {
-                        key: candidate.get(key)
-                        for key in (
-                            "id",
-                            "title",
-                            "artists",
-                            "length",
-                            "disambiguation",
-                            "albums",
-                            "earliest_album",
-                        )
+                        **{
+                            key: candidate.get(key)
+                            for key in (
+                                "id",
+                                "title",
+                                "artists",
+                                "length",
+                                "disambiguation",
+                                "earliest_album",
+                            )
+                        },
+                        "albums": candidate["review_albums"],
                     }
                     for candidate in candidates.values()
                 ]

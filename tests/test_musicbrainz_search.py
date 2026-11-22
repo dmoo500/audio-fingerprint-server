@@ -157,12 +157,18 @@ async def test_hydrated_recording_must_still_match(tmp_path):
 
 
 async def test_earliest_official_album_is_only_a_review_hint(tmp_path):
-    def release(title, release_date, *, status="Official", primary_type="Album"):
+    def release(
+        title, release_date, *, status="Official", primary_type="Album", secondary_types=None
+    ):
         return {
             "title": title,
             "date": release_date,
             "status": status,
-            "release-group": {"title": title, "primary-type": primary_type},
+            "release-group": {
+                "title": title,
+                "primary-type": primary_type,
+                "secondary-types": secondary_types or [],
+            },
         }
 
     releases = [
@@ -170,6 +176,7 @@ async def test_earliest_official_album_is_only_a_review_hint(tmp_path):
         release("Undated", ""),
         release("Early bootleg", "1980", status="Bootleg"),
         release("Early single", "1981", primary_type="Single"),
+        release("Early compilation", "1982", secondary_types=["Compilation"]),
         release("Invalid date", "1982-02-30"),
         release("Original album", "1985-06"),
     ]
@@ -193,6 +200,8 @@ async def test_earliest_official_album_is_only_a_review_hint(tmp_path):
     candidates = {item["id"]: item for item in review.value.candidates}
     assert candidates[MBID]["earliest_album"] == {"title": "Original album", "date": "1985-06"}
     assert "Reissue" in candidates[MBID]["albums"]
+    assert "Early single" not in candidates[MBID]["albums"]
+    assert "Early compilation" not in candidates[MBID]["albums"]
     assert candidates[OTHER]["earliest_album"] is None
     assert "album" not in metadata and "recording_mbid" not in metadata
 

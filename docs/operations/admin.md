@@ -88,11 +88,13 @@ shown as `mm:ss` or `hh:mm:ss` for recordings of at least an hour.
 Use the copy icon beside the submission title to copy its title and artist as
 `title - artist`. If clipboard access is unavailable, the text is selected for
 manual copying instead.
-New reviews highlight the earliest dated official album among the releases
-MusicBrainz returned for each candidate. Expand **Show album credits** to see
-the full list from the response. The highlight is only a hint: it does not
-select a recording or change the submitted album. Older reviews without dates
-still show their album credits but have no highlight.
+New reviews highlight the earliest dated official, non-compilation album among
+the releases MusicBrainz returned for each candidate. Expand **Show album
+credits** to see known non-compilation albums from the response; singles,
+compilations and releases with unknown types are excluded. The list may be
+incomplete. The highlight is only a hint: it does not select a recording or
+change the submitted album. Existing reviews keep their previously stored
+credits and highlights.
 
 ![MusicBrainz review comparing a studio recording and an alternate mix, with album hints and one expanded list of album credits](images/admin-musicbrainz-review.png)
 

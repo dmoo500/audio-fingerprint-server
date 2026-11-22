@@ -19,7 +19,7 @@ from fingerprint_server.musicbrainz_errors import EnrichmentError, MusicBrainzUn
 from fingerprint_server.musicbrainz_parsing import parse_artwork, parse_recording
 from fingerprint_server.settings import Settings
 
-MUSICBRAINZ_CACHE_VERSION = 7
+MUSICBRAINZ_CACHE_VERSION = 8
 
 
 def _retry_after(value: str | None) -> float:
