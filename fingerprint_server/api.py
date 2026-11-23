@@ -374,7 +374,7 @@ def create_router() -> web.RouteTableDef:
                 "Recognition decision=unavailable reason=candidate_limit query_landmarks=%s",
                 len(query),
             )
-            raise HTTPError(503, "Query too repetitive to evaluate safely") from err
+            raise HTTPError(503, "Query produces too many candidates to evaluate safely") from err
         settings: Settings = request.app[SETTINGS]
         if not candidates:
             LOGGER.info(

@@ -15,14 +15,16 @@ from uuid import UUID
 from pydantic import ValidationError as ValidationError
 
 from fingerprint_server.database.logic import (
-    can_add_recording_mbid as can_add_recording_mbid,
-)
-from fingerprint_server.database.logic import (
+    MAX_MATCH_CANDIDATES,
     coverage_statistics,
     full_coverage,
     has_identifier,
     rank_matches,
     resolve_availability,
+)
+from fingerprint_server.database.logic import QueryTooBroadError as QueryTooBroadError
+from fingerprint_server.database.logic import (
+    can_add_recording_mbid as can_add_recording_mbid,
 )
 from fingerprint_server.database.logic import (
     initial_submission_state as initial_submission_state,
@@ -46,12 +48,12 @@ from fingerprint_server.schemas import (
 )
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
-MATCH_QUERY = """
+MATCH_QUERY = f"""
     SELECT t.reference_key AS reference_id,t.recording_key,
         l.offset-q.offset AS delta,q.idx,q.offset
     FROM query q CROSS JOIN landmarks l ON l.hash=q.hash
     JOIN reference_tracks t ON t.id=l.reference_id
-    WHERE t.publication_ready=1 LIMIT 100001
+    WHERE t.publication_ready=1 LIMIT {MAX_MATCH_CANDIDATES + 1}
 """
 
 LOGGER = logging.getLogger(__name__)
@@ -59,10 +61,6 @@ LOGGER = logging.getLogger(__name__)
 
 class QueueFullError(Exception):
     """The persistent submission queue is at capacity."""
-
-
-class QueryTooBroadError(Exception):
-    """The query generates more candidates than can be safely evaluated."""
 
 
 class Store(StoreQueueMixin):
@@ -298,9 +296,7 @@ class Store(StoreQueueMixin):
                 ),
             )
             # Keep the small query outermost instead of scanning the whole landmark collection.
-            rows = db.execute(MATCH_QUERY).fetchall()
-            if len(rows) > 100000:
-                raise QueryTooBroadError
+            rows = db.execute(MATCH_QUERY)
 
             def read_metadata(reference_id: str) -> str:
                 return str(
@@ -310,7 +306,7 @@ class Store(StoreQueueMixin):
                     ).fetchone()[0]
                 )
 
-            return rank_matches(query, [dict(row) for row in rows], read_metadata)
+            return rank_matches(query, (dict(row) for row in rows), read_metadata)
 
     @staticmethod
     def _full_coverage(document: str | None, metadata: str) -> bool:

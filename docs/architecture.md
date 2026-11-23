@@ -76,6 +76,11 @@ flowchart TD
 
 For each matching hash, the matcher subtracts the query offset from the reference offset. Many distinct landmarks agreeing on that difference support the same alignment within a track. The server performs this database lookup and ranking; the shared library only supplies the acoustic extraction. Weak or insufficiently separated candidates do not produce a match. Invalid input, overload and excessive candidate counts return explicit HTTP errors, not `no_match`.
 
+The candidate lookup streams and groups up to 1,000,000 matching landmark rows per
+request. This budget counts rows, not songs. If the limit is exceeded, the server
+rejects the request rather than returning a partial ranking; common hashes are
+not discarded, so competing recordings still contribute to ambiguity decisions.
+
 Only indexed passages can contribute matching landmarks. MusicBrainz enrichment adds metadata, not fingerprints, and cannot make an unindexed song recognizable.
 
 The optional [public recognition app](operations/recognition.md) places a separate

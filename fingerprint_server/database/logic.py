@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 from uuid import UUID
@@ -12,6 +11,12 @@ from uuid import UUID
 from audio_fingerprint import HOP_SIZE, SAMPLE_RATE
 
 from fingerprint_server.schemas import ISRC_PATTERN, metadata_complete, metadata_searchable
+
+MAX_MATCH_CANDIDATES = 1_000_000
+
+
+class QueryTooBroadError(Exception):
+    """The query generates more candidates than can be safely evaluated."""
 
 
 def can_add_recording_mbid(existing: object, incoming: Mapping[str, Any]) -> bool:
@@ -93,17 +98,36 @@ def full_coverage(document: str | None, metadata: str) -> bool:
 
 def rank_matches(
     query: list[tuple[str, int]],
-    rows: Sequence[Mapping[str, Any]],
+    rows: Iterable[Mapping[str, Any]],
     read_metadata: Callable[[str], str],
 ) -> list[dict[str, Any]]:
     """Rank offset-consistent candidates without counting one query pair twice."""
-    recording_keys = {row["reference_id"]: row["recording_key"] for row in rows}
-    groups: dict[tuple[str, int], set[int]] = defaultdict(set)
-    for row in sorted(rows, key=lambda row: (row["idx"], row["delta"])):
-        groups[(row["reference_id"], row["delta"])].add(row["idx"])
+    recording_keys: dict[str, str | None] = {}
+    groups: dict[tuple[str, int], int | set[int]] = {}
+    for count, row in enumerate(rows, 1):
+        if count > MAX_MATCH_CANDIDATES:
+            raise QueryTooBroadError
+        reference_id, delta, index = row["reference_id"], row["delta"], row["idx"]
+        recording_keys[reference_id] = row["recording_key"]
+        key = (reference_id, delta)
+        if key not in groups:
+            groups[key] = index
+        elif isinstance(indices := groups[key], int):
+            if indices != index:
+                groups[key] = {indices, index}
+        else:
+            indices.add(index)
     best: dict[str, tuple[int, set[int], str | None]] = {}
     for (reference_id, delta), indices in groups.items():
-        if reference_id not in best or len(indices) > len(best[reference_id][1]):
+        size = 1 if isinstance(indices, int) else len(indices)
+        first = indices if isinstance(indices, int) else min(indices)
+        previous = best.get(reference_id)
+        if previous is None or (-size, first, delta) < (
+            -len(previous[1]),
+            min(previous[1]),
+            previous[0],
+        ):
+            indices = {indices} if isinstance(indices, int) else indices
             best[reference_id] = (delta, indices, recording_keys[reference_id])
     ranked = sorted(best.items(), key=lambda entry: (-len(entry[1][1]), entry[0]))
     results = []

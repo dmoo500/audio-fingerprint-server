@@ -340,13 +340,13 @@ def test_offset_vote_ties_equal_sqlite(store, tmp_path: Path) -> None:
     assert store.match(query)[0]["offset_seconds"] > 0
 
 
-@pytest.mark.parametrize("count", [1000, 1001])
+@pytest.mark.parametrize("count", [10000, 10001])
 def test_candidate_limit(store, count: int) -> None:
     store.submit("first", "{}", 10)
     store.finish(
         "first", "r", document()["metadata"], [("0" * 20, offset) for offset in range(count)]
     )
-    if count == 1001:
+    if count == 10001:
         with pytest.raises(QueryTooBroadError):
             store.match([("0" * 20, 0)] * 100)
     else:

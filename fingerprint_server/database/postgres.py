@@ -17,14 +17,15 @@ from pydantic import ValidationError as ValidationError
 
 from fingerprint_server.database import application_keys, postgres_postings
 from fingerprint_server.database.logic import (
-    can_add_recording_mbid as can_add_recording_mbid,
-)
-from fingerprint_server.database.logic import (
+    MAX_MATCH_CANDIDATES,
     coverage_statistics,
     full_coverage,
     has_identifier,
     rank_matches,
     resolve_availability,
+)
+from fingerprint_server.database.logic import (
+    can_add_recording_mbid as can_add_recording_mbid,
 )
 from fingerprint_server.database.logic import (
     initial_submission_state as initial_submission_state,
@@ -40,7 +41,7 @@ from fingerprint_server.database.postgres_schema import (
     finish_schema,
 )
 from fingerprint_server.database.review_schema import REVIEW_TABLE
-from fingerprint_server.database.sqlite import QueryTooBroadError
+from fingerprint_server.database.sqlite import QueryTooBroadError as QueryTooBroadError
 from fingerprint_server.database.sqlite import QueueFullError as QueueFullError
 from fingerprint_server.schemas import (
     acoustic_reference_id as acoustic_reference_id,
@@ -310,14 +311,6 @@ class PostgresStore(PostgresStoreQueueMixin):
                 for index, (digest, offset) in enumerate(query):
                     cp.write_row((bytes.fromhex(digest), offset, index))
             db.execute("ANALYZE query")
-            rows = db.execute(
-                'SELECT t.reference_key AS reference_id,t.recording_key,l."offset"-q."offset" '
-                'AS delta,q.idx,q."offset" FROM query q JOIN landmarks l ON l.hash=q.hash '
-                "JOIN reference_tracks t ON t.id=l.reference_id "
-                "WHERE t.publication_ready=1 LIMIT 100001"
-            ).fetchall()
-            if len(rows) > 100000:
-                raise QueryTooBroadError
 
             def read_metadata(reference_id: str) -> str:
                 return str(
@@ -328,7 +321,15 @@ class PostgresStore(PostgresStoreQueueMixin):
                     )["metadata"]
                 )
 
-            return rank_matches(query, rows, read_metadata)
+            with db.cursor(name="match_candidates") as cursor:
+                cursor.itersize = 2048
+                cursor.execute(
+                    'SELECT t.reference_key AS reference_id,t.recording_key,l."offset"-q."offset" '
+                    'AS delta,q.idx,q."offset" FROM query q JOIN landmarks l ON l.hash=q.hash '
+                    "JOIN reference_tracks t ON t.id=l.reference_id "
+                    f"WHERE t.publication_ready=1 LIMIT {MAX_MATCH_CANDIDATES + 1}"
+                )
+                return rank_matches(query, cursor, read_metadata)
 
     def statistics(self) -> dict[str, Any]:
         """Report coverage and queue counts from one repeatable-read snapshot."""

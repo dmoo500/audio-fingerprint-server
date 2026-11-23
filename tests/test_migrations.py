@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from test_metadata_gate import LEGACY_SCHEMA, legacy_store, metadata
 
+from fingerprint_server.database.logic import MAX_MATCH_CANDIDATES
 from fingerprint_server.database.migrations import DB_SCHEMA_VERSION, _migrate_binary_landmarks
 from fingerprint_server.database.sqlite import MATCH_QUERY, QueryTooBroadError, Store
 
@@ -225,7 +226,12 @@ def test_binary_lookup_retains_candidate_limit(tmp_path: Path) -> None:
     store = Store(tmp_path / "broad.db")
     store.initialize()
     store.submit("broad", "{}", 10)
-    store.finish("broad", "broad", metadata(), [("0" * 20, offset) for offset in range(100001)])
+    store.finish(
+        "broad",
+        "broad",
+        metadata(),
+        [("0" * 20, offset) for offset in range(MAX_MATCH_CANDIDATES + 1)],
+    )
     with pytest.raises(QueryTooBroadError):
         store.match([("0" * 20, 0)])
 
