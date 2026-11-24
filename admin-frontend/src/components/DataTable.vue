@@ -600,7 +600,8 @@ onUnmounted(() => {
             : changed
               ? "Newer data available — refresh"
               : "Table is up to date"
-        }}</button><span class="muted"
+        }}</button
+      ><span class="muted"
         >Updates never replace your current rows automatically.</span
       >
     </div>

@@ -6,6 +6,7 @@ const props = withDefaults(
   defineProps<{ detail?: boolean; revision?: string }>(),
   {
     detail: false,
+    revision: undefined,
   },
 );
 defineEmits<{ navigate: [path: string] }>();

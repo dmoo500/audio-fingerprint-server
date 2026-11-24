@@ -212,9 +212,7 @@ onMounted(() => {
         <div class="card">
           <span class="subheader">Completed without a cover</span>
           <strong>{{ artwork.missing.toLocaleString() }}</strong>
-          <small
-            >Excludes unqueried, expired and pending results</small
-          >
+          <small>Excludes unqueried, expired and pending results</small>
         </div>
         <div class="card">
           <span class="subheader">Pending / temporarily unavailable</span>
