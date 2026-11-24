@@ -120,8 +120,15 @@ def recognition_history(store: Storage, period: str) -> dict:
             rows = db.execute(
                 pg_statement + sql.SQL(" GROUP BY bucket ORDER BY bucket"), parameters
             )
+        buckets = [{key: int(row[key]) for key in row.keys()} for row in rows]
         return {
             "available": True,
             "bucket_minutes": bucket_size,
-            "buckets": [{key: int(row[key]) for key in row.keys()} for row in rows],
+            "start_minute": minute - duration + 1
+            if duration
+            else (buckets[0]["bucket"] if buckets else None),
+            "end_minute": minute + 1
+            if duration
+            else (buckets[-1]["bucket"] + bucket_size if buckets else None),
+            "buckets": buckets,
         }

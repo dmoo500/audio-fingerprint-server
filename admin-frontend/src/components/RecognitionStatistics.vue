@@ -22,6 +22,8 @@ type Bucket = {
 type Statistics = {
   available: boolean;
   bucket_minutes?: number;
+  start_minute: number | null;
+  end_minute: number | null;
   buckets: Bucket[];
 };
 
@@ -45,21 +47,43 @@ const totals = computed(() =>
 );
 const chart = computed(() => {
   const buckets = statistics.value?.buckets ?? [];
-  if (!buckets.length) return null;
   const size = statistics.value?.bucket_minutes;
   if (!size) return null;
-  const first = buckets[0]!.bucket;
-  const last = buckets[buckets.length - 1]!.bucket;
-  const span = last - first + size;
+  const first = statistics.value!.start_minute;
+  const end = statistics.value!.end_minute;
+  if (first === null || end === null) return null;
+  const span = end - first;
+  const byMinute = new Map(buckets.map((bucket) => [bucket.bucket, bucket]));
+  const intervals: Bucket[] = [];
+  for (
+    let minute = Math.floor(first / size) * size;
+    minute < end;
+    minute += size
+  ) {
+    intervals.push(
+      byMinute.get(minute) ?? {
+        bucket: minute,
+        attempts: 0,
+        matched: 0,
+        no_match: 0,
+        ambiguous: 0,
+        failed: 0,
+      },
+    );
+  }
   const maximum = Math.max(1, ...buckets.map((bucket) => bucket.attempts));
   return {
     maximum,
     start: utc(first),
-    end: utc(last + size),
-    bars: buckets.map((bucket) => ({
+    end: utc(end),
+    bars: intervals.map((bucket) => ({
       ...bucket,
-      x: ((bucket.bucket - first) / span) * 600,
-      width: (size / span) * 600,
+      x: ((Math.max(bucket.bucket, first) - first) / span) * 600,
+      width:
+        ((Math.min(bucket.bucket + size, end) -
+          Math.max(bucket.bucket, first)) /
+          span) *
+        600,
       height: (bucket.attempts / maximum) * 100,
     })),
   };
@@ -152,7 +176,8 @@ watch(
           <p class="muted">
             Requests per
             {{ statistics.bucket_minutes?.toLocaleString() }}-minute interval.
-            Intervals without activity have no bar. Times are UTC.
+            The full selected period is shown, including intervals with zero
+            attempts. Times are UTC.
           </p>
           <div class="chart-area">
             <div class="chart-axis" aria-hidden="true">

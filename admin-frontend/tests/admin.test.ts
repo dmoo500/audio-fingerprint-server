@@ -123,6 +123,8 @@ it("shows recognition totals and a time-scaled chart on the overview", async () 
     response({
       available: true,
       bucket_minutes: 60,
+      start_minute: 30000000,
+      end_minute: 30001440,
       buckets: [
         {
           bucket: 30000000,
@@ -148,12 +150,41 @@ it("shows recognition totals and a time-scaled chart on the overview", async () 
   expect(wrapper.text()).toContain("8");
   expect(wrapper.findAll("tbody tr")).toHaveLength(0);
   const bars = wrapper.findAll("svg rect");
-  expect(bars).toHaveLength(2);
-  expect(Number(bars[1]!.attributes("x"))).toBeGreaterThan(
+  expect(bars).toHaveLength(24);
+  expect(Number(bars[2]!.attributes("x"))).toBeGreaterThan(
     Number(bars[0]!.attributes("width")),
+  );
+  expect(bars[23]!.attributes("height")).toBe("0");
+  expect(Number(bars[23]!.attributes("x"))).toBe(575);
+  expect(wrapper.get(".chart-dates").text()).toContain(
+    new Date(30001440 * 60000).toISOString().replace("T", " ").slice(0, 16),
   );
   await wrapper.get('a[href="/admin/recognition"]').trigger("click");
   expect(wrapper.emitted("navigate")).toEqual([["/admin/recognition"]]);
+  wrapper.unmount();
+});
+
+it("keeps an empty rolling chart and clips partial boundary hours", async () => {
+  vi.mocked(globalThis.fetch).mockResolvedValue(
+    response({
+      available: true,
+      bucket_minutes: 60,
+      start_minute: 30000018,
+      end_minute: 30001458,
+      buckets: [],
+    }) as Response,
+  );
+  const wrapper = mount(RecognitionStatistics);
+  await flushPromises();
+  const bars = wrapper.findAll("svg rect");
+  expect(bars).toHaveLength(25);
+  expect(bars.every((bar) => bar.attributes("height") === "0")).toBe(true);
+  expect(Number(bars[0]!.attributes("width"))).toBeCloseTo((42 / 1440) * 600);
+  const last = bars[24]!;
+  expect(Number(last.attributes("width"))).toBeCloseTo((18 / 1440) * 600);
+  expect(
+    Number(last.attributes("x")) + Number(last.attributes("width")),
+  ).toBeCloseTo(600);
   wrapper.unmount();
 });
 
@@ -197,6 +228,8 @@ it("navigates to recognition details and loads the interval table", async () => 
     return response({
       available: true,
       bucket_minutes: 60,
+      start_minute: 30000000,
+      end_minute: 30001440,
       buckets: [
         {
           bucket: 30000000,

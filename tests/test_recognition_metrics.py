@@ -121,6 +121,32 @@ def test_old_database_has_explicit_unavailable_state(tmp_path: Path) -> None:
     assert recognition_history(store, "all")["available"]
 
 
+@pytest.mark.parametrize(
+    "period,duration", [("hour", 60), ("day", 1440), ("month", 43200), ("year", 525600)]
+)
+def test_chart_window_includes_inactive_intervals(
+    tmp_path: Path, monkeypatch, period, duration
+) -> None:
+    store = Store(tmp_path / "test.db")
+    store.initialize()
+    now = 30_000_017
+    monkeypatch.setattr(
+        "fingerprint_server.database.recognition_metrics.time.time", lambda: now * 60
+    )
+    empty = recognition_history(store, period)
+    assert empty["start_minute"] == now - duration + 1
+    assert empty["end_minute"] == now + 1
+    assert empty["buckets"] == []
+    record_attempt(store, now - 40)
+    history = recognition_history(store, period)
+    assert history["start_minute"] == empty["start_minute"]
+    assert history["end_minute"] == empty["end_minute"]
+    assert len(history["buckets"]) == 1
+    all_time = recognition_history(store, "all")
+    assert all_time["start_minute"] == all_time["buckets"][0]["bucket"]
+    assert all_time["end_minute"] == all_time["start_minute"] + all_time["bucket_minutes"]
+
+
 def test_wal_readers_continue_while_a_writer_waits(tmp_path: Path) -> None:
     store = Store(tmp_path / "test.db")
     store.initialize()
