@@ -7,6 +7,11 @@ import time
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+    from typing import Any
+
+    from psycopg import Connection, Cursor
+
     from fingerprint_server.database import Storage
 
 type Outcome = Literal["matched", "no_match", "ambiguous", "failed"]
@@ -35,6 +40,7 @@ def record_attempt(store: Storage, minute: int) -> None:
     """Persist an attempt before processing it."""
     from fingerprint_server.database.sqlite import Store
 
+    context: AbstractContextManager[sqlite3.Connection | Connection[dict[str, Any]]]
     if isinstance(store, Store):
         context = store.connect()
     else:
@@ -54,6 +60,7 @@ def record_outcome(store: Storage, minute: int, outcome: Outcome) -> None:
 
     if outcome not in ("matched", "no_match", "ambiguous", "failed"):
         raise ValueError("Invalid recognition outcome")
+    context: AbstractContextManager[sqlite3.Connection | Connection[dict[str, Any]]]
     if isinstance(store, Store):
         context = store.connect()
     else:
@@ -88,6 +95,7 @@ def recognition_history(store: Storage, period: str) -> dict:
         parameters = (bucket_size, bucket_size) + (
             (minute - duration + 1, minute) if duration else ()
         )
+        rows: sqlite3.Cursor | Cursor[dict[str, Any]]
         if isinstance(db, sqlite3.Connection):
             statement = (
                 "SELECT (minute / ?) * ? AS bucket, "
@@ -101,7 +109,7 @@ def recognition_history(store: Storage, period: str) -> dict:
         else:
             from psycopg import sql
 
-            pg_statement = sql.SQL(
+            pg_statement: sql.Composable = sql.SQL(
                 "SELECT (minute / %s) * %s AS bucket, "
                 "sum(attempts) AS attempts, sum(matched) AS matched, "
                 "sum(no_match) AS no_match, sum(ambiguous) AS ambiguous, sum(failed) AS failed "
