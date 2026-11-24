@@ -21,6 +21,8 @@ type Bucket = {
 };
 type Statistics = {
   available: boolean;
+  identities_available: boolean;
+  identities: { personal: string; application: string; attempts: number }[];
   bucket_minutes?: number;
   start_minute: number | null;
   end_minute: number | null;
@@ -97,7 +99,7 @@ async function load() {
   error.value = "";
   try {
     statistics.value = await api<Statistics>(
-      `/recognition-statistics?period=${encodeURIComponent(period.value)}`,
+      `/recognition-statistics?period=${encodeURIComponent(period.value)}${props.detail ? "&include_identities=true" : ""}`,
     );
   } catch (e) {
     error.value = errorMessage(e);
@@ -230,6 +232,56 @@ watch(
         </a>
       </template>
       <template v-else>
+        <h2>Requests by key</h2>
+        <p class="muted">
+          Only authenticated gateway requests completed since this feature was
+          installed are attributed. Earlier requests, direct shared-key
+          requests, and requests without a verified consumer are not included.
+          The website uses its own shared key; its visitors cannot be
+          distinguished here. Key-linked counts are retained indefinitely.
+        </p>
+        <p v-if="!statistics.identities_available" class="muted">
+          Key attribution is not installed yet. Update and restart the
+          fingerprint service.
+        </p>
+        <div v-else-if="statistics.identities.length" class="table-wrap">
+          <table class="records-table" aria-label="Recognition requests by key">
+            <thead>
+              <tr>
+                <th>Personal key</th>
+                <th>Application key</th>
+                <th>Requests</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="identity in statistics.identities"
+                :key="`${identity.personal}:${identity.application}`"
+              >
+                <td class="record-value">{{ identity.personal }}</td>
+                <td class="record-value">{{ identity.application }}</td>
+                <td>{{ identity.attempts.toLocaleString() }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="muted">No attributed requests in this period.</p>
+        <p>
+          <a
+            href="/admin/keys"
+            @click.exact.prevent="$emit('navigate', '/admin/keys')"
+          >
+            Manage personal keys
+          </a>
+          ·
+          <a
+            href="/admin/applications"
+            @click.exact.prevent="$emit('navigate', '/admin/applications')"
+          >
+            Manage application keys
+          </a>
+        </p>
+        <h2>Activity by interval</h2>
         <p class="muted">
           Intervals are
           {{ statistics.bucket_minutes?.toLocaleString() }} minutes; only

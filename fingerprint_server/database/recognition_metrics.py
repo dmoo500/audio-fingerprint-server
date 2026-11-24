@@ -1,4 +1,4 @@
-"""Persistent, anonymous recognition counters."""
+"""Persistent aggregate recognition counters."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from fingerprint_server.database import Storage
 
 type Outcome = Literal["matched", "no_match", "ambiguous", "failed"]
+type Identity = tuple[str, str]
 
 RECOGNITION_TABLE = """
 CREATE TABLE IF NOT EXISTS recognition_metrics (
@@ -24,6 +25,16 @@ CREATE TABLE IF NOT EXISTS recognition_metrics (
     no_match bigint NOT NULL DEFAULT 0,
     ambiguous bigint NOT NULL DEFAULT 0,
     failed bigint NOT NULL DEFAULT 0
+)
+"""
+
+RECOGNITION_IDENTITY_TABLE = """
+CREATE TABLE IF NOT EXISTS recognition_identity_metrics (
+    minute bigint NOT NULL,
+    personal text NOT NULL,
+    application text NOT NULL,
+    attempts bigint NOT NULL DEFAULT 0,
+    PRIMARY KEY (minute, personal, application)
 )
 """
 
@@ -55,7 +66,9 @@ def record_attempt(store: Storage, minute: int) -> None:
         )
 
 
-def record_outcome(store: Storage, minute: int, outcome: Outcome) -> None:
+def record_outcome(
+    store: Storage, minute: int, outcome: Outcome, identity: Identity | None = None
+) -> None:
     """Persist the outcome of an already counted attempt."""
     from fingerprint_server.database.sqlite import Store
 
@@ -72,9 +85,18 @@ def record_outcome(store: Storage, minute: int, outcome: Outcome) -> None:
             f"UPDATE recognition_metrics SET {outcome}={outcome}+1 WHERE minute={marker}",
             (minute,),
         )
+        if identity is not None:
+            db.execute(
+                "INSERT INTO recognition_identity_metrics "
+                "(minute, personal, application, attempts) "
+                f"VALUES ({marker}, {marker}, {marker}, 1) "
+                "ON CONFLICT (minute, personal, application) DO UPDATE "
+                "SET attempts=recognition_identity_metrics.attempts+1",
+                (minute, *identity),
+            )
 
 
-def recognition_history(store: Storage, period: str) -> dict:
+def recognition_history(store: Storage, period: str, *, include_identities: bool = False) -> dict:
     """Return aggregated UTC counters for a supported period."""
     if period not in PERIODS:
         raise ValueError("Invalid recognition period")
@@ -122,8 +144,47 @@ def recognition_history(store: Storage, period: str) -> dict:
                 pg_statement + sql.SQL(" GROUP BY bucket ORDER BY bucket"), parameters
             )
         buckets = [{key: int(row[key]) for key in row.keys()} for row in rows]
+        identity_installed = False
+        identities: list[dict[str, Any]] = []
+        if include_identities and is_sqlite:
+            identity_installed = (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='recognition_identity_metrics'"
+                ).fetchone()
+                is not None
+            )
+        elif include_identities:
+            installed_row = db.execute(
+                "SELECT to_regclass('recognition_identity_metrics') AS installed"
+            ).fetchone()
+            identity_installed = bool(installed_row is not None and installed_row["installed"])
+        if identity_installed:
+            marker = "?" if is_sqlite else "%s"
+            statement = (
+                "SELECT personal, application, sum(attempts) AS attempts "
+                "FROM recognition_identity_metrics"
+            )
+            identity_parameters: tuple[int, ...] = ()
+            if duration:
+                statement += f" WHERE minute >= {marker} AND minute <= {marker}"
+                identity_parameters = (minute - duration + 1, minute)
+            for row in db.execute(
+                statement + " GROUP BY personal, application "
+                "ORDER BY attempts DESC, personal, application",
+                identity_parameters,
+            ):
+                identities.append(
+                    {
+                        "personal": row["personal"],
+                        "application": row["application"],
+                        "attempts": int(row["attempts"]),
+                    }
+                )
         return {
             "available": True,
+            "identities_available": identity_installed,
+            "identities": identities,
             "bucket_minutes": bucket_size,
             "start_minute": minute - duration + 1
             if duration

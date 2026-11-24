@@ -5,40 +5,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import time
-from datetime import UTC
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
 
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage
+from fingerprint_server.http_utils import retry_after
 from fingerprint_server.musicbrainz_errors import EnrichmentError, MusicBrainzUnavailable
 from fingerprint_server.musicbrainz_parsing import parse_artwork, parse_recording
 from fingerprint_server.settings import Settings
 
 MUSICBRAINZ_CACHE_VERSION = 9
-
-
-def _retry_after(value: str | None) -> float:
-    if not value:
-        return 0.0
-    value = value.strip()
-    if value.isascii() and value.isdigit():
-        try:
-            seconds = float(value)
-        except ValueError:
-            return 0.0
-        return seconds if math.isfinite(seconds) else 0.0
-    try:
-        date = parsedate_to_datetime(value)
-        if date.tzinfo is None:
-            date = date.replace(tzinfo=UTC)
-        return max(0.0, date.timestamp() - time.time())
-    except (ValueError, TypeError, OverflowError, OSError):
-        return 0.0
 
 
 class MusicBrainzClient:
@@ -58,8 +37,6 @@ class MusicBrainzClient:
         self.last_unavailable_status: int | None = None
         self.lookup_call = "-"
         self.batch_recordings: dict[str, dict[str, Any]] = {}
-        self.batch_isrcs: dict[str, list[dict[str, Any]]] = {}
-        self.batch_candidates: dict[str, dict[str, Any]] = {}
         self.batch_submissions: set[str] = set()
 
     async def wait_for_cooldown(self) -> None:
@@ -153,7 +130,7 @@ class MusicBrainzClient:
                 else:
                     self.backoff = min(900.0, max(30.0, self.backoff * 2))
                 self.last_unavailable_status = response.status_code
-                delay = max(self.backoff, _retry_after(response.headers.get("Retry-After")))
+                delay = max(self.backoff, retry_after(response.headers.get("Retry-After")))
                 now = time.monotonic()
                 self.cooldown_until = max(self.cooldown_until, now + delay)
                 raise MusicBrainzUnavailable(response.status_code, self.cooldown_until - now)

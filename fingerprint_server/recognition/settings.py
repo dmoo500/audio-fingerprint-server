@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import httpx
 from aiohttp import web
 from pydantic import Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,4 +35,3 @@ class RecognitionSettings(BaseSettings):
 
 
 SETTINGS_KEY = web.AppKey("recognition_settings", RecognitionSettings)
-CLIENT_KEY = web.AppKey("recognition_client", httpx.AsyncClient)

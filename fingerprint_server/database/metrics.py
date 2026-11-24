@@ -9,7 +9,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from fingerprint_server.async_utils import run_sync
-from fingerprint_server.database.recognition_metrics import RECOGNITION_TABLE
+from fingerprint_server.database.recognition_metrics import (
+    RECOGNITION_IDENTITY_TABLE,
+    RECOGNITION_TABLE,
+)
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -55,6 +58,7 @@ def initialize_metrics(db: sqlite3.Connection | Connection[dict[str, Any]]) -> N
         )
     db.execute(METRICS_TABLE)
     db.execute(RECOGNITION_TABLE)
+    db.execute(RECOGNITION_IDENTITY_TABLE)
     if isinstance(db, sqlite3.Connection):
         columns = {row[1] for row in db.execute("PRAGMA table_info(admin_hourly_metrics)")}
     else:

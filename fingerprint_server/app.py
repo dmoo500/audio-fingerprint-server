@@ -26,6 +26,7 @@ from fingerprint_server.api import (
 )
 from fingerprint_server.api_state import (
     OWNERSHIP_TASK,
+    RECOGNITION_IDENTITY,
     RECOGNITION_OUTCOME,
     SETTINGS,
     STORE,
@@ -101,7 +102,13 @@ def create_app(configuration: Settings | None = None) -> web.Application:
             if recorded:
                 outcome = request.get(RECOGNITION_OUTCOME, "failed")
                 try:
-                    await run_sync(record_outcome, request.app[STORE], minute, outcome)
+                    await run_sync(
+                        record_outcome,
+                        request.app[STORE],
+                        minute,
+                        outcome,
+                        request.get(RECOGNITION_IDENTITY),
+                    )
                 except database_error:
                     LOGGER.exception(
                         "Could not persist recognition outcome; statistics are incomplete"

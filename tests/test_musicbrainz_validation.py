@@ -343,7 +343,7 @@ async def test_multiple_isrc_recordings_confirm_identifier_without_guessing_meta
         assert references == []
 
 
-async def test_multiple_isrc_selects_first_matching_candidate(tmp_path: Path) -> None:
+async def test_multiple_isrc_selects_only_matching_candidate(tmp_path: Path) -> None:
     store = online_store(tmp_path)
     wrong_title = {**recording(OTHER), "title": "Different"}
     wrong_artist = {**recording(OTHER), "artist-credit": [{"name": "Someone else"}]}
@@ -352,8 +352,9 @@ async def test_multiple_isrc_selects_first_matching_candidate(tmp_path: Path) ->
     reply = {
         "isrc": ISRC,
         "recording-count": 5,
-        "recordings": [wrong_title, wrong_artist, wrong_duration, correct, recording(OTHER)],
+        "recordings": [wrong_title, wrong_artist, wrong_duration, correct],
     }
+    reply["recording-count"] = len(reply["recordings"])
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=reply))
     ) as client:
@@ -372,13 +373,10 @@ def test_invalid_recording_length_rejected(length: object) -> None:
 
 async def test_multiple_candidates_without_io(monkeypatch: pytest.MonkeyPatch) -> None:
     service = object.__new__(MusicBrainzService)
-    service.batch_isrcs = {}
-    service.batch_candidates = {}
     candidates = [
         service.parse_recording({**recording(OTHER), "title": "Different"}),
         service.parse_recording({**recording(OTHER), "length": 22000}),
         service.parse_recording({**recording(MBID), "length": 12000}),
-        service.parse_recording(recording(OTHER)),
     ]
     response = {"status": "resolved", "recordings": candidates, "complete": True}
 
@@ -389,6 +387,8 @@ async def test_multiple_candidates_without_io(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(service, "lookup", lookup)
     metadata = {"isrc": ISRC, "title": "Title", "artists": ["Artist"], "duration": 12.0}
     assert (await service.verify(metadata))["recording_mbid"] == MBID
+    response["recordings"].append(service.parse_recording({**recording(OTHER), "length": 12000}))
+    assert await service.verify(metadata) == metadata
     no_match = {**metadata, "title": "Unrelated"}
     assert await service.verify(no_match) == no_match
     response["complete"] = False

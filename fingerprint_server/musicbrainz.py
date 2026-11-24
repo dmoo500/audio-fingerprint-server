@@ -154,18 +154,14 @@ class MusicBrainzService(MusicBrainzClient):
                 metadata = json.loads(row["document"]).get("metadata", {})
                 if not isinstance(metadata, dict):
                     continue
-                mbid, isrc = metadata.get("recording_mbid"), metadata.get("isrc")
+                mbid = metadata.get("recording_mbid")
                 if isinstance(mbid, str):
                     identifiers.add(("rid", str(UUID(mbid))))
-                if isinstance(isrc, str) and re.fullmatch(ISRC_PATTERN, isrc):
-                    identifiers.add(("isrc", isrc.upper()))
             except (ValueError, TypeError, AttributeError):
                 # The ordinary per-submission parser reports malformed documents.
                 continue
         if len(rows) < 2 or len(identifiers) < 2:
             self.batch_recordings.clear()
-            self.batch_isrcs.clear()
-            self.batch_candidates.clear()
             self.batch_submissions = {row["id"] for row in rows[:20]}
             return
         query = " OR ".join(
@@ -173,8 +169,6 @@ class MusicBrainzService(MusicBrainzClient):
         )
         response = await self.lookup("batch", query)
         self.batch_recordings.clear()
-        self.batch_isrcs.clear()
-        self.batch_candidates.clear()
         self.batch_submissions = {row["id"] for row in rows[:20]}
         if response["status"] != "resolved" or not response["complete"]:
             LOGGER.info(
@@ -187,21 +181,13 @@ class MusicBrainzService(MusicBrainzClient):
             )
             return
         for recording in response["recordings"]:
-            self.batch_candidates[recording["id"]] = recording
             if ("rid", recording["id"]) in identifiers and recording["isrcs"] is not None:
                 self.batch_recordings[recording["id"]] = recording
-            for isrc in recording["isrcs"] or []:
-                if ("isrc", isrc) in identifiers:
-                    self.batch_isrcs.setdefault(isrc, []).append(recording)
         LOGGER.info(
-            "MusicBrainz batch: submissions=%s; identifiers=%s; candidates=%s; "
-            "recording_evidence=%s; isrc_evidence=%s; "
-            "complete=True; candidates without ISRC evidence need recording lookups",
+            "MusicBrainz batch: submissions=%s; identifiers=%s; recording_evidence=%s",
             len(self.batch_submissions),
             len(identifiers),
-            len(self.batch_candidates),
             len(self.batch_recordings),
-            len(self.batch_isrcs),
         )
 
     async def verify(
@@ -232,31 +218,6 @@ class MusicBrainzService(MusicBrainzClient):
             if not isinstance(isrc, str) or re.fullmatch(ISRC_PATTERN, isrc) is None:
                 raise UnresolvableVerification("Invalid MusicBrainz ISRC")
             normalized = isrc.upper()
-            if recording is None:
-                if normalized not in self.batch_isrcs:
-                    await self._hydrate_batch_candidate(metadata, normalized)
-                candidates = {
-                    item["id"]: item
-                    for item in self.batch_isrcs.get(normalized, [])
-                    if _metadata_matches(item, metadata)
-                }
-                if len(candidates) == 1 and (
-                    metadata.get("album") or next(iter(candidates.values())).get("album")
-                ):
-                    candidate = next(iter(candidates.values()))
-                    # The exact association is positive evidence, not proof of an exhaustive list.
-                    LOGGER.info(
-                        "MusicBrainz ISRC %s resolved by batch association and exact metadata",
-                        normalized,
-                    )
-                    result = dict(metadata)
-                    for field in ("title", "artists", "album", "recording_mbid"):
-                        value = (
-                            candidate["id"] if field == "recording_mbid" else candidate.get(field)
-                        )
-                        if not _present(result.get(field)) and value:
-                            result[field] = value
-                    return result
             response = await self.lookup("isrc", normalized)
             if response["status"] != "resolved":
                 if response["status"] != "not found":
@@ -283,18 +244,20 @@ class MusicBrainzService(MusicBrainzClient):
             elif not response["complete"] or not response["recordings"]:
                 raise VerificationPending("MusicBrainz ISRC ambiguous")
             elif len(response["recordings"]) > 1:
-                candidates = response["recordings"]
-                recording = next(
-                    (item for item in candidates if recording_matches(item, metadata)), None
-                )
-                if recording is None:
+                candidates = {
+                    item["id"]: item
+                    for item in response["recordings"]
+                    if recording_matches(item, metadata)
+                }
+                if len(candidates) != 1:
                     LOGGER.info(
-                        "MusicBrainz confirmed ISRC %s with %s candidate recordings; "
+                        "MusicBrainz confirmed ISRC %s with %s matching recordings; "
                         "retaining supplied metadata without assigning a recording MBID",
                         normalized,
                         len(candidates),
                     )
                     return dict(metadata)
+                recording = next(iter(candidates.values()))
             else:
                 recording = response["recordings"][0]
         if recording is None:
@@ -310,38 +273,6 @@ class MusicBrainzService(MusicBrainzClient):
         if not result.get("isrc") and isrcs and len(set(isrcs)) == 1:
             result["isrc"] = isrcs[0]
         return result
-
-    async def _hydrate_batch_candidate(self, metadata: dict[str, Any], isrc: str) -> None:
-        """Confirm a unique strict batch candidate's ISRC through a recording lookup."""
-        candidates = [
-            item for item in self.batch_candidates.values() if _metadata_matches(item, metadata)
-        ]
-        if len(candidates) != 1:
-            return
-        identifier = candidates[0]["id"]
-        response = await self.lookup("recording", identifier)
-        if response["status"] == "resolved":
-            recording = response["recording"]
-            if (
-                recording["id"] == identifier
-                and isrc in (recording["isrcs"] or [])
-                and _metadata_matches(recording, metadata)
-                and (metadata.get("album") or recording.get("album"))
-            ):
-                self.batch_recordings[identifier] = recording
-                self.batch_isrcs[isrc] = [recording]
-                LOGGER.info(
-                    "MusicBrainz batch candidate %s confirmed for ISRC %s by recording lookup",
-                    identifier,
-                    isrc,
-                )
-                return
-        LOGGER.info(
-            "MusicBrainz batch candidate %s did not confirm ISRC %s and strict metadata; "
-            "using direct ISRC lookup",
-            identifier,
-            isrc,
-        )
 
     async def _resolve_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Resolve exactly one complete metadata candidate, then verify its recording lookup."""

@@ -72,7 +72,17 @@ async def recognition_statistics(request: web.Request) -> web.Response:
     period = request.query.get("period", "day")
     if period not in PERIODS:
         raise HTTPError(400, "Invalid recognition period")
-    return web.json_response(await run_sync(recognition_history, data_for(request).store, period))
+    include_identities = request.query.get("include_identities", "false")
+    if include_identities not in ("true", "false"):
+        raise HTTPError(400, "Invalid identity statistics selection")
+    return web.json_response(
+        await run_sync(
+            recognition_history,
+            data_for(request).store,
+            period,
+            include_identities=include_identities == "true",
+        )
+    )
 
 
 async def pending_review(request: web.Request) -> web.Response:

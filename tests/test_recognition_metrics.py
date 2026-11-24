@@ -1,4 +1,4 @@
-"""Verify durable anonymous counters for recognition requests."""
+"""Verify durable aggregate counters for recognition requests."""
 
 import logging
 import sqlite3
@@ -15,6 +15,7 @@ from test_server import audio, recognize, settings
 
 from fingerprint_server.api_state import STORE
 from fingerprint_server.app import create_app
+from fingerprint_server.database.application_keys import ApplicationKeys
 from fingerprint_server.database.recognition_metrics import (
     recognition_history,
     record_attempt,
@@ -65,6 +66,84 @@ async def test_core_counts_both_routes_and_errors(tmp_path: Path, monkeypatch) -
     restarted = Store(tmp_path / "test.db")
     restarted.initialize()
     assert recognition_history(restarted, "all") == history
+
+
+async def test_key_attribution_requires_valid_gateway_credentials(tmp_path: Path) -> None:
+    from pydantic import SecretStr
+    from test_server import READ
+
+    legacy_key = "legacy-application-key-" + "a" * 24
+    application = create_app(
+        settings(tmp_path, gateway_enabled=True, application_key=SecretStr(legacy_key))
+    )
+    async with AsyncClient(application) as client:
+        store = application[STORE]
+        app_id, app_key = ApplicationKeys(store).issue("recognizer")
+        base = {"X-API-Key": READ, "X-Consumer-Username": "website"}
+        path = "/api/v1/dejavu/recognize/landmarks"
+        assert (
+            await client.post(path, headers={**base, "X-Application-Key": legacy_key})
+        ).status_code == 415
+        assert (
+            await client.post(
+                path,
+                headers={
+                    **base,
+                    "X-Consumer-Username": "direct-client",
+                    "X-Application-Key": app_key,
+                },
+            )
+        ).status_code == 415
+        assert (
+            await client.post(
+                path,
+                headers={**base, "X-API-Key": "wrong", "X-Application-Key": app_key},
+            )
+        ).status_code == 401
+        assert (
+            await client.post(
+                path,
+                headers={
+                    **base,
+                    "X-Consumer-Username": "bad identity",
+                    "X-Application-Key": app_key,
+                },
+            )
+        ).status_code == 415
+        history = recognition_history(store, "day", include_identities=True)
+        assert history["identities"] == [
+            {"personal": "direct-client", "application": f"app-{app_id}", "attempts": 1},
+            {"personal": "website", "application": "fingerprint", "attempts": 1},
+        ]
+        assert history["buckets"][0]["attempts"] == 4
+        assert legacy_key not in str(history)
+        assert app_key not in str(history)
+
+
+def test_key_metrics_upgrade_and_periods_preserve_existing_totals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = Store(tmp_path / "test.db")
+    store.initialize()
+    now = 30_000_017
+    monkeypatch.setattr(
+        "fingerprint_server.database.recognition_metrics.time.time", lambda: now * 60
+    )
+    with store.connect() as db:
+        db.execute("DROP TABLE recognition_identity_metrics")
+        db.execute("INSERT INTO recognition_metrics(minute,attempts) VALUES (?, 4)", (now,))
+    assert not recognition_history(store, "day", include_identities=True)["identities_available"]
+    store.initialize()
+    for minute in (now - 60, now - 59, now):
+        record_attempt(store, minute)
+        record_outcome(store, minute, "no_match", ("user", "app-id"))
+    store.initialize()
+    hourly = recognition_history(store, "hour", include_identities=True)
+    assert hourly["identities"] == [{"personal": "user", "application": "app-id", "attempts": 2}]
+    assert sum(row["attempts"] for row in hourly["buckets"]) == 6
+    assert (
+        recognition_history(store, "all", include_identities=True)["identities"][0]["attempts"] == 3
+    )
 
 
 @pytest.mark.parametrize("operation", ["record_attempt", "record_outcome"])
@@ -199,7 +278,10 @@ def test_postgres_counters_and_json_values(postgres, tmp_path: Path, period: str
     store.initialize()
     now = int(time.time()) // 60
     record_attempt(store, now)
-    record_outcome(store, now, "matched")
+    record_outcome(store, now, "matched", ("user", "app-id"))
     bucket = recognition_history(store, period)["buckets"][0]
     assert bucket["attempts"] == bucket["matched"] == 1
     assert all(type(value) is int for value in bucket.values())
+    assert recognition_history(store, period, include_identities=True)["identities"] == [
+        {"personal": "user", "application": "app-id", "attempts": 1}
+    ]

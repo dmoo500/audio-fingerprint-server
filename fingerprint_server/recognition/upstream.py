@@ -1,22 +1,42 @@
 """Bounded HTTP transport to the fingerprint API."""
 
 import logging
+import math
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
+from aiohttp import web
 
 from fingerprint_server.aiohttp_support import HTTPError
-from fingerprint_server.recognition.settings import RecognitionSettings
+from fingerprint_server.http_utils import retry_after
+
+if TYPE_CHECKING:
+    from fingerprint_server.recognition.settings import RecognitionSettings
 
 LOGGER = logging.getLogger(__name__)
 MAX_RESPONSE_BYTES = 64_000
 
 
+@dataclass
+class UpstreamClient:
+    """Keep the upstream connection and service-wide retry deadline."""
+
+    client: httpx.AsyncClient
+    cooldown_until: float = 0.0
+    cooldown_status: int = 429
+
+
+CLIENT_KEY = web.AppKey("recognition_client", UpstreamClient)
+
+
 @asynccontextmanager
 async def open_client(
     settings: RecognitionSettings, transport: httpx.AsyncBaseTransport | None
-) -> AsyncIterator[httpx.AsyncClient]:
+) -> AsyncIterator[UpstreamClient]:
     """Open the server-owned upstream client for one service lifespan."""
     headers = {"X-API-Key": settings.read_key.get_secret_value()}
     if settings.application_key is not None:
@@ -30,15 +50,22 @@ async def open_client(
         trust_env=False,
         transport=transport,
     ) as client:
-        yield client
+        yield UpstreamClient(client)
 
 
 async def upstream(
-    client: httpx.AsyncClient, method: str, path: str, *, content: bytes | None = None
+    upstream_client: UpstreamClient, method: str, path: str, *, content: bytes | None = None
 ) -> bytes:
     """Return a bounded upstream response or a redacted HTTP error."""
+    remaining = upstream_client.cooldown_until - time.monotonic()
+    if remaining > 0:
+        raise HTTPError(
+            upstream_client.cooldown_status,
+            "Recognition is busy. Please try again later.",
+            headers={"Retry-After": str(math.ceil(remaining))},
+        )
     try:
-        async with client.stream(
+        async with upstream_client.client.stream(
             method,
             path,
             content=content,
@@ -48,11 +75,22 @@ async def upstream(
                 LOGGER.warning("Recognition upstream returned HTTP %s", response.status_code)
                 if response.status_code == 422:
                     raise HTTPError(422, "The recording could not be processed. Try again.")
-                if response.status_code == 429:
+                if response.status_code == 429 or (
+                    response.status_code == 503 and "Retry-After" in response.headers
+                ):
+                    delay = max(60, retry_after(response.headers.get("Retry-After")))
+                    deadline = time.monotonic() + delay
+                    if deadline > upstream_client.cooldown_until:
+                        upstream_client.cooldown_until = deadline
+                        upstream_client.cooldown_status = response.status_code
                     raise HTTPError(
-                        429,
-                        "Recognition is busy. Please try again in a minute.",
-                        headers={"Retry-After": "60"},
+                        response.status_code,
+                        "Recognition is busy. Please try again later.",
+                        headers={
+                            "Retry-After": str(
+                                math.ceil(upstream_client.cooldown_until - time.monotonic())
+                            )
+                        },
                     )
                 raise HTTPError(503, "Recognition is temporarily unavailable.")
             data = bytearray()

@@ -16,6 +16,7 @@ from pydantic import SecretStr, ValidationError
 
 from fingerprint_server.aiohttp_support import HTTPError, trusted_proxy
 from fingerprint_server.recognition.app import Admission, RecognitionSettings, create_app
+from fingerprint_server.recognition.upstream import UpstreamClient, upstream
 
 ORIGIN = "https://listen.example"
 HEADERS = {
@@ -322,6 +323,37 @@ def test_upstream_errors_are_explicit_and_never_leak_details(code: int, expected
         response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
         assert response.status_code == expected
         assert "internal secret details" not in response.text
+
+
+@pytest.mark.parametrize("status", [429, 503])
+async def test_upstream_cooldown_applies_across_routes(
+    status: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Respect the service's retry deadline across different upstream endpoints."""
+    module = import_module("fingerprint_server.recognition.upstream")
+    clock = SimpleNamespace(monotonic=lambda: 0.0)
+    monkeypatch.setattr(module, "time", clock)
+    calls: list[str] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(status, headers={"Retry-After": "120"})
+        return httpx.Response(200, content=b"ok")
+
+    async with httpx.AsyncClient(
+        base_url="https://example.test", transport=httpx.MockTransport(reply)
+    ) as client:
+        service = UpstreamClient(client)
+        for path in ("/statistics", "/recognize", "/artwork"):
+            with pytest.raises(HTTPError) as caught:
+                await upstream(service, "GET", path)
+            assert caught.value.status_code == status
+            assert caught.value.headers == {"Retry-After": "120"}
+        assert calls == ["/statistics"]
+        clock.monotonic = lambda: 120.0
+        assert await upstream(service, "GET", "/recognize") == b"ok"
+        assert calls == ["/statistics", "/recognize"]
 
 
 @pytest.mark.parametrize(

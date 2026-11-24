@@ -226,6 +226,16 @@ def test_recognition_statistics_requires_session(data: SQLiteAdminData) -> None:
         assert week.status_code == 200
         assert week.json()["end_minute"] - week.json()["start_minute"] == 7 * 24 * 60
         assert week.json()["bucket_minutes"] == 24 * 60
+        identities = client.get(
+            "/admin/api/recognition-statistics?period=week&include_identities=true"
+        )
+        assert identities.status_code == 200
+        assert identities.json()["identities_available"] is True
+        assert identities.json()["identities"] == []
+        assert (
+            client.get("/admin/api/recognition-statistics?include_identities=invalid").status_code
+            == 400
+        )
         assert client.get("/admin/api/recognition-statistics?period=invalid").status_code == 400
 
 

@@ -15,8 +15,8 @@ from fingerprint_server.async_utils import run_sync
 from fingerprint_server.recognition.api import Admission as Admission
 from fingerprint_server.recognition.api import create_routes
 from fingerprint_server.recognition.history import HISTORY_KEY, History
-from fingerprint_server.recognition.settings import CLIENT_KEY, SETTINGS_KEY, RecognitionSettings
-from fingerprint_server.recognition.upstream import open_client
+from fingerprint_server.recognition.settings import SETTINGS_KEY, RecognitionSettings
+from fingerprint_server.recognition.upstream import CLIENT_KEY, open_client
 
 LOGGER = logging.getLogger(__name__)
 STATIC = Path(__file__).with_name("static")

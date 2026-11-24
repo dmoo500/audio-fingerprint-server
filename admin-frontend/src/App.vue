@@ -421,6 +421,7 @@ onUnmounted(() => {
           v-else-if="route === '/admin/recognition'"
           :revision="snapshot?.revisions.recognition"
           detail
+          @navigate="navigate"
         />
         <Credentials
           v-else-if="route === '/admin/keys' || route === '/admin/applications'"

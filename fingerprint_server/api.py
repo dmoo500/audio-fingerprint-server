@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 from fingerprint_server.aiohttp_support import HTTPError, bounded_body
 from fingerprint_server.api_state import (
     OWNERSHIP_TASK,
+    RECOGNITION_IDENTITY,
     RECOGNITION_OUTCOME,
     SETTINGS,
     STORE,
@@ -166,6 +167,14 @@ def create_router() -> web.RouteTableDef:
             request.headers.get("X-API-Key", "").encode(), expected.get_secret_value().encode()
         ):
             raise HTTPError(401, "A valid scope-specific API key is required")
+        username = "-"
+        if settings.gateway_enabled:
+            authenticated_user = request.headers.get("X-Consumer-Username", "")
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", authenticated_user):
+                username = authenticated_user
+                request[RECOGNITION_IDENTITY] = (username, application_identity)
+            else:
+                AUDIT_LOGGER.warning("Authenticated gateway request has no valid consumer identity")
         limit = 60 if scope in ("upload", "availability") else 30
         store = request.app[STORE]
         if not isinstance(store, Store):
@@ -180,13 +189,6 @@ def create_router() -> web.RouteTableDef:
                 times.append(now)
         if not allowed:
             raise HTTPError(429, "Request rate limit reached", headers={"Retry-After": "60"})
-        username = "-"
-        if settings.gateway_enabled:
-            authenticated_user = request.headers.get("X-Consumer-Username", "")
-            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", authenticated_user):
-                username = authenticated_user
-            else:
-                AUDIT_LOGGER.warning("Authenticated gateway request has no valid consumer identity")
         resource = request.match_info.route.resource
         AUDIT_LOGGER.info(
             "authenticated user=%s application=%s scope=%s method=%s route=%s",

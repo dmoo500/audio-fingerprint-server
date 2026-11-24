@@ -22,8 +22,8 @@ from fingerprint_server.async_utils import run_sync
 from fingerprint_server.http_utils import trusted_image
 from fingerprint_server.recognition.accounts import account_routes
 from fingerprint_server.recognition.history import COOKIE, HISTORY_KEY
-from fingerprint_server.recognition.settings import CLIENT_KEY, SETTINGS_KEY
-from fingerprint_server.recognition.upstream import upstream
+from fingerprint_server.recognition.settings import SETTINGS_KEY
+from fingerprint_server.recognition.upstream import CLIENT_KEY, upstream
 
 LOGGER = logging.getLogger(__name__)
 SAMPLE_RATE = TypeAdapter(Annotated[int, Field(ge=8000, le=192000)])

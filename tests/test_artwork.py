@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from contextlib import suppress
+from email.utils import formatdate
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,6 +42,24 @@ def store_at(path: Path) -> Store:
             (REFERENCE, json.dumps({"recording_mbid": RECORDING, "album": "Example album"}), 0),
         )
     return store
+
+
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("date_header", [False, True])
+async def test_cover_respects_long_retry_after(
+    tmp_path: Path, status: int, date_header: bool
+) -> None:
+    store = store_at(tmp_path)
+    header = formatdate(time.time() + 3600, usegmt=True) if date_header else "3600"
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(status, headers={"Retry-After": header})
+        )
+    ) as client:
+        resolver = ArtworkResolver(store, MusicBrainzService(store, api_settings(tmp_path), client))
+        with pytest.raises(httpx.HTTPStatusError):
+            await resolver.cover(GROUP)
+        assert resolver.next_cover - time.monotonic() > 3598
 
 
 def test_additive_migration_and_queue_survive_restart(tmp_path: Path) -> None:

@@ -20,7 +20,7 @@ import httpx
 from fingerprint_server.async_utils import run_sync
 from fingerprint_server.database import Storage
 from fingerprint_server.database.sqlite import Store
-from fingerprint_server.http_utils import trusted_image
+from fingerprint_server.http_utils import retry_after, trusted_image
 from fingerprint_server.musicbrainz import (
     EnrichmentError,
     MusicBrainzService,
@@ -507,8 +507,7 @@ class ArtworkResolver:
                 return url
             raise ValueError("Untrusted cover redirect")
         if response.status_code in (429, 503):
-            retry = response.headers.get("retry-after", "60")
-            delay = min(900, max(60, int(retry))) if retry.isdecimal() else 60
+            delay = max(60, retry_after(response.headers.get("retry-after")))
             self.next_cover = time.monotonic() + delay
         response.raise_for_status()
         raise ValueError("Cover archive did not return an image redirect")

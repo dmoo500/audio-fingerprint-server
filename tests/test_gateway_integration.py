@@ -136,6 +136,26 @@ def deployment(tmp_path: Path) -> Iterator[tuple[httpx.Client, httpx.Client, str
             ).stdout
             assert not json.loads(bindings), "Backend must not publish host ports"
             yield public, admin, env["FP_APPLICATION_KEY"], env["FP_READ_KEY"]
+            identity_counts = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "python",
+                    "-c",
+                    "import json,sqlite3; "
+                    "db=sqlite3.connect('/data/fingerprints.db'); "
+                    "print(json.dumps(db.execute("
+                    "'SELECT personal,application,sum(attempts) "
+                    "FROM recognition_identity_metrics GROUP BY personal,application'"
+                    ").fetchall()))",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            assert json.loads(identity_counts.stdout) == [["both", "fingerprint", 2]]
             logs = subprocess.run(
                 [*command, "logs", "--no-log-prefix", "gateway", "fingerprints"],
                 env=env,
@@ -256,7 +276,7 @@ def test_real_gateway_tokens_permissions_revocation_and_pcm(
             "sample_count": 5 * SAMPLE_RATE,
             "fingerprints": fingerprint(samples[: 5 * SAMPLE_RATE]),
         },
-        headers=headers,
+        headers={**headers, "X-Consumer-Username": "forged"},
     )
     assert response.status_code == 200 and response.json() == pcm_result
     admin.delete("consumers/both").raise_for_status()

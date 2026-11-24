@@ -78,6 +78,7 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
     with sqlite3.connect(source) as db:
         db.execute("INSERT INTO admin_hourly_metrics VALUES (1000,1,2,3,4,1,17)")
         db.execute("INSERT INTO recognition_metrics VALUES (1000,9,3,2,1,2)")
+        db.execute("INSERT INTO recognition_identity_metrics VALUES (1000,'personal','app-id',9)")
         db.execute("INSERT INTO musicbrainz_reviews VALUES ('second','[]',NULL)")
         db.execute(
             "INSERT INTO artwork_requests VALUES "
@@ -122,6 +123,9 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
             (1000, 1, 2, 3, 4, 1, 17)
         ]
         assert db.execute("SELECT * FROM recognition_metrics").fetchall() == [(1000, 9, 3, 2, 1, 2)]
+        assert db.execute("SELECT * FROM recognition_identity_metrics").fetchall() == [
+            (1000, "personal", "app-id", 9)
+        ]
         assert db.execute("SELECT * FROM musicbrainz_reviews").fetchall() == [
             ("second", "[]", None)
         ]

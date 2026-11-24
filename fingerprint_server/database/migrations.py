@@ -183,6 +183,7 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
             "musicbrainz_reviews",
             "admin_hourly_metrics",
             "recognition_metrics",
+            "recognition_identity_metrics",
             "submission_metadata",
             "application_key_schema",
             "application_keys",

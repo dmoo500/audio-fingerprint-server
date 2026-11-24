@@ -85,6 +85,8 @@ it("shows recognition periods and handles unavailable statistics", async () => {
   fetch.mockResolvedValueOnce(
     response({
       available: true,
+      identities_available: true,
+      identities: [],
       bucket_minutes: 60,
       buckets: [
         {
@@ -104,7 +106,7 @@ it("shows recognition periods and handles unavailable statistics", async () => {
   const wrapper = mount(RecognitionStatistics, { props: { detail: true } });
   await flushPromises();
   expect(fetch.mock.calls[0]?.[0]).toBe(
-    "/admin/api/recognition-statistics?period=day",
+    "/admin/api/recognition-statistics?period=day&include_identities=true",
   );
   expect(wrapper.text()).toContain("5");
   expect(wrapper.text()).toContain("Times are UTC");
@@ -112,9 +114,38 @@ it("shows recognition periods and handles unavailable statistics", async () => {
   await wrapper.get("#recognition-period").setValue("all");
   await flushPromises();
   expect(fetch.mock.calls[1]?.[0]).toBe(
-    "/admin/api/recognition-statistics?period=all",
+    "/admin/api/recognition-statistics?period=all&include_identities=true",
   );
   expect(wrapper.text()).toContain("not installed yet");
+  wrapper.unmount();
+});
+
+it("shows key attribution and links to key management", async () => {
+  vi.mocked(globalThis.fetch).mockResolvedValue(
+    response({
+      available: true,
+      identities_available: true,
+      identities: [
+        { personal: "website", application: "fingerprint", attempts: 12 },
+        { personal: "client", application: "app-123", attempts: 3 },
+      ],
+      bucket_minutes: 60,
+      start_minute: 30000000,
+      end_minute: 30001440,
+      buckets: [],
+    }) as Response,
+  );
+  const wrapper = mount(RecognitionStatistics, { props: { detail: true } });
+  await flushPromises();
+  const rows = wrapper.findAll(
+    'table[aria-label="Recognition requests by key"] tbody tr',
+  );
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.text()).toContain("website");
+  expect(rows[0]!.text()).toContain("fingerprint");
+  expect(rows[0]!.text()).toContain("12");
+  await wrapper.get('a[href="/admin/keys"]').trigger("click");
+  expect(wrapper.emitted("navigate")).toEqual([["/admin/keys"]]);
   wrapper.unmount();
 });
 

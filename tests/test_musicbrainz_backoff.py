@@ -14,6 +14,7 @@ from test_metadata_gate import document
 from test_musicbrainz_validation import MBID, api, online_settings, online_store
 
 import fingerprint_server.database.sqlite as store_module
+import fingerprint_server.http_utils as http_utils
 import fingerprint_server.musicbrainz_client as worker_module
 from fingerprint_server.musicbrainz import MusicBrainzUnavailable
 from fingerprint_server.worker import Worker
@@ -50,6 +51,7 @@ async def test_retry_after(
         "time",
         SimpleNamespace(monotonic=lambda: clock.monotonic, time=lambda: clock.wall),
     )
+    monkeypatch.setattr(http_utils, "time", SimpleNamespace(time=lambda: clock.wall))
     store = online_store(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(

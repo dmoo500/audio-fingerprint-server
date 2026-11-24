@@ -17,12 +17,12 @@ Some show an earlier layout.
 
 ![Admin overview showing worker availability, database size, acoustic references and searchable recordings](images/admin-overview.png)
 
-| Card | What to look for |
-| --- | --- |
-| **Searchable recordings** | Same count as Recognition; verified variants count once. |
-| **Acoustic references** | Published fingerprints versus all stored fingerprints. |
-| **Database size** | Includes indexes, excludes the SQLite WAL. |
-| **Pending metadata** | **View pending submissions** opens the filtered list. |
+| Card                          | What to look for                                             |
+| ----------------------------- | ------------------------------------------------------------ |
+| **Searchable recordings**     | Same count as Recognition; verified variants count once.     |
+| **Acoustic references**       | Published fingerprints versus all stored fingerprints.       |
+| **Database size**             | Includes indexes, excludes the SQLite WAL.                   |
+| **Pending metadata**          | **View pending submissions** opens the filtered list.        |
 | **Manual MusicBrainz review** | **Review candidates** opens the subset requiring a decision. |
 
 ![Live ingestion queue and 30-day charts for searchable recordings and submission backlog, with the Refresh charts button](images/admin-queue-history.png)
@@ -38,12 +38,14 @@ not reconstructed. It counts current eligible reference covers, not unique album
 The overview counts requests reaching either fingerprint recognition endpoint,
 including requests from the Recognition website and direct API clients. Requests
 rejected by a gateway or the website before reaching the service are not counted.
-Attempts and their outcomes are saved immediately as anonymous per-minute totals,
-without audio, IP addresses or individual events. Results are retained indefinitely
-and start when the updated fingerprint service is first started; earlier activity
-cannot be reconstructed.
+Attempts and their outcomes are saved immediately as per-minute totals. Once a
+gateway request has passed both credential checks, a separate per-minute count
+also records its personal consumer and application identity when the attempt
+finishes. No secret keys, audio, IP addresses or individual events are stored.
+Both totals and key-linked counts are retained indefinitely. Counts begin when
+their respective feature is installed; earlier activity cannot be reconstructed.
 
-The available windows are the last hour, 24 hours, 30 days, 365 days and all time.
+The available windows are the last hour, 24 hours, 7 days, 30 days, 365 days and all time.
 The overview shows totals and an attempts chart for the selected window; open
 **Recognition activity** in the menu for the totals and interval table. Both
 views update when recognition counters change, at most once every five seconds,
@@ -51,6 +53,14 @@ and can also be refreshed manually. Brief interruptions are reconciled
 periodically; the live indicator reports browser connection and sampling
 failures. Notification transport failures are logged while periodic
 reconciliation continues.
+The detail view shows authenticated gateway counts by personal and application
+identity for the selected period, with links to the existing revocation controls.
+The Recognition website uses a shared key, so individual visitors cannot be
+distinguished. Unauthenticated requests, shared-key direct deployments, missing
+consumer identities and requests interrupted before completion are not attributed.
+The gateway must be private and overwrite consumer headers; never expose the
+backend directly to untrusted clients. Upgrade the fingerprint service before
+the admin to install the identity counter table.
 Windows are rounded to UTC minutes, and larger display intervals may be partial at
 their edges. Failed requests include validation, authentication and service errors.
 Attempts without an outcome may still be running or may have been interrupted by

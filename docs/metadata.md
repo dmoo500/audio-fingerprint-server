@@ -28,33 +28,17 @@ The shared cooldown is held in memory and resets on restart, but the current sub
 
 The worker previews up to 19 eligible submissions alongside the current job
 without claiming them. For two or more submissions with at least two distinct
-identifiers, it sends one escaped recording search combining exact `isrc` and
-`rid` terms with `OR`, requesting at most 100 results. The batch shares the
-existing pacing, cooldown and endpoint-versioned cache. Only complete search
-responses provide positive evidence; empty or truncated responses fall back
-to direct lookups and never mark individual identifiers absent.
+recording IDs, it sends one escaped recording search combining exact `rid`
+terms with `OR`, requesting at most 100 results. The batch shares the existing
+pacing, cooldown and endpoint-versioned cache. Only complete search responses
+provide positive evidence; empty or truncated responses fall back to direct
+lookups and never mark individual identifiers absent. Exactly requested
+recording IDs with explicit ISRC lists can satisfy a recording lookup.
 
-MusicBrainz search results normally omit ISRC lists. The worker retains them
-as candidates instead of discarding them: for an ISRC-only submission with
-exactly one strict title/artist/duration match in the complete batch, it lazily
-fetches that recording, using the existing cache and request pacing. Only if
-the recording lookup confirms both the ISRC association and the same strict
-metadata can it replace the direct ISRC lookup. Missing associations, changed
-metadata and ambiguous candidates retain the ordinary direct verification;
-upstream errors retain the shared cooldown and retry rules. Candidates are
-never all fetched eagerly. This can save a separate metadata search or reuse a
-recording already checked for another submission, but does not turn twenty
-submissions into one authoritative lookup.
-
-Exactly requested recording IDs with explicit ISRC lists can satisfy a
-recording lookup. An ISRC-only submission can use a positive batch association
-only with a unique strict title/artist/duration match under the rules below,
-and sufficient supplied or returned album metadata. Otherwise normal direct
-ISRC verification remains unchanged. Search results do not prove an exhaustive
-ISRC-to-recording mapping; batches are an optimization, not a bulk authoritative
-lookup API. Missing metadata may still require individual recording lookups.
-Logs distinguish candidate counts from usable recording and ISRC evidence,
-and report hydration confirmations and fallbacks.
+An ISRC-only submission uses the direct ISRC lookup because search results do
+not prove an exhaustive ISRC-to-recording mapping. When multiple recordings
+share an ISRC, a recording ID is assigned only if exactly one matches the
+supplied metadata; otherwise the supplied metadata is retained without an ID.
 Only one bounded batch of evidence is held in worker memory, and pending-pass
 deletion/retry protections are unchanged. No database migration is needed.
 
