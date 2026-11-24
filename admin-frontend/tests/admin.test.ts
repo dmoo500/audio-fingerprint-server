@@ -188,6 +188,38 @@ it("keeps an empty rolling chart and clips partial boundary hours", async () => 
   wrapper.unmount();
 });
 
+it("shows the full rolling week when the seven-day period is selected", async () => {
+  const fetch = vi.mocked(globalThis.fetch);
+  fetch.mockResolvedValue(
+    response({
+      available: true,
+      bucket_minutes: 1440,
+      start_minute: 29991378,
+      end_minute: 30001458,
+      buckets: [],
+    }) as Response,
+  );
+  const wrapper = mount(RecognitionStatistics);
+  await flushPromises();
+  expect(wrapper.get('#recognition-period option[value="week"]').text()).toBe(
+    "Last 7 days",
+  );
+  await wrapper.get("#recognition-period").setValue("week");
+  await flushPromises();
+  expect(fetch.mock.calls.at(-1)?.[0]).toBe(
+    "/admin/api/recognition-statistics?period=week",
+  );
+  const bars = wrapper.findAll("svg rect");
+  expect(bars).toHaveLength(8);
+  expect(bars.every((bar) => bar.attributes("height") === "0")).toBe(true);
+  expect(Number(bars[0]!.attributes("x"))).toBe(0);
+  const last = bars[7]!;
+  expect(
+    Number(last.attributes("x")) + Number(last.attributes("width")),
+  ).toBeCloseTo(600);
+  wrapper.unmount();
+});
+
 it("refreshes recognition statistics when the live revision changes", async () => {
   const fetch = vi.mocked(globalThis.fetch);
   fetch.mockResolvedValue(

@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS recognition_metrics (
 PERIODS = {
     "hour": (60, 1),
     "day": (24 * 60, 60),
+    "week": (7 * 24 * 60, 24 * 60),
     "month": (30 * 24 * 60, 24 * 60),
     "year": (365 * 24 * 60, 7 * 24 * 60),
     "all": (None, 30 * 24 * 60),

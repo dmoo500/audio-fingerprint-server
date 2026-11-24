@@ -143,6 +143,7 @@ watch(
     >
       <option value="hour">Last hour</option>
       <option value="day">Last 24 hours</option>
+      <option value="week">Last 7 days</option>
       <option value="month">Last 30 days</option>
       <option value="year">Last 365 days</option>
       <option value="all">All time</option>

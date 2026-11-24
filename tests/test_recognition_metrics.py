@@ -122,7 +122,8 @@ def test_old_database_has_explicit_unavailable_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "period,duration", [("hour", 60), ("day", 1440), ("month", 43200), ("year", 525600)]
+    "period,duration",
+    [("hour", 60), ("day", 1440), ("week", 10080), ("month", 43200), ("year", 525600)],
 )
 def test_chart_window_includes_inactive_intervals(
     tmp_path: Path, monkeypatch, period, duration
@@ -147,6 +148,26 @@ def test_chart_window_includes_inactive_intervals(
     assert all_time["end_minute"] == all_time["start_minute"] + all_time["bucket_minutes"]
 
 
+def test_week_window_counts_only_the_last_seven_days(tmp_path: Path, monkeypatch) -> None:
+    store = Store(tmp_path / "test.db")
+    store.initialize()
+    now = 30_000_017
+    monkeypatch.setattr(
+        "fingerprint_server.database.recognition_metrics.time.time", lambda: now * 60
+    )
+    for minute in (now - 10080, now - 10079, now, now + 1):
+        record_attempt(store, minute)
+    history = recognition_history(store, "week")
+    assert history["start_minute"] == now - 10079
+    assert history["end_minute"] == now + 1
+    assert history["bucket_minutes"] == 1440
+    assert sum(bucket["attempts"] for bucket in history["buckets"]) == 2
+    assert [bucket["bucket"] for bucket in history["buckets"]] == [
+        (now - 10079) // 1440 * 1440,
+        now // 1440 * 1440,
+    ]
+
+
 def test_wal_readers_continue_while_a_writer_waits(tmp_path: Path) -> None:
     store = Store(tmp_path / "test.db")
     store.initialize()
@@ -168,7 +189,8 @@ def test_wal_readers_continue_while_a_writer_waits(tmp_path: Path) -> None:
     assert sum(row["attempts"] for row in recognition_history(store, "all")["buckets"]) == 2
 
 
-def test_postgres_counters_and_json_values(postgres, tmp_path: Path) -> None:
+@pytest.mark.parametrize("period", ["day", "week"])
+def test_postgres_counters_and_json_values(postgres, tmp_path: Path, period: str) -> None:
     from fingerprint_server.database.postgres import PostgresStore
 
     store = PostgresStore(
@@ -178,6 +200,6 @@ def test_postgres_counters_and_json_values(postgres, tmp_path: Path) -> None:
     now = int(time.time()) // 60
     record_attempt(store, now)
     record_outcome(store, now, "matched")
-    bucket = recognition_history(store, "day")["buckets"][0]
+    bucket = recognition_history(store, period)["buckets"][0]
     assert bucket["attempts"] == bucket["matched"] == 1
     assert all(type(value) is int for value in bucket.values())
