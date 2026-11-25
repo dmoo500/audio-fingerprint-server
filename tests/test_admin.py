@@ -364,11 +364,15 @@ def test_musicbrainz_selection_locks_and_validates_before_updates(monkeypatch):
     from contextlib import contextmanager
 
     from fingerprint_server.admin.errors import ActionFailed
+    from fingerprint_server.database.codes import SubmissionState
 
     data = AdminData(configuration())
     db = Mock()
     submission_result = Mock()
-    submission_result.fetchone.return_value = {"id": "submission-a", "state": "pending_metadata"}
+    submission_result.fetchone.return_value = {
+        "id": "submission-a",
+        "state": SubmissionState.PENDING_METADATA,
+    }
     review_result = Mock()
     review_result.fetchone.return_value = {
         "candidates": json.dumps([{"id": "recording-a"}]),
@@ -397,7 +401,10 @@ def test_musicbrainz_selection_locks_and_validates_before_updates(monkeypatch):
     assert db.execute.call_count == 2
 
     db.execute.reset_mock()
-    submission_result.fetchone.return_value = {"id": "submission-a", "state": "failed"}
+    submission_result.fetchone.return_value = {
+        "id": "submission-a",
+        "state": SubmissionState.FAILED,
+    }
     db.execute.side_effect = [submission_result]
     with pytest.raises(ActionFailed, match="no longer awaiting"):
         data.select_musicbrainz_candidate("submission-a", "recording-a")
@@ -567,7 +574,7 @@ def test_actual_postgres_admin_queries_and_atomic_actions(postgres, tmp_path: Pa
     assert len(data.read("submissions", skip=1, limit=2)) == 2
     assert data.read("submissions", pks=["0"])[0]["metadata"]["title"] == "Title 0"
     assert data.read("references", count=True) == 1
-    assert data.overview()["format_version"] == 1
+    assert data.overview()["format_version"] == 3
     for ids, operation in ((["0", "3"], "delete"), (["2"], "retry"), (["4"], "delete")):
         with pytest.raises(ActionFailed):
             data.mutate(ids, operation)

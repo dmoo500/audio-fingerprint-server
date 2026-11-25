@@ -12,6 +12,7 @@ import pytest
 from test_server import settings
 
 import fingerprint_server.database.postgres as postgres
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
 
 
@@ -20,8 +21,8 @@ def test_queue_modules_can_be_imported_first() -> None:
         [
             sys.executable,
             "-c",
-            "import fingerprint_server.database.postgres_queue, "
-            "fingerprint_server.database.sqlite_queue",
+            "import fingerprint_server.database.postgres.queue, "
+            "fingerprint_server.database.sqlite.queue",
         ],
         check=True,
     )
@@ -48,7 +49,15 @@ def test_postgres_queue_uses_facade_patches(
 
     assert store.submit("first", "{}", 10) == {"id": "first", "state": "queued"}
     connect.assert_called_once_with(write=True)
-    assert db.execute.call_args.args[1] == ("first", "{}", "queued", None, 123.0, 0, 123.0)
+    assert db.execute.call_args.args[1] == (
+        "first",
+        "{}",
+        SubmissionState.QUEUED,
+        None,
+        123.0,
+        0,
+        123.0,
+    )
 
     monkeypatch.setattr(store, "_one", Mock(return_value={"count": 10, "bytes": 0}))
     with pytest.raises(postgres.QueueFullError):

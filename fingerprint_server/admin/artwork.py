@@ -3,6 +3,7 @@
 import time
 
 from fingerprint_server.database import Storage
+from fingerprint_server.database.codes import ArtworkState, decode_artwork_state
 from fingerprint_server.database.sqlite import Store
 
 
@@ -19,22 +20,34 @@ def artwork_statistics(store: Storage) -> dict[str, int] | None:
             else "t.metadata::jsonb->>'recording_mbid'"
         )
         rows = db.execute(
-            "SELECT a.state,a.expires_at,count(*) AS count FROM reference_tracks t "
+            "SELECT a.state,a.state_raw,a.expires_at,count(*) AS count FROM reference_tracks t "
             "LEFT JOIN artwork_requests a ON a.reference_key=t.reference_key "
             f"WHERE t.publication_ready=1 AND trim({album})<>'' AND trim({mbid})<>'' "
-            "GROUP BY a.state,a.expires_at"
+            "GROUP BY a.state,a.state_raw,a.expires_at"
         ).fetchall()
     counts: dict[str, int] = dict.fromkeys(
-        ("eligible", "ready", "missing", "pending", "unavailable", "expired", "unqueried"), 0
+        (
+            "eligible",
+            "ready",
+            "missing",
+            "pending",
+            "unavailable",
+            "expired",
+            "unqueried",
+            "unknown",
+        ),
+        0,
     )
     now = time.time()
     for row in rows:
         counts["eligible"] += row["count"]
-        state = row["state"]
+        state = decode_artwork_state(row["state"], row["state_raw"])
         if state is None:
             state = "unqueried"
         elif row["expires_at"] <= now:
             state = "expired"
+        elif row["state"] == ArtworkState.UNKNOWN:
+            state = "unknown"
         if state not in counts or state == "eligible":
             raise ValueError(f"Unknown artwork cache state: {state}")
         counts[state] += row["count"]

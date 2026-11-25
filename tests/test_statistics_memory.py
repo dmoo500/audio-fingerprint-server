@@ -6,6 +6,7 @@ from pathlib import Path
 
 from audio_fingerprint import SAMPLE_RATE
 
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
 
 
@@ -29,8 +30,8 @@ def test_statistics_streams_large_documents(tmp_path: Path) -> None:
             )
             db.execute(
                 "INSERT INTO submissions(id,document,state,reference_id,created_at) "
-                "VALUES(?,?,'processed',?,0)",
-                (f"submission-{index}", document, reference),
+                "VALUES(?,?,?,?,0)",
+                (f"submission-{index}", document, SubmissionState.PROCESSED, reference),
             )
     tracemalloc.start()
     try:

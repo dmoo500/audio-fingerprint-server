@@ -67,8 +67,45 @@ seven-day cache, bounded response parser and service-wide cooldowns. Cache
 parser version 9 includes release classification for album selection and review hints; older cached
 values are not reused. Existing pending deadlines, verification versions and stored submissions
 are not migrated or automatically requeued. The normal pending recheck or
-explicit operator pass can retry them. No third-party metadata service is
-contacted by this fallback.
+explicit operator pass can retry them. The MusicBrainz search itself does not
+contact another metadata provider.
+
+### Optional TheAudioDB candidate search
+
+TheAudioDB is disabled unless `FP_THEAUDIODB_API_KEY` is set to an authorized
+numeric v1 API key. MusicBrainz verification must also be enabled. Set the key
+in the operator's private environment, not in the repository. The regular and
+gateway Compose deployments pass it to the worker; in the replica deployment
+only the worker receives it. Restart the service after changing the setting.
+
+When MusicBrainz returns no matching recording or an incomplete metadata search,
+the worker can send the submitted artist and track title to TheAudioDB. An
+unambiguous candidate must match the submitted title, main artist, album and
+duration, and provide a recording MBID. The worker then checks that recording's
+full title, artist credits, duration and album against a
+direct MusicBrainz recording lookup. Supplied release identifiers must also
+match that recording. TheAudioDB data is not itself published or
+treated as proof of the audio. Existing identifier conflicts, MusicBrainz
+outages and manual recording reviews do not trigger this fallback. For this
+fallback, a missing submitted album, a conflicting ISRC, or ambiguous candidates
+remain pending.
+
+The worker makes at most one TheAudioDB request per search, at least 2.1 seconds
+apart, and caches valid responses for seven days. HTTP 429, 502 and 503 pause
+requests for at least one minute, respecting longer `Retry-After` values. Network errors, API
+errors and invalid responses are not cached or counted as completed pending
+checks. The limit is per worker; an operator sharing a key with other services
+must account for their requests as well. Pacing and cooldowns are held in memory
+and reset on restart.
+
+TheAudioDB's [API documentation](https://www.theaudiodb.com/free_music_api) and
+[terms](https://www.theaudiodb.com/docs_terms_of_use.php) describe a free test
+key and development use, while its [pricing page](https://www.theaudiodb.com/pricing)
+lists track searches and MusicBrainz-ID lookups under the paid tier. Confirm
+that the intended key and hosted usage are permitted before enabling this in a
+public service. The operator is responsible for meeting attribution, privacy
+and other provider requirements. This integration does not make an API key
+available to clients or send fingerprints or audio to TheAudioDB.
 
 [AcoustID's public API](https://acoustid.org/webservice) supports lookup by
 Chromaprint fingerprint or AcoustID track ID, and

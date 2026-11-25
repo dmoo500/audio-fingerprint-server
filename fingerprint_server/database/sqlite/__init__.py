@@ -14,6 +14,11 @@ from uuid import UUID
 
 from pydantic import ValidationError as ValidationError
 
+from fingerprint_server.database.codes import (
+    SUBMISSION_ERRORS,
+    SubmissionState,
+    decode_submission_state,
+)
 from fingerprint_server.database.logic import (
     MAX_MATCH_CANDIDATES,
     coverage_statistics,
@@ -30,13 +35,13 @@ from fingerprint_server.database.logic import (
     initial_submission_state as initial_submission_state,
 )
 from fingerprint_server.database.metrics import initialize_metrics
-from fingerprint_server.database.migrations import (
+from fingerprint_server.database.notifications import notify_sqlite, track_changes
+from fingerprint_server.database.review_schema import REVIEW_TABLE
+from fingerprint_server.database.sqlite.migrations import (
     MUSICBRAINZ_VERIFICATION_VERSION,
     initialize_database,
 )
-from fingerprint_server.database.notifications import notify_sqlite, track_changes
-from fingerprint_server.database.review_schema import REVIEW_TABLE
-from fingerprint_server.database.sqlite_queue import StoreQueueMixin
+from fingerprint_server.database.sqlite.queue import StoreQueueMixin
 from fingerprint_server.schemas import (
     acoustic_reference_id as acoustic_reference_id,
 )
@@ -149,7 +154,7 @@ class Store(StoreQueueMixin):
                     rows = db.execute(
                         "SELECT s.id FROM submissions s "
                         "LEFT JOIN reference_tracks t ON t.reference_key=s.reference_id "
-                        "WHERE s.state='processed' AND "
+                        f"WHERE s.state={SubmissionState.PROCESSED.value} AND "
                         "(s.reference_id IS NULL OR coalesce(t.verification_version,0)!=?)",
                         (MUSICBRAINZ_VERIFICATION_VERSION,),
                     ).fetchall()
@@ -164,7 +169,8 @@ class Store(StoreQueueMixin):
                             supplied = json.loads(row["document"]).get("metadata", {})
                             existing = json.loads(row["metadata"]) if row["metadata"] else {}
                             usable = has_identifier(supplied) or (
-                                row["state"] == "processed" and has_identifier(existing)
+                                row["state"] == SubmissionState.PROCESSED
+                                and has_identifier(existing)
                             )
                         except (ValueError, TypeError, AttributeError):
                             LOGGER.warning(
@@ -174,18 +180,22 @@ class Store(StoreQueueMixin):
                             usable = False
                         if usable:
                             db.execute(
-                                "UPDATE submissions SET state='pending_metadata',attempts=0,"
+                                "UPDATE submissions "
+                                f"SET state={SubmissionState.PENDING_METADATA.value},"
+                                "state_raw=NULL,attempts=0,"
                                 "retry_at=0,error=NULL,background_kind=2,pending_check=0,"
                                 "pending_due_at=?,enqueued_at=0 WHERE id=?",
                                 (time.time(), submission_id),
                             )
                         elif row["metadata"] is not None:
                             db.execute(
-                                "UPDATE submissions SET state='pending_metadata',"
-                                "error='MusicBrainz identifier unavailable',"
+                                "UPDATE submissions "
+                                f"SET state={SubmissionState.PENDING_METADATA.value},"
+                                "state_raw=NULL,error=?,"
                                 "pending_due_at=CASE WHEN pending_due_at>0 THEN pending_due_at "
                                 "ELSE ? END WHERE id=?",
                                 (
+                                    SUBMISSION_ERRORS.encode("MusicBrainz identifier unavailable"),
                                     time.time() + self.pending_recheck_days * 86400,
                                     submission_id,
                                 ),
@@ -208,7 +218,8 @@ class Store(StoreQueueMixin):
                                 (row["id"],),
                             )
                     for (submission_id,) in db.execute(
-                        "SELECT id FROM submissions WHERE state='pending_metadata'"
+                        "SELECT id FROM submissions "
+                        f"WHERE state={SubmissionState.PENDING_METADATA.value}"
                     ).fetchall():
                         document = db.execute(
                             "SELECT document FROM submissions WHERE id=?", (submission_id,)
@@ -223,7 +234,8 @@ class Store(StoreQueueMixin):
                             complete = False
                         if complete:
                             db.execute(
-                                "UPDATE submissions SET state='queued',attempts=0,retry_at=0,"
+                                f"UPDATE submissions SET state={SubmissionState.QUEUED.value},"
+                                "state_raw=NULL,attempts=0,retry_at=0,"
                                 "error=NULL,background_kind=0,pending_check=0,enqueued_at=? "
                                 "WHERE id=?",
                                 (time.time(), submission_id),
@@ -239,8 +251,10 @@ class Store(StoreQueueMixin):
                     )
             if not self.housekeeping_enabled or not self.musicbrainz_enabled:
                 db.execute(
-                    "UPDATE submissions SET state='pending_metadata',pending_check=0,"
-                    "background_kind=0 WHERE state='queued' AND background_kind=1"
+                    f"UPDATE submissions SET state={SubmissionState.PENDING_METADATA.value},"
+                    f"state_raw=NULL,pending_check=0,background_kind=0 "
+                    f"WHERE state={SubmissionState.QUEUED.value} "
+                    "AND background_kind=1"
                 )
 
     def statistics(self) -> dict[str, Any]:
@@ -254,12 +268,16 @@ class Store(StoreQueueMixin):
                 "failed": 0,
                 "pending_metadata": 0,
             }
-            for row in db.execute("SELECT state,count(*) AS count FROM submissions GROUP BY state"):
-                uploads[row["state"]] = row["count"]
+            for row in db.execute(
+                "SELECT state,state_raw,count(*) AS count FROM submissions GROUP BY state,state_raw"
+            ):
+                state = decode_submission_state(row["state"], row["state_raw"])
+                if state is not None:
+                    uploads[state] = row["count"]
             rows = db.execute(
                 "WITH representatives AS ("
                 "SELECT reference_id,min(id) AS id FROM submissions "
-                "WHERE state='processed' GROUP BY reference_id) "
+                f"WHERE state={SubmissionState.PROCESSED.value} GROUP BY reference_id) "
                 "SELECT t.id,t.reference_key,t.recording_key,t.publication_ready,"
                 "s.document,t.metadata FROM reference_tracks t "
                 "LEFT JOIN representatives r ON t.reference_key=r.reference_id "
@@ -268,7 +286,7 @@ class Store(StoreQueueMixin):
             return coverage_statistics((dict(row) for row in rows), uploads)
 
     def cached_enrichment(self, key: str) -> dict[str, Any] | None:
-        """Return unexpired MusicBrainz lookup data."""
+        """Return unexpired metadata lookup data."""
         with self.connect() as db:
             row = db.execute(
                 "SELECT document FROM enrichment_cache WHERE isrc=? AND expires_at>?",
@@ -349,7 +367,7 @@ class Store(StoreQueueMixin):
                     f"AND recording_key IN ({','.join('?' for _ in keys)}) "
                     "ORDER BY id LIMIT 10000),"
                     "representatives AS (SELECT reference_id,min(id) AS id FROM submissions "
-                    "WHERE state='processed' AND reference_id IN "
+                    f"WHERE state={SubmissionState.PROCESSED.value} AND reference_id IN "
                     "(SELECT reference_key FROM relevant) GROUP BY reference_id) "
                     "SELECT t.recording_key,t.metadata,"
                     "CASE WHEN json_valid(s.document) THEN json_object("

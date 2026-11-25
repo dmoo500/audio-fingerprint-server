@@ -9,8 +9,8 @@ from uuid import UUID
 
 from audio_fingerprint import SAMPLE_RATE
 
-from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
 from fingerprint_server.database.sqlite import Store
+from fingerprint_server.database.sqlite.migrations import DB_SCHEMA_VERSION
 
 RECORDING_ID = "e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"
 OTHER_RECORDING_ID = "a61ad03c-8df0-44bf-b999-25d9997d2a24"

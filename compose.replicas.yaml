@@ -45,6 +45,7 @@ services:
     environment:
       <<: *environment
       FP_SERVICE_ROLE: worker
+      FP_THEAUDIODB_API_KEY: ${FP_THEAUDIODB_API_KEY:-}
     command: ["python", "-m", "fingerprint_server.worker_runtime"]
   postgres:
     image: postgres:17

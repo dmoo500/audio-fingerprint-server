@@ -12,8 +12,9 @@ from test_metadata_gate import document
 from test_musicbrainz_validation import online_settings
 
 import fingerprint_server.database.sqlite as storage
-from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
+from fingerprint_server.database.sqlite.migrations import DB_SCHEMA_VERSION
 
 
 def fill_pending(store: Store, count: int = 6) -> None:
@@ -28,8 +29,8 @@ def fill_pending(store: Store, count: int = 6) -> None:
 def background_count(store: Store) -> int:
     with store.connect() as db:
         return db.execute(
-            "SELECT count(*) FROM submissions WHERE state IN ('queued','processing') "
-            "AND background_kind!=0"
+            "SELECT count(*) FROM submissions WHERE state IN (?,?) AND background_kind!=0",
+            (SubmissionState.QUEUED, SubmissionState.PROCESSING),
         ).fetchone()[0]
 
 

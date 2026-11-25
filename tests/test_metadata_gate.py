@@ -15,6 +15,7 @@ from test_server import READ, UPLOAD, canonical, settings
 
 from fingerprint_server.api_state import STORE
 from fingerprint_server.app import create_app
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import QueueFullError, Store
 from fingerprint_server.schemas import Submission, metadata_complete
 from fingerprint_server.worker import Worker
@@ -293,8 +294,8 @@ async def test_worker_defers_unresolved_legacy_incomplete_queue(tmp_path: Path) 
     payload["metadata"]["album"] = " "
     with store.connect() as db:
         db.execute(
-            "INSERT INTO submissions(id,document,state,created_at) VALUES('old',?,'queued',0)",
-            (json.dumps(payload),),
+            "INSERT INTO submissions(id,document,state,created_at) VALUES('old',?,?,0)",
+            (json.dumps(payload), SubmissionState.QUEUED),
         )
 
     def no_match(request: httpx.Request) -> httpx.Response:

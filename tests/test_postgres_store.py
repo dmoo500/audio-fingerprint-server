@@ -30,6 +30,7 @@ from test_server import document as acoustic_document
 from fingerprint_server.api_state import OWNERSHIP_TASK, STORE, WORKER_TASK
 from fingerprint_server.app import create_app
 from fingerprint_server.database import create_store
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import QueryTooBroadError, QueueFullError, Store
 from fingerprint_server.runtime import runtime
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission
@@ -53,6 +54,40 @@ def test_artwork_additive_migration_and_queue(store) -> None:
         "status": "ready",
         "url": "https://archive.org/example.jpg",
     }
+
+
+@pytest.mark.parametrize("legacy_state", ["unexpected", "", "~0"])
+def test_legacy_postgres_artwork_state_is_preserved(
+    configuration, postgres, legacy_state: str
+) -> None:
+    from fingerprint_server.artwork import ArtworkStore
+    from fingerprint_server.database.codes import (
+        ARTWORK_REASONS,
+        ArtworkState,
+        decode_artwork_state,
+    )
+    from fingerprint_server.database.postgres import PostgresStore
+
+    store = PostgresStore(configuration)
+    store.initialize()
+    with store.connect(write=True) as db:
+        db.execute(
+            "CREATE TABLE artwork_requests(reference_key text PRIMARY KEY,state text NOT NULL,"
+            "url text,due_at double precision NOT NULL,expires_at double precision NOT NULL,"
+            "reason text)"
+        )
+        db.execute(
+            "INSERT INTO artwork_requests VALUES('legacy',%s,NULL,0,100,'~0')", (legacy_state,)
+        )
+        db.execute("INSERT INTO service_state VALUES('artwork_schema','3')")
+    queue = ArtworkStore(store)
+    queue.initialize()
+    queue.initialize()
+    with store.connect() as db:
+        row = db.execute("SELECT state,state_raw,reason FROM artwork_requests").fetchone()
+    assert row["state"] == ArtworkState.UNKNOWN
+    assert decode_artwork_state(row["state"], row["state_raw"]) == legacy_state
+    assert ARTWORK_REASONS.decode(row["reason"]) == "~0"
 
 
 @pytest.fixture
@@ -155,13 +190,13 @@ def test_shared_hash_publication_and_reference_removal(store) -> None:
         assert db.execute("SELECT count(*) AS count FROM landmarks").fetchone()["count"] == 12
     for index in range(4):
         assert store.get_submission(f"shared-{index}")["state"] == "processed"
-    from fingerprint_server.database.postgres_postings import delete
+    from fingerprint_server.database.postgres.postings import POSTINGS_VERSION, delete
 
     with store.connect(write=True) as db:
         reference = db.execute(
             "SELECT id FROM reference_tracks WHERE reference_key='reference-1'"
         ).fetchone()["id"]
-        if store._format_version == 2:
+        if store._format_version == POSTINGS_VERSION:
             assert delete(db, reference) == 3
         else:
             assert (
@@ -170,6 +205,81 @@ def test_shared_hash_publication_and_reference_removal(store) -> None:
             )
         db.execute("DELETE FROM reference_tracks WHERE id=%s", (reference,))
         assert db.execute("SELECT count(*) AS count FROM landmarks").fetchone()["count"] == 9
+
+
+@pytest.mark.parametrize("layout", [1, 2])
+def test_legacy_postgres_submission_codes_preserve_unknowns(
+    configuration, postgres, monkeypatch, layout: int
+) -> None:
+    from fingerprint_server.admin.data import AdminData
+    from fingerprint_server.database.postgres import PostgresStore
+    from fingerprint_server.database.postgres.migrations import PostgresMigrationMixin
+
+    store = PostgresStore(configuration)
+    store.initialize()
+    if layout == 2:
+        import psycopg
+
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        monkeypatch.syspath_prepend(str(scripts))
+        migrate = runpy.run_path(str(scripts / "migrate_postgres_layout.py"))["migrate"]
+        with psycopg.connect("") as db:
+            migrate(db, configuration.postgres_schema, 2)
+        store.initialize()
+    payload = json.dumps(document())
+    store.submit("known", payload, 10)
+    store.submit("unknown", payload, 10)
+    with store.connect(write=True) as db:
+        db.execute("ALTER TABLE submissions ALTER COLUMN state TYPE text USING state::text")
+        db.execute("ALTER TABLE submissions DROP COLUMN state_raw")
+        db.execute(
+            "UPDATE submissions SET state='pending_metadata',"
+            "error='MusicBrainz identifier unavailable' WHERE id='known'"
+        )
+        db.execute("UPDATE submissions SET state='~0',error='~0' WHERE id='unknown'")
+        db.execute("INSERT INTO musicbrainz_reviews(submission_id,candidates) VALUES('known','[]')")
+        db.execute("DELETE FROM service_state WHERE key='submission_codes_version'")
+        db.execute("UPDATE migration_info SET format_version=%s", (layout,))
+    with store.owner("api"), pytest.raises(RuntimeError, match="Stop all PostgreSQL"):
+        store.initialize()
+    original = PostgresMigrationMixin._migrate_submission_codes
+
+    def fail_after_migration(self, db) -> None:
+        original(self, db)
+        raise RuntimeError("simulated failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(PostgresMigrationMixin, "_migrate_submission_codes", fail_after_migration)
+        with pytest.raises(RuntimeError, match="simulated failure"):
+            store.initialize()
+    with store.connect() as db:
+        version = db.execute("SELECT format_version FROM migration_info").fetchone()
+        assert version["format_version"] == layout
+        row = db.execute(
+            "SELECT state,pg_typeof(state)::text AS type FROM submissions WHERE id='known'"
+        ).fetchone()
+        assert (row["state"], row["type"]) == ("pending_metadata", "text")
+    store.initialize()
+    store.initialize()
+    assert store.get_submission("known")["state"] == "pending_metadata"
+    assert store.get_submission("known")["error"] == "MusicBrainz identifier unavailable"
+    assert store.get_submission("unknown")["state"] == "~0"
+    assert store.get_submission("unknown")["error"] == "~0"
+    with store.connect() as db:
+        rows = db.execute(
+            "SELECT id,state,state_raw,pg_typeof(state)::text AS type FROM submissions ORDER BY id"
+        ).fetchall()
+        assert [(row["state"], row["state_raw"], row["type"]) for row in rows] == [
+            (4, None, "smallint"),
+            (5, "~0", "smallint"),
+        ]
+        reviews = db.execute("SELECT count(*) AS count FROM musicbrainz_reviews").fetchone()
+        assert reviews["count"] == 1
+        version = db.execute("SELECT format_version FROM migration_info").fetchone()
+        assert version["format_version"] == layout + 2
+    admin = AdminData(configuration)
+    rows = admin.read("submissions", {"state": {"eq": "~0"}})
+    assert isinstance(rows, list) and [row["id"] for row in rows] == ["unknown"]
 
 
 def test_backend_configuration(tmp_path: Path) -> None:
@@ -390,7 +500,7 @@ def test_housekeeping_preserves_dependencies(store, dependency: str) -> None:
             "UPDATE reference_tracks SET metadata=%s,publication_ready=0",
             (json.dumps({"duration": 12}),),
         )
-        db.execute("UPDATE submissions SET state='pending_metadata'")
+        db.execute("UPDATE submissions SET state=%s", (SubmissionState.PENDING_METADATA,))
         if dependency == "published":
             db.execute("UPDATE reference_tracks SET publication_ready=1")
         if dependency == "identifier":

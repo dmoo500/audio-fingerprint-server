@@ -10,7 +10,7 @@ from test_postgres_migration import postgres as postgres
 from test_postgres_migration import source as source
 from test_postgres_reverse_migration import reverse as reverse
 
-from fingerprint_server.database.postgres_postings import insert
+from fingerprint_server.database.postgres.postings import insert
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ def test_active_service_and_failure_rollback(source, postgres, migration, layout
     with postgres.transaction():
         assert postgres.execute(
             "SELECT format_version FROM locked_test.migration_info"
-        ).fetchone() == (1,)
+        ).fetchone() == (3,)
         assert postgres.execute(
             "SELECT to_regclass('locked_test.landmark_postings')"
         ).fetchone() == (None,)

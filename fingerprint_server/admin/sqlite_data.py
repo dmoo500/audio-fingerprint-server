@@ -17,6 +17,12 @@ import httpx
 from fingerprint_server.admin.artwork import artwork_statistics
 from fingerprint_server.admin.data import STATES, TEXT_FIELDS, AdminFilters, Dataset, Filter
 from fingerprint_server.admin.errors import ActionFailed
+from fingerprint_server.database.codes import (
+    SUBMISSION_ERRORS,
+    SubmissionState,
+    decode_submission_state,
+    decoded_submission_state_sql,
+)
 from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
 from fingerprint_server.database.notifications import notify_sqlite, track_changes
 from fingerprint_server.database.sqlite import Store
@@ -35,6 +41,7 @@ class AdminStore(Store):
         db = sqlite3.connect(uri, uri=True, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
+        db.create_function("decode_submission_state", 2, decode_submission_state)
         db.create_function("lower", 1, lambda text: text.lower())
         db.create_function("strpos", 2, lambda text, part: text.find(part) + 1)
         db.create_function("starts_with", 2, lambda text, part: text.startswith(part))
@@ -83,7 +90,9 @@ class SQLiteAdminData(AdminFilters):
             )
         else:
             source = (
-                "SELECT id,state,error,attempts,pending_rechecks,created_at,retry_at,"
+                f"SELECT id,{decoded_submission_state_sql('state', 'state_raw')} AS state,"
+                f"{SUBMISSION_ERRORS.decoded_sql('error')} AS error,"
+                "attempts,pending_rechecks,created_at,retry_at,"
                 "pending_due_at,reference_id,metadata FROM submission_metadata"
             )
         return (
@@ -141,8 +150,6 @@ class SQLiteAdminData(AdminFilters):
             native_fields = {
                 "id",
                 "created_at",
-                "state",
-                "error",
                 "reference_id",
                 "attempts",
                 "pending_rechecks",
@@ -157,7 +164,10 @@ class SQLiteAdminData(AdminFilters):
             ):
                 result = db.execute(
                     "WITH page AS MATERIALIZED ("
-                    "SELECT id,created_at,state,error,attempts,pending_rechecks,retry_at,"
+                    "SELECT id,created_at,"
+                    f"{decoded_submission_state_sql('state', 'state_raw')} AS state,"
+                    f"{SUBMISSION_ERRORS.decoded_sql('error')} AS error,"
+                    "attempts,pending_rechecks,retry_at,"
                     "pending_due_at,reference_id,metadata "
                     "FROM submission_metadata WHERE id IN "
                     f"(SELECT id FROM submission_metadata ORDER BY {order} LIMIT ? OFFSET ?)) "
@@ -193,9 +203,10 @@ class SQLiteAdminData(AdminFilters):
             uploads = dict.fromkeys(STATES, 0)
             uploads.update(
                 {
-                    row["state"]: row["count"]
+                    decode_submission_state(row["state"], row["state_raw"]) or "": row["count"]
                     for row in db.execute(
-                        "SELECT state,count(*) AS count FROM submissions GROUP BY state"
+                        "SELECT state,state_raw,count(*) AS count FROM submissions "
+                        "GROUP BY state,state_raw"
                     )
                 }
             )
@@ -269,7 +280,8 @@ class SQLiteAdminData(AdminFilters):
                     "SELECT s.id AS submission_id,s.created_at,"
                     "json_extract(s.document,'$.metadata') AS metadata,r.candidates "
                     "FROM musicbrainz_reviews r JOIN submissions s ON s.id=r.submission_id "
-                    "WHERE s.state='pending_metadata' AND r.selected_mbid IS NULL "
+                    f"WHERE s.state={SubmissionState.PENDING_METADATA.value} "
+                    "AND r.selected_mbid IS NULL "
                     "ORDER BY s.created_at,s.id LIMIT 51 OFFSET ?",
                     (skip,),
                 )
@@ -303,7 +315,7 @@ class SQLiteAdminData(AdminFilters):
             submission = db.execute(
                 "SELECT state FROM submissions WHERE id=?", (submission_id,)
             ).fetchone()
-            if submission is None or submission["state"] != "pending_metadata":
+            if submission is None or submission["state"] != SubmissionState.PENDING_METADATA:
                 raise ActionFailed("This submission is no longer awaiting metadata review")
             review = db.execute(
                 "SELECT candidates,selected_mbid FROM musicbrainz_reviews WHERE submission_id=?",
@@ -324,7 +336,8 @@ class SQLiteAdminData(AdminFilters):
                 (selected_mbid, submission_id),
             )
             db.execute(
-                "UPDATE submissions SET state='queued',retry_at=0,attempts=0,error=NULL,"
+                f"UPDATE submissions SET state={SubmissionState.QUEUED.value},"
+                "state_raw=NULL,retry_at=0,attempts=0,error=NULL,"
                 "pending_check=0,background_kind=0,enqueued_at=? WHERE id=?",
                 (time.time(), submission_id),
             )
@@ -348,18 +361,21 @@ class SQLiteAdminData(AdminFilters):
             ).fetchall()
             if len(rows) != len(ids):
                 raise ActionFailed("A selected submission no longer exists; refresh the table")
-            if any(row["state"] in ("processing", "queued") for row in rows):
+            if any(
+                row["state"] in (SubmissionState.PROCESSING, SubmissionState.QUEUED) for row in rows
+            ):
                 raise ActionFailed("Active or queued jobs cannot be changed; try again later")
             if action == "delete":
                 db.execute(f"DELETE FROM submissions WHERE id IN ({placeholders})", ids)
             else:
-                if any(row["state"] == "processed" for row in rows):
+                if any(row["state"] == SubmissionState.PROCESSED for row in rows):
                     raise ActionFailed("Only failed or unresolved submissions can be retried")
-                added = [row for row in rows if row["state"] == "failed"]
+                added = [row for row in rows if row["state"] != SubmissionState.PENDING_METADATA]
                 totals = db.execute(
                     "SELECT count(*) AS count,"
                     "coalesce(sum(length(CAST(document AS BLOB))),0) AS bytes "
-                    "FROM submissions WHERE state IN ('queued','processing','pending_metadata')"
+                    f"FROM submissions WHERE state IN ({SubmissionState.QUEUED.value},"
+                    f"{SubmissionState.PROCESSING.value},{SubmissionState.PENDING_METADATA.value})"
                 ).fetchone()
                 assert totals is not None
                 if (
@@ -369,7 +385,8 @@ class SQLiteAdminData(AdminFilters):
                 ):
                     raise ActionFailed("Queue capacity exceeded; retry after it has drained")
                 db.execute(
-                    "UPDATE submissions SET state='queued',retry_at=0,attempts=0,error=NULL,"
+                    f"UPDATE submissions SET state={SubmissionState.QUEUED.value},"
+                    "state_raw=NULL,retry_at=0,attempts=0,error=NULL,"
                     f"pending_check=0,background_kind=0,enqueued_at=? WHERE id IN ({placeholders})",
                     (time.time(), *ids),
                 )

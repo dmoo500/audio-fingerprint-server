@@ -8,11 +8,13 @@ import math
 from typing import Any
 from uuid import UUID
 
+import aiohttp
 import httpx
 from pydantic import ValidationError
 
 from fingerprint_server.artwork import ArtworkResolver
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.audiodb import AudioDBClient, AudioDBUnavailable
 from fingerprint_server.database import Storage
 from fingerprint_server.musicbrainz import (
     EnrichmentError,
@@ -40,11 +42,24 @@ PUBLICATION_LOGGER = logging.getLogger("uvicorn.error.fingerprint.worker")
 class Worker:
     """Validate durable submissions and atomically publish reference landmarks."""
 
-    def __init__(self, store: Storage, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        store: Storage,
+        settings: Settings,
+        client: httpx.AsyncClient,
+        audiodb_session: aiohttp.ClientSession | None = None,
+    ) -> None:
         self.store = store
         self.settings = settings
         self.client = client
-        self.musicbrainz = MusicBrainzService(store, settings, client)
+        if settings.theaudiodb_api_key is not None and audiodb_session is None:
+            raise ValueError("TheAudioDB requires an HTTP session")
+        audiodb = (
+            AudioDBClient(store, settings.theaudiodb_api_key, audiodb_session)
+            if settings.theaudiodb_api_key is not None and audiodb_session is not None
+            else None
+        )
+        self.musicbrainz = MusicBrainzService(store, settings, client, audiodb)
         self.artwork = ArtworkResolver(store, self.musicbrainz)
         self.reviews = RecordingReviews(store)
         self.wakeup = asyncio.Event()
@@ -197,6 +212,9 @@ class Worker:
                     PUBLICATION_LOGGER.info(
                         "Submission %s verified with MusicBrainz and published", row["id"]
                     )
+            except AudioDBUnavailable as err:
+                LOGGER.warning("Submission %s TheAudioDB lookup deferred: %s", row["id"], err)
+                await run_sync(self.store.defer_pending_recheck, row["id"], str(err), err.delay)
             except MusicBrainzUnavailable as err:
                 if pending_ids is not None:
                     pending_ids.append(row["id"])

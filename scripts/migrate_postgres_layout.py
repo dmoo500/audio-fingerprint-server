@@ -10,7 +10,13 @@ import logging
 import psycopg
 from migrate_postgres_to_sqlite import offline_snapshot, validate_postgres
 
-from fingerprint_server.database.postgres_postings import CREATE, VIEW
+from fingerprint_server.database.postgres.postings import (
+    CREATE,
+    LEGACY_POSTINGS_VERSION,
+    POSTINGS_VERSION,
+    VIEW,
+)
+from fingerprint_server.database.postgres.schema import FORMAT_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,7 +43,8 @@ def migrate(db: psycopg.Connection, schema: str, target: int) -> dict:
         validate_postgres(db, schema)
         version = db.execute("SELECT format_version FROM migration_info").fetchone()
         assert version is not None
-        if version[0] == target:
+        layout = 2 if version[0] in (LEGACY_POSTINGS_VERSION, POSTINGS_VERSION) else 1
+        if layout == target:
             return {"version": target, "changed": False}
         before = checksum(db, "landmarks")
         LOGGER.info("Verified source checksum; building layout %s", target)
@@ -77,7 +84,8 @@ def migrate(db: psycopg.Connection, schema: str, target: int) -> dict:
             db.execute("DROP FUNCTION valid_posting(bigint,integer,bigint[],integer[])")
             db.execute("ALTER TABLE landmark_rows RENAME TO landmarks")
             db.execute("CREATE INDEX landmarks_reference ON landmarks(reference_id)")
-        db.execute("UPDATE migration_info SET format_version=%s", (target,))
+        format_version = target + (FORMAT_VERSION - 1 if version[0] >= FORMAT_VERSION else 0)
+        db.execute("UPDATE migration_info SET format_version=%s", (format_version,))
         validate_postgres(db, schema)
         return {"version": target, "changed": True, "landmarks_sha256": before}
 

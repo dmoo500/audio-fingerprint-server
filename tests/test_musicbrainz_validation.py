@@ -16,6 +16,7 @@ import pytest
 from test_metadata_gate import document
 from test_server import settings
 
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.musicbrainz import (
     EnrichmentError,
@@ -406,8 +407,8 @@ def test_existing_reference_association_preserves_metadata(
         "CREATE TABLE reference_tracks (id INTEGER PRIMARY KEY,reference_key TEXT UNIQUE,"
         "metadata TEXT,created_at REAL,publication_ready INTEGER,verification_version INTEGER,"
         "recording_key TEXT);"
-        "CREATE TABLE submissions (id TEXT,state TEXT,reference_id TEXT,error TEXT,"
-        "background_kind INTEGER,pending_check INTEGER);"
+        "CREATE TABLE submissions (id TEXT,state INTEGER,state_raw TEXT,reference_id TEXT,"
+        "error TEXT,background_kind INTEGER,pending_check INTEGER);"
         "CREATE TABLE landmarks (hash BLOB,reference_id INTEGER,offset INTEGER);"
     )
     metadata = document()["metadata"]
@@ -415,7 +416,10 @@ def test_existing_reference_association_preserves_metadata(
         "INSERT INTO reference_tracks VALUES(1,'reference',?,0,1,1,NULL)",
         (json.dumps(metadata),),
     )
-    db.execute("INSERT INTO submissions VALUES('submission','processing',NULL,NULL,0,0)")
+    db.execute(
+        "INSERT INTO submissions VALUES('submission',?,NULL,NULL,NULL,0,0)",
+        (SubmissionState.PROCESSING,),
+    )
     db.commit()
     store = object.__new__(Store)
     store.musicbrainz_enabled = True
@@ -636,7 +640,10 @@ async def test_publication_logged_only_after_verification(
         transport=httpx.MockTransport(lambda _: httpx.Response(404))
     ) as client:
         result = await run_until_idle(
-            Worker(store, online_settings(tmp_path), client), store, "missing"
+            Worker(store, online_settings(tmp_path), client),
+            store,
+            "missing",
+            completed=lambda: f"api_call=GET /recording/{OTHER}" in caplog.text,
         )
     assert result["state"] == "pending_metadata"
     assert "verified with MusicBrainz and published" not in caplog.text
@@ -719,16 +726,25 @@ def test_version_three_wal_backup_includes_committed_rows(tmp_path: Path) -> Non
         connection.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         connection.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         connection.execute("DROP TABLE service_state")
-        connection.execute("DROP INDEX submissions_fifo")
-        connection.execute("DROP INDEX submissions_pending_due")
-        for column in (
-            "pending_rechecks",
-            "pending_due_at",
-            "pending_check",
-            "enqueued_at",
-            "background_kind",
+        for trigger in (
+            "submission_metadata_insert",
+            "submission_metadata_update",
+            "submission_metadata_fields",
+            "submission_metadata_delete",
         ):
-            connection.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
+            connection.execute(f"DROP TRIGGER {trigger}")
+        connection.execute("DROP TABLE submission_metadata")
+        connection.execute("DROP TABLE musicbrainz_reviews")
+        connection.execute("DROP TABLE submissions")
+        connection.execute(
+            "CREATE TABLE submissions(id TEXT PRIMARY KEY,document TEXT NOT NULL,"
+            "state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,"
+            "retry_at REAL NOT NULL DEFAULT 0,error TEXT,reference_id TEXT,"
+            "created_at REAL NOT NULL)"
+        )
+        connection.execute(
+            "CREATE INDEX submissions_pending ON submissions(state,retry_at,created_at)"
+        )
         connection.execute("PRAGMA user_version=3")
         connection.execute(
             "INSERT INTO submissions(id,document,state,created_at) VALUES('wal','{}','queued',0)"

@@ -3,21 +3,30 @@
 [Home](../../README.md) · [Documentation](../README.md) · [Deployment](deployment.md)
 
 Only the fingerprint service database is moved. Music Assistant's own library
-database is unrelated and remains unchanged. SQLite schema 9 and PostgreSQL
-formats 1 and 2 store the same collection using different physical layouts.
+database is unrelated and remains unchanged. SQLite schema 10 and PostgreSQL
+formats 3 and 4 store the same collection using different physical layouts.
 The SQLite submission metadata projection is rebuilt from the stored documents
 when exporting from PostgreSQL; it is not an independent source of truth.
+
+For the state-code upgrade, stop all API, worker and administration processes
+before starting the new version. Back up PostgreSQL separately; SQLite creates
+its usual pre-upgrade backup and needs enough free space for it. Start the
+backend before the administration service. Do not mix old and new binaries
+against the same database. PostgreSQL's API/worker ownership locks do not
+detect a separately running admin service, so stopping it is an operator step.
+Older binaries cannot read the upgraded format; restoring an older backup loses
+any later writes.
 
 ## PostgreSQL compact layout and rollback
 
 **Experimental; not recommended for deployment.** The full-collection rehearsal
 on 2026-11-17 passed data and runtime checks but increased landmark storage from
 6,704,136,192 to 8,410,185,728 bytes (+25.4%). The fixed block boundaries fragment
-posting lists too heavily. The running local service remains on format 1;
-the format-2 implementation and commands below are retained for investigation,
+posting lists too heavily. At the time, the local service remained on format 1;
+the postings implementation and commands below are retained for investigation,
 not as a space-saving upgrade recommendation.
 
-Format 1 stores a row per landmark. Format 2 stores sorted, paired arrays of
+Format 3 stores a row per landmark; format 4 stores sorted, paired arrays of
 reference IDs and offsets, grouped by the complete 80-bit hash. Reference-ID
 blocks of 32 and offset blocks of 1,024 limit each posting to at most 32,768
 unique pairs, independently of catalogue growth. A primary key, array checks
@@ -29,11 +38,13 @@ This bounded layout differs from the unbounded experimental layout. Do not
 assume the experimental 69% saving applies to it. Measure the actual migrated
 collection and recognition behavior before selecting it.
 
-New databases and SQLite imports initially use format 1. Upgrades are explicit
+New databases and SQLite imports initially use format 3. The `--target` values
+`1` and `2` select the row and postings layouts respectively; for the current
+storage schema they produce formats 3 and 4. Layout conversions are explicit
 and offline, not an automatic startup operation:
 
 ```sh
-# Make and verify a PostgreSQL backup, then stop both APIs and the worker.
+# Make and verify a PostgreSQL backup, then stop all APIs, workers and admin.
 uv run --no-sync python scripts/migrate_postgres_layout.py \
   --schema fingerprints --target 2
 ```
@@ -45,16 +56,16 @@ unchanged. A failed conversion rolls back; rerunning the requested format is
 a no-op. Allow space for both layouts, sorting and WAL during conversion.
 Run `VACUUM (ANALYZE)` afterward before measuring performance.
 
-To return to format 1 while preserving changes made since the upgrade:
+To return to the row layout while preserving changes made since the upgrade:
 
 ```sh
-# Stop every API and worker again; use the current database, not an old backup.
+# Stop all APIs, workers and admin again; use the current database, not an old backup.
 uv run --no-sync python scripts/migrate_postgres_layout.py \
   --schema fingerprints --target 1
 ```
 
 The reverse conversion verifies every landmark before replacing the posting
-lists. Both formats support the SQLite exporter below. The format-2 `landmarks`
+lists. Both formats support the SQLite exporter below. The postings `landmarks`
 view is a read-compatible decoded representation, not a writable table.
 Start only runtime versions supporting the selected format. Preserve the
 database backup and previous container image until authenticated gateway
@@ -62,8 +73,8 @@ requests, worker health and sampled recognition have passed.
 
 ## One writable database
 
-Stop ingestion and all API/worker processes before the final transfer in either
-direction. Do not write to both copies. Keep the old database and a verified
+Stop ingestion and all API, worker and administration processes before the final
+transfer in either direction. Do not write to both copies. Keep the old database and a verified
 backup until the destination has been checked and the rollback window has ended.
 
 ```mermaid
@@ -111,7 +122,7 @@ plus WAL, temporary files and backups.
 ## PostgreSQL back to SQLite
 
 ```sh
-# Stop every API process and the single worker first.
+# Stop all API, worker and administration processes first.
 uv run --no-sync python scripts/migrate_postgres_to_sqlite.py \
   /private/path/fingerprints-returned.db --schema fingerprints
 ```
@@ -120,8 +131,9 @@ The exporter takes exclusive API/worker/writer advisory locks before opening
 a repeatable-read, read-only snapshot. It rejects active service roles,
 including opt-in API replicas, and prevents another role starting during the
 export. Use a dedicated direct or session-mode PostgreSQL connection. These
-locks coordinate this service, not unrelated administrators issuing SQL; do
-not modify the source manually during export.
+locks coordinate API and worker roles, not the standalone administration service
+or unrelated administrators issuing SQL; stop the admin service and do not
+modify the source manually during export.
 
 All reference IDs/keys, documents, publication/verification fields, metadata,
 landmarks, cache entries, service-state values and queue/retry state are copied.
@@ -137,7 +149,7 @@ database directory and configure its worker health URL as described in the
 
 Metadata is compared field by field. Every landmark is checked against the
 source-stream SHA-256 digest and row count. The exporter then builds SQLite's
-secondary indexes, checks integrity and foreign keys, sets schema 9 and analyzes
+secondary indexes, checks integrity and foreign keys, sets schema 10 and analyzes
 the result. It does **not** run worker recovery or rewrite processing states;
 ordinary SQLite startup performs its existing recovery afterward.
 

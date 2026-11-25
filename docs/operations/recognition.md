@@ -180,7 +180,7 @@ Recognition credentials are never sent to them.
 <details>
 <summary>Edition matching backlog, schema and rollout notes</summary>
 
-Startup installs the independently versioned artwork extension (version 3), like
+Startup installs the independently versioned artwork extension (version 4), like
 the application credential registry: `artwork_requests` plus the `artwork_schema`
 entry in existing service state. Version 2 adds a nullable `reason` column.
 The transactional, idempotent upgrade accepts version 1 and an interrupted
@@ -189,6 +189,8 @@ requests are retained; old missing/unavailable entries are marked `legacy_retry`
 and expired once, allowing demand-driven or idle, paced rechecks.
 Version 3 expires only `album_not_found` results once, marking them
 `edition_retry` for a prioritized, paced recheck using the improved edition matching.
+Version 4 stores artwork states as integers and common reasons as compact codes;
+unknown legacy values are retained. The API and admin state counts remain text-based.
 Existing reference rows, fingerprint formats and core
 database versions are unchanged; there is no rescan or bulk MusicBrainz lookup.
 When the worker has no submissions or requested artwork to process, it prepares
@@ -209,17 +211,28 @@ finishes; the public artwork response remains unchanged. Reasons distinguish
 not that every edition has been checked. To inspect an offline SQLite backup:
 
 ```sql
-SELECT state, reason, COUNT(*) AS entries
+SELECT CASE state
+         WHEN 0 THEN 'pending'
+         WHEN 1 THEN 'ready'
+         WHEN 2 THEN 'missing'
+         WHEN 3 THEN 'unavailable'
+         ELSE state_raw
+       END AS state,
+       reason AS stored_reason, COUNT(*) AS entries
 FROM artwork_requests
-GROUP BY state, reason
+GROUP BY state, state_raw, reason
 ORDER BY entries DESC;
 ```
+
+Known reasons appear as compact codes in this query. Their mapping is defined
+in [`database/codes.py`](../../fingerprint_server/database/codes.py); lookup
+completion logs contain the readable reasons.
 
 Deploy the updated worker, API and recognition service and update the gateway's
 read-authenticated `/api/v1/dejavu/artwork/*` route. Multiple API replicas share the
 queue; only the owned ingestion worker calls MusicBrainz or Cover Art Archive.
 Back up the fingerprint database before activation. Older artwork workers
-reject version 3; roll back with the pre-upgrade backup rather than manually
+reject version 4; roll back with the pre-upgrade backup rather than manually
 downgrading the version marker. A server older than this extension may reject
 the additional SQLite table during schema validation.
 

@@ -70,6 +70,7 @@ export type Snapshot = {
       unavailable: number;
       expired: number;
       unqueried: number;
+      unknown: number;
     } | null;
   };
   revisions: Record<string, string>;

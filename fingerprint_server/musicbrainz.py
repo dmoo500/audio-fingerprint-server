@@ -8,7 +8,7 @@ import math
 import re
 import unicodedata
 from difflib import SequenceMatcher
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fingerprint_server.musicbrainz_client import MusicBrainzClient
@@ -32,7 +32,18 @@ from fingerprint_server.musicbrainz_errors import (
 )
 from fingerprint_server.schemas import ISRC_PATTERN, metadata_searchable
 
+if TYPE_CHECKING:
+    import httpx
+
+    from fingerprint_server.audiodb import AudioDBClient
+    from fingerprint_server.database import Storage
+    from fingerprint_server.settings import Settings
+
 LOGGER = logging.getLogger(__name__)
+
+
+class _MetadataSearchUnresolved(VerificationPending):
+    """A valid MusicBrainz metadata search found no unique candidate."""
 
 
 def _normalized_name(value: str) -> str:
@@ -143,8 +154,53 @@ def _present(value: Any) -> bool:
     return bool(value)
 
 
+def _audiodb_candidate(candidate: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    """Accept an exact TheAudioDB candidate only as a recording lookup hint."""
+    for field, expected in (
+        ("strTrack", metadata["title"]),
+        ("strArtist", metadata["artists"][0]),
+        ("strAlbum", metadata["album"]),
+    ):
+        value = candidate.get(field)
+        if (
+            not isinstance(value, str)
+            or len(value) > 500
+            or not _normalized_name(value)
+            or _normalized_name(value) != _normalized_name(expected)
+        ):
+            return None
+    length = candidate.get("intDuration")
+    if isinstance(length, str) and len(length) <= 10 and length.isascii() and length.isdigit():
+        length = int(length)
+    if type(length) is not int or length <= 0 or abs(length - metadata["duration"] * 1000) > 2000:
+        return None
+    isrc = candidate.get("strISRC")
+    if isrc and (
+        not isinstance(isrc, str)
+        or (metadata.get("isrc") and isrc.upper() != metadata["isrc"].upper())
+    ):
+        return None
+    identifier = candidate.get("strMusicBrainzID")
+    if not isinstance(identifier, str) or len(identifier) > 36:
+        return None
+    try:
+        return str(UUID(identifier))
+    except ValueError:
+        return None
+
+
 class MusicBrainzService(MusicBrainzClient):
     """Verify recording identifiers with bounded, cached and globally paced requests."""
+
+    def __init__(
+        self,
+        store: Storage,
+        settings: Settings,
+        client: httpx.AsyncClient,
+        audiodb: AudioDBClient | None = None,
+    ) -> None:
+        super().__init__(store, settings, client)
+        self.audiodb = audiodb
 
     async def prefetch(self, rows: list[dict[str, Any]]) -> None:
         """Fetch positive identifier evidence for up to twenty eligible submissions."""
@@ -276,6 +332,54 @@ class MusicBrainzService(MusicBrainzClient):
 
     async def _resolve_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Resolve exactly one complete metadata candidate, then verify its recording lookup."""
+        try:
+            return await self._search_metadata(metadata)
+        except _MetadataSearchUnresolved:
+            if self.audiodb is None:
+                raise
+            album = metadata.get("album")
+            title = metadata.get("title")
+            artists = metadata.get("artists")
+            if (
+                not isinstance(album, str)
+                or not _normalized_name(album)
+                or not isinstance(title, str)
+                or not isinstance(artists, list)
+                or not artists
+                or not isinstance(artists[0], str)
+            ):
+                raise
+            candidates = await self.audiodb.search(artists[0], title)
+            identifiers = {
+                identifier
+                for candidate in candidates
+                if (identifier := _audiodb_candidate(candidate, metadata)) is not None
+            }
+            if len(identifiers) != 1:
+                raise
+            identifier = next(iter(identifiers))
+            response = await self.lookup("recording", identifier, use_batch=False)
+            if response["status"] != "resolved":
+                raise
+            recording = response["recording"]
+            if (
+                recording["id"] != identifier
+                or not _metadata_matches(recording, metadata, contextual=True)
+                or not any(
+                    _normalized_name(album) == _normalized_name(name)
+                    for name in recording["albums"]
+                )
+                or (
+                    (metadata.get("release_mbid") or metadata.get("release_group_mbid"))
+                    and not _release_evidence(recording, metadata)
+                )
+            ):
+                raise
+            LOGGER.info("MusicBrainz recording %s resolved using TheAudioDB candidate", identifier)
+            return recording
+
+    async def _search_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a candidate using MusicBrainz metadata search."""
         title, artists = metadata.get("title"), metadata.get("artists")
         if not metadata_searchable(metadata):
             if not metadata.get("isrc") and not metadata.get("recording_mbid"):
@@ -317,14 +421,16 @@ class MusicBrainzService(MusicBrainzClient):
                         return hydrated["recording"]
         response = await self.lookup("search", query)
         if response["status"] != "resolved" or not response["complete"]:
-            raise VerificationPending("MusicBrainz metadata search missing or incomplete")
+            raise _MetadataSearchUnresolved("MusicBrainz metadata search missing or incomplete")
         candidates = {
             candidate["id"]: candidate
             for candidate in response["recordings"]
             if _metadata_matches(candidate, metadata, contextual=True)
         }
         if not candidates:
-            raise VerificationPending("MusicBrainz metadata search found no matching recording")
+            raise _MetadataSearchUnresolved(
+                "MusicBrainz metadata search found no matching recording"
+            )
         album = metadata.get("album")
         has_release_hint = bool(metadata.get("release_mbid") or metadata.get("release_group_mbid"))
         album_candidates = {

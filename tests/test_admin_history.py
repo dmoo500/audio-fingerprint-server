@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fingerprint_server.admin.history import ARTWORK, QUEUE, RECORDINGS, chart
 from fingerprint_server.artwork import ArtworkStore
+from fingerprint_server.database.codes import ArtworkState, SubmissionState
 from fingerprint_server.database.metrics import HISTORY_HOURS, capture_hour
 from fingerprint_server.database.sqlite import Store
 
@@ -19,14 +20,18 @@ def assert_hourly_sampling(store) -> None:
         )
         db.execute(
             "INSERT INTO submissions(id,document,state,created_at) VALUES "
-            "('waiting','{}','queued',0),('busy','{}','processing',0),"
-            "('incomplete','{}','pending_metadata',0),('ambiguous','{}','pending_metadata',0),"
-            "('done','{}','processed',0)"
+            f"('waiting','{{}}',{SubmissionState.QUEUED.value},0),"
+            f"('busy','{{}}',{SubmissionState.PROCESSING.value},0),"
+            f"('incomplete','{{}}',{SubmissionState.PENDING_METADATA.value},0),"
+            f"('ambiguous','{{}}',{SubmissionState.PENDING_METADATA.value},0),"
+            f"('done','{{}}',{SubmissionState.PROCESSED.value},0)"
         )
         db.execute("INSERT INTO musicbrainz_reviews VALUES ('ambiguous','[]',NULL)")
     capture_hour(store, 1000)
     with store.connect() as db:
-        db.execute("UPDATE submissions SET state='processed' WHERE id='waiting'")
+        db.execute(
+            f"UPDATE submissions SET state={SubmissionState.PROCESSED.value} WHERE id='waiting'"
+        )
     capture_hour(store, 1000)
     capture_hour(store, 1002)
     store.initialize()
@@ -101,8 +106,12 @@ def test_artwork_history_migration_and_capture(tmp_path: Path) -> None:
             "('ineligible','{}',0,1)"
         )
         db.executemany(
-            "INSERT INTO artwork_requests VALUES(?,'ready','https://archive.org/a',0,?,NULL)",
-            [("ready", 9999999999), ("unpublished", 9999999999), ("ineligible", 9999999999)],
+            "INSERT INTO artwork_requests(reference_key,state,url,due_at,expires_at,reason) "
+            "VALUES(?,?,'https://archive.org/a',0,?,NULL)",
+            [
+                (reference, ArtworkState.READY, 9999999999)
+                for reference in ("ready", "unpublished", "ineligible")
+            ],
         )
     capture_hour(store, 1001)
     with store.connect() as db:

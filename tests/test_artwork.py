@@ -14,8 +14,9 @@ from aiohttp_client import TestClient
 from test_recognition import HEADERS, PCM, matched, settings
 from test_server import settings as api_settings
 
-from fingerprint_server import artwork
+from fingerprint_server import artwork, artwork_store
 from fingerprint_server.artwork import ArtworkResolver, ArtworkStore, normalized
+from fingerprint_server.database.codes import ARTWORK_REASONS, ArtworkState, decode_artwork_state
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.http_utils import trusted_image
 from fingerprint_server.musicbrainz import MusicBrainzService
@@ -80,6 +81,35 @@ def test_additive_migration_and_queue_survive_restart(tmp_path: Path) -> None:
     assert queue.next() is None
 
 
+@pytest.mark.parametrize("state", ["unexpected", "", "~0"])
+def test_legacy_artwork_codes_preserve_unknown_values(tmp_path: Path, state: str) -> None:
+    store = store_at(tmp_path)
+    with store.connect() as db:
+        db.execute("DROP TABLE artwork_requests")
+        db.execute(
+            "CREATE TABLE artwork_requests(reference_key text PRIMARY KEY,state text NOT NULL,"
+            "url text,due_at double precision NOT NULL,expires_at double precision NOT NULL,"
+            "reason text)"
+        )
+        db.execute(
+            "INSERT INTO artwork_requests VALUES(?,?,NULL,0,9999999999,'~0')",
+            (REFERENCE, state),
+        )
+        db.execute("UPDATE service_state SET value='3' WHERE key='artwork_schema'")
+    queue = ArtworkStore(store)
+    queue.initialize()
+    queue.initialize()
+    assert queue.request(REFERENCE) == {"status": state, "url": None}
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT state,state_raw,reason,typeof(state) AS storage FROM artwork_requests"
+        ).fetchone()
+    assert row["state"] == ArtworkState.UNKNOWN
+    assert row["state_raw"] == state
+    assert ARTWORK_REASONS.decode(row["reason"]) == "~0"
+    assert row["storage"] == "integer"
+
+
 @pytest.mark.parametrize("version", [None, "1"])
 @pytest.mark.parametrize("has_reason", [False, True])
 def test_v1_migration_preserves_covers_and_rechecks_only_old_failures(
@@ -114,13 +144,18 @@ def test_v1_migration_preserves_covers_and_rechecks_only_old_failures(
         rows = db.execute("SELECT * FROM artwork_requests ORDER BY reference_key").fetchall()
         assert rows[0]["url"] == IMAGE
         assert rows[0]["expires_at"] == 9999999999
-        assert [item["reason"] for item in rows] == [None, "legacy_retry", "legacy_retry", None]
+        assert [ARTWORK_REASONS.decode(item["reason"]) for item in rows] == [
+            None,
+            "legacy_retry",
+            "legacy_retry",
+            None,
+        ]
         assert [item["expires_at"] for item in rows[1:]] == [0, 0, 9999999999]
         assert (
             db.execute("SELECT value FROM service_state WHERE key='artwork_schema'").fetchone()[
                 "value"
             ]
-            == "3"
+            == "4"
         )
     queue.finish("c" * 64, None, reason="no_cover")
     queue.initialize()
@@ -196,7 +231,7 @@ async def test_verified_release_hints_select_exact_edition(tmp_path: Path, outco
     }[outcome]
     with store.connect() as db:
         row = db.execute("SELECT reason,url FROM artwork_requests").fetchone()
-        assert row["reason"] == expected
+        assert ARTWORK_REASONS.decode(row["reason"]) == expected
         assert row["url"] == (IMAGE if outcome in ("release", "group") else None)
     assert len(calls) == (2 if outcome in ("release", "group") else 1)
 
@@ -553,22 +588,40 @@ def test_edition_migration_retries_only_album_misses_once(tmp_path: Path, versio
         ("a" * 64, "unavailable", None, 1, 9999999999, "upstream_error"),
     ]
     with store.connect() as db:
+        db.execute("DROP TABLE artwork_requests")
+        db.execute(
+            "CREATE TABLE artwork_requests(reference_key text PRIMARY KEY,state text NOT NULL,"
+            "url text,due_at double precision NOT NULL,expires_at double precision NOT NULL,"
+            "reason text)"
+        )
         db.executemany("INSERT INTO artwork_requests VALUES(?,?,?,?,?,?)", rows)
         db.execute("UPDATE service_state SET value=? WHERE key='artwork_schema'", (version,))
     queue.initialize()
     queue.initialize()
     with store.connect() as db:
         result = db.execute(
-            "SELECT state,url,expires_at,reason FROM artwork_requests WHERE reference_key=?",
+            "SELECT state,state_raw,url,expires_at,reason FROM artwork_requests "
+            "WHERE reference_key=?",
             (REFERENCE,),
         ).fetchone()
-        assert tuple(result) == ("missing", None, 0, "edition_retry")
+        assert decode_artwork_state(result["state"], result["state_raw"]) == "missing"
+        assert (result["url"], result["expires_at"], ARTWORK_REASONS.decode(result["reason"])) == (
+            None,
+            0,
+            "edition_retry",
+        )
         for reference, state, url, _, expires, reason in rows[1:]:
             result = db.execute(
-                "SELECT state,url,expires_at,reason FROM artwork_requests WHERE reference_key=?",
+                "SELECT state,state_raw,url,expires_at,reason FROM artwork_requests "
+                "WHERE reference_key=?",
                 (reference,),
             ).fetchone()
-            assert tuple(result) == (state, url, expires, reason)
+            assert (
+                decode_artwork_state(result["state"], result["state_raw"]),
+                result["url"],
+                result["expires_at"],
+                ARTWORK_REASONS.decode(result["reason"]),
+            ) == (state, url, expires, reason)
     queue.finish(REFERENCE, None, reason="album_not_found")
     queue.initialize()
     with store.connect() as db:
@@ -576,7 +629,7 @@ def test_edition_migration_retries_only_album_misses_once(tmp_path: Path, versio
             "SELECT expires_at,reason FROM artwork_requests WHERE reference_key=?", (REFERENCE,)
         ).fetchone()
         assert result["expires_at"] > time.time()
-        assert result["reason"] == "album_not_found"
+        assert ARTWORK_REASONS.decode(result["reason"]) == "album_not_found"
 
 
 def test_prewarm_prioritizes_and_preserves_edition_retries(
@@ -595,10 +648,14 @@ def test_prewarm_prioritizes_and_preserves_edition_retries(
             ],
         )
         db.executemany(
-            "INSERT INTO artwork_requests VALUES(?,'missing',NULL,0,0,'edition_retry')",
-            [(REFERENCE,), (retry,)],
+            "INSERT INTO artwork_requests(reference_key,state,url,due_at,expires_at,reason) "
+            "VALUES(?,?,NULL,0,0,?)",
+            [
+                (REFERENCE, ArtworkState.MISSING, ARTWORK_REASONS.encode("edition_retry")),
+                (retry, ArtworkState.MISSING, ARTWORK_REASONS.encode("edition_retry")),
+            ],
         )
-    monkeypatch.setattr(artwork, "PREWARM_LIMIT", 1)
+    monkeypatch.setattr(artwork_store, "PREWARM_LIMIT", 1)
     first_job = queue.next(prewarm=True)
     assert first_job is not None
     first = first_job["reference_key"]
@@ -627,7 +684,7 @@ def test_prewarm_prefers_demand_and_skips_unpublished_or_incomplete_rows(
     assert queue.next(prewarm=True)["reference_key"] == REFERENCE
     queue.finish(REFERENCE, IMAGE)
     with monkeypatch.context() as cap:
-        cap.setattr(artwork, "PREWARM_LIMIT", 1)
+        cap.setattr(artwork_store, "PREWARM_LIMIT", 1)
         assert queue.next(prewarm=True) is None
     assert queue.next(prewarm=True)["reference_key"] == other
     assert queue.request(other)["status"] == "pending"
@@ -673,7 +730,7 @@ async def test_idle_worker_prepares_artwork_without_a_request(tmp_path: Path) ->
                             "SELECT state,url FROM artwork_requests WHERE reference_key=?",
                             (REFERENCE,),
                         ).fetchone()
-                    if row is not None and row["state"] == "ready":
+                    if row is not None and row["state"] == ArtworkState.READY:
                         assert row["url"] == IMAGE
                         break
                     await asyncio.sleep(0.01)

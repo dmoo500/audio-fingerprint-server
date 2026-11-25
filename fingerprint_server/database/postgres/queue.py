@@ -5,6 +5,13 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Protocol
 
+from fingerprint_server.database.codes import (
+    SUBMISSION_ERRORS,
+    SubmissionState,
+    decode_submission_state,
+    encode_submission_state,
+)
+
 if TYPE_CHECKING:
     from fingerprint_server.database.postgres import Connection
 
@@ -38,11 +45,14 @@ class PostgresStoreQueueMixin(Protocol):
         with self.connect(write=True) as db:
             row = db.execute("SELECT * FROM submissions WHERE id=%s", (submission_id,)).fetchone()
             if row is not None:
+                row["state"] = decode_submission_state(row["state"], row.pop("state_raw"))
+                row["error"] = SUBMISSION_ERRORS.decode(row["error"])
                 return row
             totals = self._one(
                 db,
                 "SELECT count(*) AS count,coalesce(sum(octet_length(document)),0) AS bytes "
-                "FROM submissions WHERE state IN ('queued','processing','pending_metadata')",
+                f"FROM submissions WHERE state IN ({SubmissionState.QUEUED},"
+                f"{SubmissionState.PROCESSING},{SubmissionState.PENDING_METADATA})",
             )
             if totals["count"] >= limit or totals["bytes"] + len(document.encode()) > byte_limit:
                 raise _postgres.QueueFullError
@@ -56,8 +66,8 @@ class PostgresStoreQueueMixin(Protocol):
                 (
                     submission_id,
                     document,
-                    state,
-                    error,
+                    encode_submission_state(state),
+                    SUBMISSION_ERRORS.encode(error),
                     now,
                     now + self.pending_recheck_days * 86400 if state == "pending_metadata" else 0,
                     now,
@@ -68,10 +78,15 @@ class PostgresStoreQueueMixin(Protocol):
     def get_submission(self, submission_id: str) -> dict[str, Any] | None:
         """Return a submission's processing state."""
         with self.connect() as db:
-            return db.execute(
-                "SELECT id,state,attempts,error,reference_id FROM submissions WHERE id=%s",
+            row = db.execute(
+                "SELECT id,state,state_raw,attempts,error,reference_id FROM submissions "
+                "WHERE id=%s",
                 (submission_id,),
             ).fetchone()
+            if row is not None:
+                row["state"] = decode_submission_state(row["state"], row.pop("state_raw"))
+                row["error"] = SUBMISSION_ERRORS.decode(row["error"])
+            return row
 
     def claim(self, pending_ids: list[str] | None = None) -> dict[str, Any] | None:
         """Claim one eligible entry with a stable FIFO tie-breaker."""
@@ -81,7 +96,8 @@ class PostgresStoreQueueMixin(Protocol):
             if pending_ids is not None:
                 row = db.execute(
                     "SELECT *,1 AS pending_recheck FROM submissions "
-                    "WHERE state='pending_metadata' AND id=ANY(%s) ORDER BY created_at LIMIT 1",
+                    f"WHERE state={SubmissionState.PENDING_METADATA} "
+                    "AND id=ANY(%s) ORDER BY created_at LIMIT 1",
                     (pending_ids,),
                 ).fetchone()
             else:
@@ -89,18 +105,21 @@ class PostgresStoreQueueMixin(Protocol):
                 self._admit_background(db, now)
                 row = db.execute(
                     "SELECT *,(background_kind=1)::integer AS pending_recheck FROM submissions "
-                    "WHERE state='queued' AND retry_at<=%s "
+                    f"WHERE state={SubmissionState.QUEUED} AND retry_at<=%s "
                     "ORDER BY enqueued_at,queue_order LIMIT 1",
                     (now,),
                 ).fetchone()
             if row is None:
                 return None
             db.execute(
-                "UPDATE submissions SET state='processing',attempts=attempts+1,pending_check=%s "
+                f"UPDATE submissions SET state={SubmissionState.PROCESSING},"
+                "attempts=attempts+1,pending_check=%s "
                 "WHERE id=%s",
                 (row["pending_recheck"], row["id"]),
             )
             row["attempts"] += 1
+            row["state"] = decode_submission_state(row["state"], row.pop("state_raw"))
+            row["error"] = SUBMISSION_ERRORS.decode(row["error"])
             row["pending_recheck"] = bool(row["pending_recheck"])
             return row
 
@@ -111,12 +130,14 @@ class PostgresStoreQueueMixin(Protocol):
         with self.connect() as db:
             if pending_ids is not None:
                 return db.execute(
-                    "SELECT id,document FROM submissions WHERE state='pending_metadata' "
+                    "SELECT id,document FROM submissions "
+                    f"WHERE state={SubmissionState.PENDING_METADATA} "
                     "AND id=ANY(%s) ORDER BY created_at LIMIT 19",
                     (pending_ids,),
                 ).fetchall()
             return db.execute(
-                "SELECT id,document FROM submissions WHERE state='queued' AND retry_at<=%s "
+                f"SELECT id,document FROM submissions WHERE state={SubmissionState.QUEUED} "
+                "AND retry_at<=%s "
                 "ORDER BY enqueued_at,queue_order LIMIT 19",
                 (_postgres.time.time(),),
             ).fetchall()
@@ -137,7 +158,8 @@ class PostgresStoreQueueMixin(Protocol):
             return [
                 row["id"]
                 for row in db.execute(
-                    "SELECT id FROM submissions WHERE state='pending_metadata' ORDER BY created_at"
+                    f"SELECT id FROM submissions WHERE state={SubmissionState.PENDING_METADATA} "
+                    "ORDER BY created_at"
                 )
             ]
 
@@ -212,7 +234,8 @@ class PostgresStoreQueueMixin(Protocol):
                                 (_postgres.json.dumps(existing), recording_key, reference_id),
                             )
             db.execute(
-                "UPDATE submissions SET state='processed',reference_id=%s,error=NULL,"
+                f"UPDATE submissions SET state={SubmissionState.PROCESSED},"
+                "reference_id=%s,error=NULL,"
                 "background_kind=0,pending_check=0 WHERE id=%s",
                 (reference_id, submission_id),
             )
@@ -223,11 +246,12 @@ class PostgresStoreQueueMixin(Protocol):
 
         with self.connect(write=True) as db:
             db.execute(
-                "UPDATE submissions SET state='pending_metadata',error=%s,retry_at=0,"
+                f"UPDATE submissions SET state={SubmissionState.PENDING_METADATA},"
+                "error=%s,retry_at=0,"
                 "pending_check=0,background_kind=0,pending_due_at=CASE WHEN pending_due_at>0 "
                 "THEN pending_due_at ELSE %s END WHERE id=%s",
                 (
-                    reason,
+                    SUBMISSION_ERRORS.encode(reason),
                     _postgres.time.time() + self.pending_recheck_days * 86400,
                     submission_id,
                 ),
@@ -251,11 +275,12 @@ class PostgresStoreQueueMixin(Protocol):
                 db.execute("DELETE FROM submissions WHERE id=%s", (submission_id,))
                 return True
             db.execute(
-                "UPDATE submissions SET state='pending_metadata',retry_at=0,error=%s,"
+                f"UPDATE submissions SET state={SubmissionState.PENDING_METADATA},"
+                "retry_at=0,error=%s,"
                 "pending_rechecks=%s,pending_due_at=%s,pending_check=0,background_kind=0 "
                 "WHERE id=%s",
                 (
-                    reason,
+                    SUBMISSION_ERRORS.encode(reason),
                     rechecks,
                     _postgres.time.time() + self.pending_recheck_days * 86400,
                     submission_id,
@@ -346,8 +371,8 @@ class PostgresStoreQueueMixin(Protocol):
             db.execute(
                 "UPDATE submissions SET state=%s,error=%s,retry_at=%s,enqueued_at=%s WHERE id=%s",
                 (
-                    "failed" if retry_seconds is None else "queued",
-                    error,
+                    SubmissionState.FAILED if retry_seconds is None else SubmissionState.QUEUED,
+                    SUBMISSION_ERRORS.encode(error),
                     _postgres.time.time() + (retry_seconds or 0),
                     _postgres.time.time(),
                     submission_id,
@@ -366,18 +391,23 @@ class PostgresStoreQueueMixin(Protocol):
         with self.connect(write=True) as db:
             if pending_recheck:
                 db.execute(
-                    "UPDATE submissions SET state='pending_metadata',"
+                    f"UPDATE submissions SET state={SubmissionState.PENDING_METADATA},"
                     "attempts=greatest(0,attempts-1),pending_check=0,background_kind=0,"
-                    "error='MusicBrainz service unavailable',retry_at=0,pending_due_at=%s "
-                    "WHERE id=%s AND state='processing'",
-                    (_postgres.time.time() + retry_seconds, submission_id),
+                    "error=%s,retry_at=0,pending_due_at=%s "
+                    f"WHERE id=%s AND state={SubmissionState.PROCESSING}",
+                    (
+                        SUBMISSION_ERRORS.encode("MusicBrainz service unavailable"),
+                        _postgres.time.time() + retry_seconds,
+                        submission_id,
+                    ),
                 )
             else:
                 db.execute(
-                    "UPDATE submissions SET state='queued',attempts=greatest(0,attempts-1),"
-                    "pending_check=0,error='MusicBrainz service unavailable',retry_at=%s,"
-                    "enqueued_at=%s WHERE id=%s AND state='processing'",
+                    f"UPDATE submissions SET state={SubmissionState.QUEUED},"
+                    "attempts=greatest(0,attempts-1),pending_check=0,error=%s,retry_at=%s,"
+                    f"enqueued_at=%s WHERE id=%s AND state={SubmissionState.PROCESSING}",
                     (
+                        SUBMISSION_ERRORS.encode("MusicBrainz service unavailable"),
                         _postgres.time.time() + retry_seconds,
                         _postgres.time.time(),
                         submission_id,
@@ -390,9 +420,14 @@ class PostgresStoreQueueMixin(Protocol):
 
         with self.connect(write=True) as db:
             db.execute(
-                "UPDATE submissions SET state='pending_metadata',pending_check=0,"
-                "background_kind=0,error=%s,pending_due_at=%s WHERE id=%s AND state='processing'",
-                (error, _postgres.time.time() + retry_seconds, submission_id),
+                f"UPDATE submissions SET state={SubmissionState.PENDING_METADATA},pending_check=0,"
+                "background_kind=0,error=%s,pending_due_at=%s "
+                f"WHERE id=%s AND state={SubmissionState.PROCESSING}",
+                (
+                    SUBMISSION_ERRORS.encode(error),
+                    _postgres.time.time() + retry_seconds,
+                    submission_id,
+                ),
             )
 
     def _admit_background(self, db: Connection, now: float) -> None:
@@ -400,14 +435,16 @@ class PostgresStoreQueueMixin(Protocol):
             return
         admitted = self._one(
             db,
-            "SELECT count(*) AS count FROM submissions WHERE state IN ('queued','processing') "
+            f"SELECT count(*) AS count FROM submissions WHERE state IN "
+            f"({SubmissionState.QUEUED},{SubmissionState.PROCESSING}) "
             "AND background_kind!=0",
         )["count"]
         available = max(0, self.background_recheck_queue_window - admitted)
         if not available:
             return
         rows = db.execute(
-            "SELECT id,background_kind FROM submissions WHERE state='pending_metadata' "
+            "SELECT id,background_kind FROM submissions "
+            f"WHERE state={SubmissionState.PENDING_METADATA} "
             "AND pending_due_at<=%s AND (background_kind=2 OR %s) "
             "AND NOT EXISTS (SELECT 1 FROM musicbrainz_reviews WHERE submission_id=submissions.id) "
             "ORDER BY pending_due_at,created_at,queue_order LIMIT %s",
@@ -416,14 +453,14 @@ class PostgresStoreQueueMixin(Protocol):
         tail = self._one(
             db,
             "SELECT max(enqueued_at) AS tail FROM submissions "
-            "WHERE state IN ('queued','processing')",
+            f"WHERE state IN ({SubmissionState.QUEUED},{SubmissionState.PROCESSING})",
         )["tail"]
         enqueued_at = max(now, tail or now)
         for row in rows:
             enqueued_at += 0.000001
             kind = 2 if row["background_kind"] == 2 else 1
             db.execute(
-                "UPDATE submissions SET state='queued',retry_at=0,enqueued_at=%s,"
+                f"UPDATE submissions SET state={SubmissionState.QUEUED},retry_at=0,enqueued_at=%s,"
                 "background_kind=%s,pending_check=%s WHERE id=%s",
                 (enqueued_at, kind, int(kind == 1), row["id"]),
             )

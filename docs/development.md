@@ -22,14 +22,11 @@ fingerprint_server/
     dist/                Generated administrator frontend assets
   database/
     __init__.py          Backend selection
-    sqlite.py            SQLite queue and acoustic reference store
-    sqlite_queue.py      SQLite submission lifecycle and publication
-    postgres.py          PostgreSQL store and shared runtime coordination
-    postgres_queue.py    PostgreSQL submission lifecycle and publication
-    migrations.py        SQLite schema upgrades and verification versions
-    postgres_schema.py   PostgreSQL table definitions and format version
-    postgres_postings.py Experimental compact layout (not deployed)
+    sqlite/              SQLite store, queue, metadata projection and migrations
+    postgres/            PostgreSQL store, queue, schema and experimental postings
+    codes.py             Shared storage codes and text decoding
     logic.py             Backend-independent coverage and matching decisions
+  artwork_store.py       Artwork queue, cache and storage migration
   musicbrainz.py         Metadata verification and identifier batching
   musicbrainz_client.py  Shared HTTP transport, cache, pacing and cooldown
   musicbrainz_parsing.py Pure recording/release response validation

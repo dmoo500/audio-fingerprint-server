@@ -157,7 +157,7 @@ partitioned each hash into reference-ID blocks of 32 and offset blocks of
 
 | Landmark layout, including indexes | Bytes | GiB |
 | --- | ---: | ---: |
-| Current format 1 | 6,704,136,192 | 6.244 |
+| Row layout (format 1 at the time) | 6,704,136,192 | 6.244 |
 | Bounded format-2 prototype | 8,410,185,728 | 7.833 |
 
 This is **25.4% larger**, not a space saving. Fixed block boundaries fragment

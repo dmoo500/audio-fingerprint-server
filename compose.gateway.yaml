@@ -17,6 +17,7 @@ services:
       FP_PENDING_RECHECK_DAYS: ${FP_PENDING_RECHECK_DAYS:-7}
       FP_MUSICBRAINZ_CONTACT: ${FP_MUSICBRAINZ_CONTACT:-}
       FP_MUSICBRAINZ_BASE_URL: ${FP_MUSICBRAINZ_BASE_URL:-https://musicbrainz.org/ws/2}
+      FP_THEAUDIODB_API_KEY: ${FP_THEAUDIODB_API_KEY:-}
     volumes:
       - fingerprints:/data
     networks:

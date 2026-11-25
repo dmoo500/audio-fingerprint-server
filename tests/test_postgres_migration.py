@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 from test_metadata_gate import document
 
-from fingerprint_server.database.postgres_schema import SQLITE_SCHEMA_VERSION
+from fingerprint_server.database.codes import SubmissionState
+from fingerprint_server.database.postgres.schema import SQLITE_SCHEMA_VERSION
 from fingerprint_server.database.sqlite import Store
 
 
@@ -36,7 +37,8 @@ def source(tmp_path: Path) -> Path:
     store.submit("second", json.dumps(payload), 10)
     with store.connect() as db:
         db.execute(
-            "UPDATE submissions SET state='processing',pending_check=1,background_kind=1,"
+            f"UPDATE submissions SET state={SubmissionState.PROCESSING.value},"
+            "pending_check=1,background_kind=1,"
             "pending_rechecks=2,pending_due_at=42,enqueued_at=5 WHERE id='second'"
         )
         db.execute("UPDATE submissions SET enqueued_at=5 WHERE id='first'")
@@ -145,7 +147,7 @@ def test_round_trip_and_identity(source: Path, postgres: object, migration: dict
         )
         rows = cur.fetchall()
         assert [row[0] for row in rows] == ["first", "second"]
-        assert rows[1][1:] == ("processing", 1, 2, 42)
+        assert rows[1][1:] == (SubmissionState.PROCESSING, 1, 2, 42)
         cur.execute(
             "INSERT INTO migration_test.reference_tracks "
             "(reference_key,metadata,created_at) VALUES ('new','{}',0) RETURNING id"
@@ -153,7 +155,8 @@ def test_round_trip_and_identity(source: Path, postgres: object, migration: dict
         assert cur.fetchone()[0] == 2
         cur.execute(
             "INSERT INTO migration_test.submissions(id,document,state,created_at) "
-            "VALUES ('third','{}','queued',0) RETURNING queue_order"
+            "VALUES ('third','{}',%s,0) RETURNING queue_order",
+            (SubmissionState.QUEUED,),
         )
         assert cur.fetchone()[0] == 3
         with pytest.raises(psycopg.errors.ForeignKeyViolation):

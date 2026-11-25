@@ -24,7 +24,7 @@ the separately verified SQLite return export.
 
 ## Offline migration
 
-An experimental SQLite-to-PostgreSQL importer is available for a **schema 9**
+An experimental SQLite-to-PostgreSQL importer is available for a **schema 10**
 SQLite database or backup. It takes a consistent SQLite backup (including
 committed WAL), validates SQLite integrity and foreign keys, and creates a new
 PostgreSQL schema in a single transaction. It retains SQLite submission rowids
@@ -46,9 +46,9 @@ uv run --no-sync --with 'psycopg[binary]>=3.2,<4' \
 
 Allow disk space for the temporary SQLite copy, PostgreSQL tables, indexes,
 WAL and backups. The tool does not delete the source or import into an existing
-schema. Older backups must first be upgraded to schema 9 **on a separate copy**
+schema. Older backups must first be upgraded to schema 10 **on a separate copy**
 using the existing SQLite migration; retain the unmodified backup. The importer
-creates PostgreSQL format 1, shared with the optional
+creates PostgreSQL format 3, shared with the optional
 [runtime backend](../operations/deployment.md#optional-postgresql-backend). It does not change
 the running server's configuration or enable PostgreSQL automatically.
 

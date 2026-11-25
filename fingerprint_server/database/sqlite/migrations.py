@@ -13,17 +13,19 @@ from uuid import UUID
 
 from audio_fingerprint.codec import encode_document
 
-from fingerprint_server.database.sqlite_metadata import FIELDS, install_projection
+from fingerprint_server.database.codes import SubmissionState
+from fingerprint_server.database.sqlite.metadata import FIELDS, install_projection
+from fingerprint_server.database.sqlite.submission_migration import _migrate_submission_codes
 from fingerprint_server.schemas import decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 9
+DB_SCHEMA_VERSION = 10
 MUSICBRAINZ_VERIFICATION_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE submissions (
-    id TEXT PRIMARY KEY, document TEXT NOT NULL, state TEXT NOT NULL,
+    id TEXT PRIMARY KEY, document TEXT NOT NULL, state INTEGER NOT NULL, state_raw TEXT,
     attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
     error TEXT, reference_id TEXT, created_at REAL NOT NULL,
     pending_rechecks INTEGER NOT NULL DEFAULT 0, pending_due_at REAL NOT NULL DEFAULT 0,
@@ -98,8 +100,11 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
         LOGGER.info("Upgrading fingerprint DB schema from %s to %s", version, DB_SCHEMA_VERSION)
 
     db.execute("PRAGMA journal_mode=WAL")
-    db.execute("BEGIN IMMEDIATE")
+    foreign_keys = db.execute("PRAGMA foreign_keys").fetchone()[0]
+    if not empty and version < 10:
+        db.execute("PRAGMA foreign_keys=OFF")
     try:
+        db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
         empty = _validate_schema(db, version)
         if empty:
@@ -140,8 +145,10 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
                 )
                 db.execute("PRAGMA user_version=8")
             if version < 9:
-                install_projection(db)
                 db.execute("PRAGMA user_version=9")
+            if version < 10:
+                _migrate_submission_codes(db)
+                db.execute("PRAGMA user_version=10")
         if (empty or version < DB_SCHEMA_VERSION) and db.execute(
             "PRAGMA foreign_key_check"
         ).fetchone() is not None:
@@ -149,14 +156,18 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
         db.execute(
             "UPDATE submissions SET "
             "state=CASE WHEN pending_check=1 AND background_kind=0 "
-            "THEN 'pending_metadata' ELSE 'queued' END "
-            "WHERE state='processing'"
+            f"THEN {SubmissionState.PENDING_METADATA.value} "
+            f"ELSE {SubmissionState.QUEUED.value} END "
+            f",state_raw=NULL WHERE state={SubmissionState.PROCESSING.value}"
         )
         db.commit()
-    except (sqlite3.Error, RuntimeError, ValueError):
+    except BaseException:
         db.rollback()
         LOGGER.exception("Fingerprint database upgrade failed; original data retained: %s", path)
         raise
+    finally:
+        if foreign_keys:
+            db.execute("PRAGMA foreign_keys=ON")
 
 
 def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
@@ -197,10 +208,20 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
         expected_tables.add("submission_metadata")
     if tables != expected_tables:
         raise RuntimeError("Unrecognized fingerprint database tables; refusing to migrate")
-    if "submission_metadata" in tables and {
-        row[1] for row in db.execute("PRAGMA table_info(submission_metadata)")
-    } != {"id", "metadata", *FIELDS}:
-        raise RuntimeError("Unrecognized submission metadata projection")
+    projection_fields = set(FIELDS) if version >= 10 else set(FIELDS) - {"state_raw"}
+    if "submission_metadata" in tables:
+        projection_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(submission_metadata)")
+        }
+        if version < 10 and "state_raw" in projection_columns:
+            projection_fields.add("state_raw")
+        if projection_columns != {"id", "metadata", *projection_fields}:
+            raise RuntimeError("Unrecognized submission metadata projection")
+    if version >= 10:
+        for table in ("submissions", "submission_metadata"):
+            types = {row[1]: row[2].upper() for row in db.execute(f"PRAGMA table_info({table})")}
+            if types.get("state") != "INTEGER":
+                raise RuntimeError(f"Unrecognized compact state column in {table}")
     if version >= 9:
         triggers = {
             row[0]
@@ -234,6 +255,8 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
             expected.update({"pending_rechecks", "pending_due_at", "pending_check"})
         if table == "submissions" and version >= 6:
             expected.update({"enqueued_at", "background_kind"})
+        if table == "submissions" and (version >= 10 or "state_raw" in columns):
+            expected.add("state_raw")
         if columns != expected:
             raise RuntimeError(
                 f"Unrecognized fingerprint database columns in {table}; refusing to migrate"

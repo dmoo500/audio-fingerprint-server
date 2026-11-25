@@ -40,6 +40,7 @@ const snapshot = {
       unavailable: 1,
       expired: 1,
       unqueried: 3,
+      unknown: 0,
     },
   },
   revisions: { submissions: "one" },
@@ -527,6 +528,26 @@ describe("overview", () => {
     });
     await flushPromises();
     expect(wrapper.text()).toContain("Not measured");
+    wrapper.unmount();
+  });
+
+  it("reports artwork results with an unknown stored state", async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      response({ charts: [] }) as Response,
+    );
+    const wrapper = mount(Overview, {
+      props: {
+        snapshot: {
+          ...snapshot,
+          overview: {
+            ...snapshot.overview,
+            artwork: { ...snapshot.overview.artwork, unknown: 2 },
+          },
+        },
+      },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("2 cached results have an unknown state");
     wrapper.unmount();
   });
 

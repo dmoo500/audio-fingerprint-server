@@ -13,7 +13,7 @@ MUSICBRAINZ_CACHE_TTL_DAYS = 7
 class Settings(BaseSettings):
     """Settings for SQLite or explicitly selected PostgreSQL service roles."""
 
-    model_config = SettingsConfigDict(env_prefix="FP_", env_file=None)
+    model_config = SettingsConfigDict(env_prefix="FP_", env_file=None, hide_input_in_errors=True)
 
     database: Path = Path("data/fingerprints.db")
     database_backend: Literal["sqlite", "postgres"] = "sqlite"
@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     musicbrainz_enabled: bool = False
     musicbrainz_contact: str = ""
     musicbrainz_base_url: HttpUrl = HttpUrl("https://musicbrainz.org/ws/2")
+    theaudiodb_api_key: SecretStr | None = None
     housekeeping_enabled: bool = True
     background_recheck_queue_window: int = Field(default=2, ge=1, le=1000)
     pending_max_rechecks: int = Field(default=3, ge=1, le=1000)
@@ -39,6 +40,20 @@ class Settings(BaseSettings):
     )
     minimum_matches: int = Field(default=30, ge=10)
     minimum_fraction: float = Field(default=0.02, gt=0, le=1)
+
+    @field_validator("theaudiodb_api_key", mode="before")
+    @classmethod
+    def empty_theaudiodb_key(cls, value: object) -> object:
+        """Treat an empty optional API key as disabled."""
+        return None if value == "" else value
+
+    @field_validator("theaudiodb_api_key")
+    @classmethod
+    def validate_theaudiodb_key(cls, value: SecretStr | None) -> SecretStr | None:
+        """Accept only a numeric TheAudioDB v1 API key."""
+        if value is not None and not re.fullmatch(r"[0-9]{1,64}", value.get_secret_value()):
+            raise ValueError("TheAudioDB v1 API key must be numeric")
+        return value
 
     @field_validator("gateway_backends")
     @classmethod
@@ -81,6 +96,8 @@ class Settings(BaseSettings):
             raise ValueError("The application key must differ from the internal scope keys")
         if self.musicbrainz_enabled and not self.musicbrainz_contact.strip():
             raise ValueError("MusicBrainz lookups require FP_MUSICBRAINZ_CONTACT")
+        if self.theaudiodb_api_key is not None and not self.musicbrainz_enabled:
+            raise ValueError("TheAudioDB lookups require MusicBrainz verification")
         if self.database_backend == "sqlite" and (
             self.postgres_dsn is not None or self.service_role != "all"
         ):

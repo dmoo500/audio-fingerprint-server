@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 
+import aiohttp
 import httpx
 
 from fingerprint_server.artwork import ArtworkStore
@@ -67,9 +68,19 @@ async def runtime(
                         await run_sync(postgres_store.heartbeat, connection, role)
 
             monitor = asyncio.create_task(monitor_owners(), name="fingerprint-ownership")
-        async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
+        async with AsyncExitStack() as clients:
+            client = await clients.enter_async_context(
+                httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False)
+            )
+            audiodb_session = (
+                await clients.enter_async_context(
+                    aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), trust_env=False)
+                )
+                if settings.theaudiodb_api_key is not None and settings.service_role != "api"
+                else None
+            )
             if settings.service_role != "api":
-                worker = Worker(store, settings, client)
+                worker = Worker(store, settings, client, audiodb_session)
                 worker_task = asyncio.create_task(worker.run(), name="fingerprint-ingestion")
                 history_task = asyncio.create_task(
                     sample_history(store), name="fingerprint-admin-history"

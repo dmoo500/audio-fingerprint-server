@@ -90,8 +90,9 @@ cache does not provide a lifetime success rate or measure whether a browser
 successfully displayed the image. Missing results include ambiguous albums and
 searches stopped at the safety limit, not only albums without artwork. Eligible
 references are partitioned into ready, missing, pending, temporarily unavailable,
-expired and not-yet-looked-up results. Background lookups run when the worker is
-idle, and MusicBrainz outages or cooldowns can delay them.
+expired, not-yet-looked-up and unknown-state results. The panel reports unknown
+states separately when present. Background lookups run when the worker is idle,
+and MusicBrainz outages or cooldowns can delay them.
 
 ### MusicBrainz reviews
 
@@ -115,10 +116,10 @@ highlights; entries previously filtered out cannot be recovered from them.
 
 ### Search and sort
 
-SQLite schema 9 keeps a derived submission metadata projection for faster
+SQLite keeps a derived submission metadata projection for faster
 search and sorting. The fingerprint service creates it during the database
 upgrade, after making the usual pre-upgrade backup. Allow disk space and time
-for the backup and migration; older server versions cannot open schema 9.
+for the backup and migration; older server versions cannot open schema 10.
 The admin service does not upgrade the database itself.
 
 ![Submissions table filtered by Midnight, showing one matching example recording](images/admin-search.png)

@@ -18,6 +18,11 @@ from fingerprint_server.admin.sqlite_data import SQLiteAdminData
 from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.artwork_images import IMAGE_CACHE, ImageCache
 from fingerprint_server.database.application_keys import ApplicationKeys, initialize
+from fingerprint_server.database.codes import (
+    SUBMISSION_ERRORS,
+    SubmissionState,
+    encode_submission_state,
+)
 from fingerprint_server.database.metrics import capture_hour
 from fingerprint_server.database.sqlite import Store
 
@@ -53,7 +58,7 @@ def insert_examples(data: SQLiteAdminData) -> None:
                 "INSERT INTO submissions(id,state,document,created_at) VALUES(?,?,?,?)",
                 (
                     str(index),
-                    state,
+                    encode_submission_state(state),
                     json.dumps({"metadata": metadata, "fingerprints": ["secret"]}),
                     index + 1,
                 ),
@@ -98,7 +103,7 @@ def test_queries_actions_and_revisions(data: SQLiteAdminData) -> None:
     data.mutate(["2"], "delete")
     assert data.read("references", count=True) == 1
     with data.store.connect() as db:
-        db.execute("UPDATE submissions SET state='failed' WHERE id='5'")
+        db.execute("UPDATE submissions SET state=? WHERE id='5'", (SubmissionState.FAILED,))
     data.settings = data.settings.model_copy(update={"queue_limit": 1})
     with pytest.raises(ActionFailed, match="Queue capacity"):
         data.mutate(["5"], "retry")
@@ -163,6 +168,49 @@ def test_review_selection_is_atomic_and_state_guarded(data: SQLiteAdminData) -> 
         data.select_musicbrainz_candidate("0", "candidate-a")
 
 
+def test_unknown_state_search_sort_and_retry(data: SQLiteAdminData) -> None:
+    insert_examples(data)
+    with data.store.connect() as db:
+        db.execute(
+            "UPDATE submissions SET state=?,state_raw=?,error=? WHERE id='1'",
+            (SubmissionState.UNKNOWN, "0", SUBMISSION_ERRORS.encode("TheAudioDB HTTP 503")),
+        )
+        db.execute(
+            "UPDATE submissions SET state=?,state_raw=?,error=? WHERE id='5'",
+            (SubmissionState.UNKNOWN, "~future", SUBMISSION_ERRORS.encode("~dynamic detail")),
+        )
+    assert data.read("submissions", {"state": {"eq": "0"}}, count=True) == 1
+    assert data.read("submissions", {"state": {"eq": "~future"}}, count=True) == 1
+    assert data.read("submissions", {"error": {"contains": "audiodb http"}}, count=True) == 1
+    assert data.read("submissions", {"error": {"eq": "~dynamic detail"}}, count=True) == 1
+    rows = data.read("submissions", order_by=["state asc"])
+    assert [row["state"] for row in rows] == sorted((row["state"] for row in rows), key=str.lower)
+    data.settings = data.settings.model_copy(update={"queue_limit": 3})
+    with pytest.raises(ActionFailed, match="Queue capacity"):
+        data.mutate(["1", "5"], "retry")
+    data.settings = data.settings.model_copy(update={"queue_limit": 100})
+    data.mutate(["1", "5"], "retry")
+    with data.store.connect() as db:
+        rows = db.execute(
+            "SELECT state,state_raw,error FROM submissions WHERE id IN ('1','5') ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (SubmissionState.QUEUED, None, None),
+        (SubmissionState.QUEUED, None, None),
+    ]
+
+
+@pytest.mark.parametrize("state", [SubmissionState.UNKNOWN, 999])
+def test_invalid_state_does_not_decode_as_a_valid_status(data: SQLiteAdminData, state: int) -> None:
+    insert_examples(data)
+    with data.store.connect() as db:
+        db.execute("UPDATE submissions SET state=?,state_raw=NULL WHERE id='1'", (state,))
+    with pytest.raises(ValueError):
+        data.store.get_submission("1")
+    with pytest.raises(sqlite3.OperationalError, match="user-defined function"):
+        data.read("submissions", {"state": {"eq": "queued"}})
+
+
 def test_mutation_serializes_against_worker(data: SQLiteAdminData) -> None:
     insert_examples(data)
     acquired = threading.Event()
@@ -171,7 +219,7 @@ def test_mutation_serializes_against_worker(data: SQLiteAdminData) -> None:
     def worker() -> None:
         with data.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute("UPDATE submissions SET state='processing' WHERE id='1'")
+            db.execute("UPDATE submissions SET state=? WHERE id='1'", (SubmissionState.PROCESSING,))
             acquired.set()
             assert release.wait(5)
 
@@ -329,8 +377,13 @@ def test_submission_list_sorts_text_and_only_reads_cached_artwork(data: SQLiteAd
             )
             db.execute(
                 "INSERT INTO submissions(id,state,document,created_at,reference_id) "
-                "VALUES(?,'processed',?,0,?)",
-                (str(index), json.dumps({"metadata": metadata}), reference),
+                "VALUES(?,?,?,0,?)",
+                (
+                    str(index),
+                    SubmissionState.PROCESSED,
+                    json.dumps({"metadata": metadata}),
+                    reference,
+                ),
             )
     for index in (0, 1, 2):
         reference = str(index) * 64

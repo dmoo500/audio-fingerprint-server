@@ -6,7 +6,8 @@ TABLE = """
 CREATE TABLE IF NOT EXISTS submission_metadata (
     id TEXT PRIMARY KEY REFERENCES submissions(id) ON DELETE CASCADE,
     metadata TEXT,
-    state TEXT NOT NULL,
+    state INTEGER NOT NULL,
+    state_raw TEXT,
     error TEXT,
     attempts INTEGER NOT NULL,
     pending_rechecks INTEGER NOT NULL,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS submission_metadata (
 EXTRACT = "CASE WHEN json_valid(NEW.document) THEN json_extract(NEW.document,'$.metadata') END"
 FIELDS = (
     "state",
+    "state_raw",
     "error",
     "attempts",
     "pending_rechecks",

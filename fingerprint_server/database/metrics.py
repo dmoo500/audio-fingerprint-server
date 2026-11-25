@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from fingerprint_server.async_utils import run_sync
+from fingerprint_server.database.codes import ArtworkState, SubmissionState
 from fingerprint_server.database.recognition_metrics import (
     RECOGNITION_IDENTITY_TABLE,
     RECOGNITION_TABLE,
@@ -33,10 +34,10 @@ CREATE TABLE IF NOT EXISTS admin_hourly_metrics (
     cached_artwork bigint
 )
 """
-REVIEW_COUNT = """
+REVIEW_COUNT = f"""
 SELECT count(*) AS count FROM musicbrainz_reviews r
 JOIN submissions s ON s.id=r.submission_id
-WHERE s.state='pending_metadata' AND r.selected_mbid IS NULL
+WHERE s.state={SubmissionState.PENDING_METADATA.value} AND r.selected_mbid IS NULL
 """
 SEARCHABLE_RECORDINGS_COUNT = """
 count(DISTINCT coalesce(nullif(recording_key,''), 'reference:' || id))
@@ -105,26 +106,29 @@ def capture_hour(store: Storage, hour: int) -> None:
             count_row = db.execute(
                 "SELECT count(*) AS count FROM artwork_requests a "
                 "JOIN reference_tracks t ON t.reference_key=a.reference_key "
-                "WHERE t.publication_ready=1 AND a.state='ready' "
+                f"WHERE t.publication_ready=1 AND a.state={ArtworkState.READY.value} "
                 f"AND a.expires_at>{marker} AND trim({album})<>'' AND trim({mbid})<>''",
                 (time.time(),),
             ).fetchone()
             if count_row is None:
                 raise RuntimeError("Cannot measure cached artwork")
             cached_artwork = count_row["count"]
+        queued = SubmissionState.QUEUED.value
+        processing = SubmissionState.PROCESSING.value
+        pending = SubmissionState.PENDING_METADATA.value
         db.execute(
             f"""
             INSERT INTO admin_hourly_metrics
                 (hour,recordings,queued,processing,pending_metadata,manual_review,cached_artwork)
             SELECT {marker},
                 (SELECT {SEARCHABLE_RECORDINGS_COUNT} FROM reference_tracks),
-                count(*) FILTER (WHERE state='queued'),
-                count(*) FILTER (WHERE state='processing'),
-                count(*) FILTER (WHERE state='pending_metadata'),
+                count(*) FILTER (WHERE state={queued}),
+                count(*) FILTER (WHERE state={processing}),
+                count(*) FILTER (WHERE state={pending}),
                 ({REVIEW_COUNT}),
                 {marker}
             FROM submissions
-            WHERE state IN ('queued','processing','pending_metadata')
+            WHERE state IN ({queued},{processing},{pending})
             ON CONFLICT(hour) DO UPDATE SET cached_artwork=excluded.cached_artwork
             WHERE admin_hourly_metrics.cached_artwork IS NULL
             """,

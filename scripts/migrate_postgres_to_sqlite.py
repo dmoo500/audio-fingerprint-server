@@ -18,15 +18,22 @@ from migrate_sqlite_to_postgres import COPY_HEADER, COPY_TRAILER, LANDMARK_ROW, 
 from psycopg import sql
 
 from fingerprint_server.database.application_keys import REGISTRY_VERSION
-from fingerprint_server.database.migrations import SCHEMA
-from fingerprint_server.database.postgres_postings import POSTINGS_VERSION
-from fingerprint_server.database.postgres_schema import (
+from fingerprint_server.database.codes import (
+    ARTWORK_REASONS,
+    SUBMISSION_ERRORS,
+    ArtworkState,
+    SubmissionState,
+)
+from fingerprint_server.database.postgres.postings import LEGACY_POSTINGS_VERSION, POSTINGS_VERSION
+from fingerprint_server.database.postgres.schema import (
     EXTENSION_TABLES,
     FORMAT_VERSION,
+    LEGACY_FORMAT_VERSION,
     SQLITE_SCHEMA_VERSION,
     TABLES,
 )
-from fingerprint_server.database.sqlite_metadata import install_projection
+from fingerprint_server.database.sqlite.metadata import install_projection
+from fingerprint_server.database.sqlite.migrations import SCHEMA
 
 LOGGER = logging.getLogger(__name__)
 
@@ -73,17 +80,21 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
     versions = db.execute(
         "SELECT format_version,sqlite_schema_version FROM migration_info"
     ).fetchall()
-    if versions not in (
-        [(FORMAT_VERSION, SQLITE_SCHEMA_VERSION)],
-        [(POSTINGS_VERSION, SQLITE_SCHEMA_VERSION)],
-        [(FORMAT_VERSION, 8)],
-        [(POSTINGS_VERSION, 8)],
-    ):
+    if len(versions) != 1 or versions[0] not in {
+        (format_version, provenance)
+        for format_version in (
+            LEGACY_FORMAT_VERSION,
+            LEGACY_POSTINGS_VERSION,
+            FORMAT_VERSION,
+            POSTINGS_VERSION,
+        )
+        for provenance in (8, 9, SQLITE_SCHEMA_VERSION)
+    }:
         raise ValueError(f"Unsupported PostgreSQL format/provenance: {versions}")
     expected = {name: set(spec["columns"]) for name, spec in TABLES.items()}
     expected["landmarks"] = {"hash", "reference_id", "offset"}
     expected["migration_info"] = {"format_version", "sqlite_schema_version"}
-    if versions[0][0] == POSTINGS_VERSION:
+    if versions[0][0] in (LEGACY_POSTINGS_VERSION, POSTINGS_VERSION):
         expected["landmark_postings"] = {
             "hash",
             "reference_block",
@@ -99,6 +110,10 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
         actual.setdefault(table, set()).add(column)
     extensions = tuple(name for name in EXTENSION_TABLES if name in actual)
     expected.update({name: set(EXTENSION_TABLES[name]["columns"]) for name in extensions})
+    if "state_raw" not in actual.get("submissions", set()):
+        expected["submissions"].remove("state_raw")
+    if "artwork_requests" in actual and "state_raw" not in actual["artwork_requests"]:
+        expected["artwork_requests"].remove("state_raw")
     if "artwork_requests" in actual and "reason" not in actual["artwork_requests"]:
         expected["artwork_requests"].remove("reason")
     if "admin_hourly_metrics" in actual and "cached_artwork" not in actual["admin_hourly_metrics"]:
@@ -118,29 +133,34 @@ def copy_metadata(db: psycopg.Connection, target: sqlite3.Connection, name: str)
     """Copy and compare every metadata field, preserving submission rowids and FIFO."""
     spec = (TABLES | EXTENSION_TABLES)[name]
     columns = spec["columns"]
-    fields = sql.SQL(",").join(map(sql.Identifier, columns))
-    if name == "artwork_requests":
-        has_reason = db.execute(
-            "SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() "
-            "AND table_name='artwork_requests' AND column_name='reason'"
-        ).fetchone()
-        if has_reason is None:
-            fields = sql.SQL(",").join(
-                sql.SQL('NULL AS "reason"') if column == "reason" else sql.Identifier(column)
-                for column in columns
-            )
-    if name == "admin_hourly_metrics":
-        has_artwork = db.execute(
-            "SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() "
-            "AND table_name='admin_hourly_metrics' AND column_name='cached_artwork'"
-        ).fetchone()
-        if has_artwork is None:
-            fields = sql.SQL(",").join(
-                sql.SQL('NULL AS "cached_artwork"')
-                if column == "cached_artwork"
-                else sql.Identifier(column)
-                for column in columns
-            )
+    existing = {
+        row[0]
+        for row in db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name=%s",
+            (name,),
+        )
+    }
+    expressions: dict[str, str] = {}
+    if name in ("submissions", "artwork_requests") and "state_raw" not in existing:
+        states = SubmissionState if name == "submissions" else ArtworkState
+        known = [state for state in states if state.name != "UNKNOWN"]
+        cases = " ".join(f"WHEN '{state.name.lower()}' THEN {state.value}" for state in known)
+        names = ",".join(f"'{state.name.lower()}'" for state in known)
+        expressions["state"] = f"CASE state {cases} ELSE {states.UNKNOWN.value} END"
+        expressions["state_raw"] = f"CASE WHEN state IN ({names}) THEN NULL ELSE state END"
+        reason = "error" if name == "submissions" else "reason"
+        if reason in existing:
+            codec = SUBMISSION_ERRORS if name == "submissions" else ARTWORK_REASONS
+            expressions[reason] = codec.encoded_sql(reason)
+    fields = sql.SQL(",").join(
+        sql.SQL("{} AS {}").format(sql.SQL(expressions[column]), sql.Identifier(column))
+        if column in expressions
+        else sql.SQL("NULL AS {}").format(sql.Identifier(column))
+        if column not in existing
+        else sql.Identifier(column)
+        for column in columns
+    )
     target_fields = ",".join(
         '"rowid"' if field == "queue_order" else f'"{field}"' for field in columns
     )

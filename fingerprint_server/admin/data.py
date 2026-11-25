@@ -9,6 +9,11 @@ from typing import Any, Literal
 
 from fingerprint_server.admin.artwork import artwork_statistics
 from fingerprint_server.admin.errors import ActionFailed
+from fingerprint_server.database.codes import (
+    SUBMISSION_ERRORS,
+    SubmissionState,
+    decode_submission_state,
+)
 from fingerprint_server.database.metrics import HISTORY_HOURS, REFERENCE_COUNTS, REVIEW_COUNT
 from fingerprint_server.database.postgres import PostgresStore
 from fingerprint_server.settings import Settings
@@ -17,8 +22,16 @@ LOGGER = logging.getLogger(__name__)
 type Filter = dict[str, Any] | str | None
 type Dataset = Literal["submissions", "unresolved", "references"]
 
-SUBMISSIONS = """
-SELECT id,state,error,attempts,pending_rechecks,created_at,retry_at,pending_due_at,reference_id,
+SUBMISSIONS = f"""
+SELECT id,CASE state
+    WHEN {SubmissionState.QUEUED} THEN 'queued'
+    WHEN {SubmissionState.PROCESSING} THEN 'processing'
+    WHEN {SubmissionState.PROCESSED} THEN 'processed'
+    WHEN {SubmissionState.FAILED} THEN 'failed'
+    WHEN {SubmissionState.PENDING_METADATA} THEN 'pending_metadata'
+    ELSE coalesce(state_raw,state::text) END AS state,
+{SUBMISSION_ERRORS.decoded_sql("error")} AS error,attempts,pending_rechecks,
+created_at,retry_at,pending_due_at,reference_id,
 (document::json->'metadata')::jsonb AS metadata FROM submissions
 """
 REFERENCES = """
@@ -210,9 +223,15 @@ class AdminData(AdminFilters):
         """Read database size and lifecycle counts without scanning landmarks."""
         with self.store.connect() as db:
             db.execute("SET LOCAL statement_timeout='5s'")
-            states = db.execute("SELECT state,count(*) AS count FROM submissions GROUP BY state")
+            states = db.execute(
+                "SELECT state,state_raw,count(*) AS count FROM submissions GROUP BY state,state_raw"
+            )
             uploads = dict.fromkeys(STATES, 0)
-            uploads.update({row["state"]: row["count"] for row in states})
+            for row in states:
+                state = decode_submission_state(row["state"], row["state_raw"])
+                if state is None:
+                    raise ValueError("Submission state is missing")
+                uploads[state] = row["count"]
             counts = db.execute(REFERENCE_COUNTS).fetchone()
             assert counts is not None
             sizes = db.execute(
@@ -294,7 +313,7 @@ class AdminData(AdminFilters):
                 "SELECT s.id AS submission_id,s.created_at,"
                 "(s.document::json->'metadata')::jsonb AS metadata,r.candidates "
                 "FROM musicbrainz_reviews r JOIN submissions s ON s.id=r.submission_id "
-                "WHERE s.state='pending_metadata' AND r.selected_mbid IS NULL "
+                f"WHERE s.state={SubmissionState.PENDING_METADATA} AND r.selected_mbid IS NULL "
                 "ORDER BY s.created_at,s.id LIMIT 51 OFFSET %s",
                 (skip,),
             ).fetchall()
@@ -326,7 +345,7 @@ class AdminData(AdminFilters):
                 "SELECT id,state FROM submissions WHERE id=%s FOR UPDATE",
                 (submission_id,),
             ).fetchone()
-            if submission is None or submission["state"] != "pending_metadata":
+            if submission is None or submission["state"] != SubmissionState.PENDING_METADATA:
                 raise ActionFailed("This submission is no longer awaiting metadata review")
             review = db.execute(
                 "SELECT candidates,selected_mbid FROM musicbrainz_reviews "
@@ -351,7 +370,8 @@ class AdminData(AdminFilters):
                 (selected_mbid, submission_id),
             )
             db.execute(
-                "UPDATE submissions SET state='queued',retry_at=0,attempts=0,error=NULL,"
+                f"UPDATE submissions SET state={SubmissionState.QUEUED},state_raw=NULL,"
+                "retry_at=0,attempts=0,error=NULL,"
                 "pending_check=0,background_kind=0,enqueued_at=%s WHERE id=%s",
                 (time.time(), submission_id),
             )
@@ -373,17 +393,20 @@ class AdminData(AdminFilters):
             ).fetchall()
             if len(rows) != len(ids):
                 raise ActionFailed("A selected submission no longer exists; refresh the table")
-            if any(row["state"] in ("processing", "queued") for row in rows):
+            if any(
+                row["state"] in (SubmissionState.PROCESSING, SubmissionState.QUEUED) for row in rows
+            ):
                 raise ActionFailed("Active or queued jobs cannot be changed; try again later")
             if action == "delete":
                 db.execute("DELETE FROM submissions WHERE id=ANY(%s)", (ids,))
             else:
-                if any(row["state"] == "processed" for row in rows):
+                if any(row["state"] == SubmissionState.PROCESSED for row in rows):
                     raise ActionFailed("Only failed or unresolved submissions can be retried")
-                added = [row for row in rows if row["state"] == "failed"]
+                added = [row for row in rows if row["state"] == SubmissionState.FAILED]
                 totals = db.execute(
                     "SELECT count(*) AS count,coalesce(sum(octet_length(document)),0) AS bytes "
-                    "FROM submissions WHERE state IN ('queued','processing','pending_metadata')"
+                    f"FROM submissions WHERE state IN ({SubmissionState.QUEUED},"
+                    f"{SubmissionState.PROCESSING},{SubmissionState.PENDING_METADATA})"
                 ).fetchone()
                 assert totals is not None
                 if (
@@ -393,7 +416,8 @@ class AdminData(AdminFilters):
                 ):
                     raise ActionFailed("Queue capacity exceeded; retry after it has drained")
                 db.execute(
-                    "UPDATE submissions SET state='queued',retry_at=0,attempts=0,error=NULL,"
+                    f"UPDATE submissions SET state={SubmissionState.QUEUED},state_raw=NULL,"
+                    "retry_at=0,attempts=0,error=NULL,"
                     "pending_check=0,background_kind=0,enqueued_at=%s WHERE id=ANY(%s)",
                     (time.time(), ids),
                 )

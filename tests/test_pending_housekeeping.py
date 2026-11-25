@@ -22,8 +22,13 @@ from test_musicbrainz_validation import (
     recording,
 )
 
-import fingerprint_server.database.migrations as migrations
 import fingerprint_server.database.sqlite as storage
+import fingerprint_server.database.sqlite.migrations as migrations
+from fingerprint_server.database.codes import (
+    SUBMISSION_ERRORS,
+    SubmissionState,
+    decode_submission_state,
+)
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.musicbrainz import MusicBrainzService, VerificationPending
 from fingerprint_server.schemas import acoustic_reference_id, decode_submission
@@ -40,9 +45,8 @@ def legacy_without_identifiers(store: Store) -> str:
     payload["metadata"] = {"duration": 12.0}
     with store.connect() as db:
         db.execute(
-            "UPDATE submissions SET document=?,state='pending_metadata',pending_due_at=0 "
-            "WHERE id='legacy'",
-            (json.dumps(payload),),
+            "UPDATE submissions SET document=?,state=?,pending_due_at=0 WHERE id='legacy'",
+            (json.dumps(payload), SubmissionState.PENDING_METADATA),
         )
         db.execute(
             "UPDATE reference_tracks SET metadata=?,publication_ready=0 WHERE reference_key=?",
@@ -195,7 +199,10 @@ def lifecycle_row(store: Store, identifier: str = "pending") -> dict:
     with store.connect() as db:
         row = db.execute("SELECT * FROM submissions WHERE id=?", (identifier,)).fetchone()
     assert row is not None
-    return dict(row)
+    result = dict(row)
+    result["state"] = decode_submission_state(result["state"], result["state_raw"])
+    result["error"] = SUBMISSION_ERRORS.decode(result["error"])
+    return result
 
 
 def test_three_checks_at_deadlines_and_reference_survival(
@@ -283,7 +290,9 @@ def test_schema_four_migration_preserves_all_rows_and_grace(
     store.initialize()
     pending(store)
     with store.connect() as db:
-        db.execute("UPDATE submissions SET document='not-json',created_at=1")
+        db.execute(
+            "UPDATE submissions SET document='not-json',created_at=1,state='pending_metadata'"
+        )
         for trigger in (
             "submission_metadata_insert",
             "submission_metadata_update",

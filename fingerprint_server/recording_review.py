@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from fingerprint_server.database import Storage, Store
+from fingerprint_server.database.codes import SUBMISSION_ERRORS, SubmissionState
 
 
 class RecordingReviews:
@@ -43,11 +44,16 @@ class RecordingReviews:
         with self._write() as db:
             row = db.execute(
                 self._sql(
-                    "UPDATE submissions SET state='pending_metadata',error=?,retry_at=0,"
-                    "pending_check=0,background_kind=0 WHERE id=? AND state='processing' "
+                    "UPDATE submissions SET state=?,state_raw=NULL,error=?,retry_at=0,"
+                    "pending_check=0,background_kind=0 WHERE id=? AND state=? "
                     "RETURNING id"
                 ),
-                (reason, submission_id),
+                (
+                    SubmissionState.PENDING_METADATA,
+                    SUBMISSION_ERRORS.encode(reason),
+                    submission_id,
+                    SubmissionState.PROCESSING,
+                ),
             ).fetchone()
             if row is None:
                 raise RuntimeError("MusicBrainz review lost its claimed submission")

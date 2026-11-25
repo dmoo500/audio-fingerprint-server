@@ -15,27 +15,33 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import ValidationError as ValidationError
 
-from fingerprint_server.database import application_keys, postgres_postings
+from fingerprint_server.database import application_keys
+from fingerprint_server.database.codes import (
+    SubmissionState,
+    decode_submission_state,
+)
 from fingerprint_server.database.logic import (
     MAX_MATCH_CANDIDATES,
     coverage_statistics,
     full_coverage,
-    has_identifier,
     rank_matches,
     resolve_availability,
 )
 from fingerprint_server.database.logic import (
     can_add_recording_mbid as can_add_recording_mbid,
 )
+from fingerprint_server.database.logic import has_identifier as has_identifier
 from fingerprint_server.database.logic import (
     initial_submission_state as initial_submission_state,
 )
 from fingerprint_server.database.metrics import initialize_metrics
-from fingerprint_server.database.migrations import MUSICBRAINZ_VERIFICATION_VERSION
 from fingerprint_server.database.notifications import postgres_channel
-from fingerprint_server.database.postgres_queue import PostgresStoreQueueMixin
-from fingerprint_server.database.postgres_schema import (
+from fingerprint_server.database.postgres import postings as postgres_postings
+from fingerprint_server.database.postgres.migrations import PostgresMigrationMixin
+from fingerprint_server.database.postgres.queue import PostgresStoreQueueMixin
+from fingerprint_server.database.postgres.schema import (
     FORMAT_VERSION,
+    LEGACY_FORMAT_VERSION,
     TABLES,
     create_tables,
     finish_schema,
@@ -43,22 +49,21 @@ from fingerprint_server.database.postgres_schema import (
 from fingerprint_server.database.review_schema import REVIEW_TABLE
 from fingerprint_server.database.sqlite import QueryTooBroadError as QueryTooBroadError
 from fingerprint_server.database.sqlite import QueueFullError as QueueFullError
+from fingerprint_server.database.sqlite.migrations import MUSICBRAINZ_VERIFICATION_VERSION
 from fingerprint_server.schemas import (
     acoustic_reference_id as acoustic_reference_id,
 )
 from fingerprint_server.schemas import (
     decode_submission as decode_submission,
 )
-from fingerprint_server.schemas import (
-    metadata_complete,
-)
+from fingerprint_server.schemas import metadata_complete as metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS, Settings
 
 LOGGER = logging.getLogger(__name__)
 type Connection = psycopg.Connection[dict[str, Any]]
 
 
-class PostgresStore(PostgresStoreQueueMixin):
+class PostgresStore(PostgresStoreQueueMixin, PostgresMigrationMixin):
     """Durable PostgreSQL implementation; blocking methods run outside the event loop."""
 
     def __init__(self, settings: Settings) -> None:
@@ -115,11 +120,23 @@ class PostgresStore(PostgresStoreQueueMixin):
             if len(version) != 1 or version[0]["format_version"] not in (
                 FORMAT_VERSION,
                 postgres_postings.POSTINGS_VERSION,
+                LEGACY_FORMAT_VERSION,
+                postgres_postings.LEGACY_POSTINGS_VERSION,
             ):
                 raise ValueError(
                     f"Unsupported PostgreSQL schema version; expected {FORMAT_VERSION}"
                 )
             self._format_version = version[0]["format_version"]
+            self._migrate_submission_codes(db)
+            if self._format_version in (
+                LEGACY_FORMAT_VERSION,
+                postgres_postings.LEGACY_POSTINGS_VERSION,
+            ):
+                self._format_version += 2
+                db.execute(
+                    "UPDATE migration_info SET format_version=%s",
+                    (self._format_version,),
+                )
             expected = {name: set(spec["columns"]) for name, spec in TABLES.items()}
             expected["landmarks"] = {"hash", "reference_id", "offset"}
             if self._format_version == postgres_postings.POSTINGS_VERSION:
@@ -260,7 +277,8 @@ class PostgresStore(PostgresStoreQueueMixin):
             db.execute(
                 "UPDATE submissions SET "
                 "state=CASE WHEN pending_check=1 AND background_kind=0 "
-                "THEN 'pending_metadata' ELSE 'queued' END WHERE state='processing'"
+                f"THEN {SubmissionState.PENDING_METADATA} ELSE {SubmissionState.QUEUED} END "
+                f"WHERE state={SubmissionState.PROCESSING}"
             )
             previous = db.execute(
                 "SELECT value FROM service_state WHERE key='musicbrainz_enabled'"
@@ -279,12 +297,13 @@ class PostgresStore(PostgresStoreQueueMixin):
                     self._set_state(db, "verification_version", current)
             if not self.housekeeping_enabled or not self.musicbrainz_enabled:
                 db.execute(
-                    "UPDATE submissions SET state='pending_metadata',pending_check=0,"
-                    "background_kind=0 WHERE state='queued' AND background_kind=1"
+                    f"UPDATE submissions SET state={SubmissionState.PENDING_METADATA},"
+                    "pending_check=0,"
+                    f"background_kind=0 WHERE state={SubmissionState.QUEUED} AND background_kind=1"
                 )
 
     def cached_enrichment(self, key: str) -> dict[str, Any] | None:
-        """Read an unexpired persistent MusicBrainz result."""
+        """Read an unexpired persistent metadata lookup result."""
         with self.connect() as db:
             row = db.execute(
                 "SELECT document FROM enrichment_cache WHERE isrc=%s AND expires_at>%s",
@@ -337,17 +356,16 @@ class PostgresStore(PostgresStoreQueueMixin):
             uploads = dict.fromkeys(
                 ("queued", "processing", "processed", "failed", "pending_metadata"), 0
             )
-            uploads.update(
-                {
-                    row["state"]: row["count"]
-                    for row in db.execute(
-                        "SELECT state,count(*) AS count FROM submissions GROUP BY state"
-                    )
-                }
-            )
+            for row in db.execute(
+                "SELECT state,state_raw,count(*) AS count FROM submissions GROUP BY state,state_raw"
+            ):
+                state = decode_submission_state(row["state"], row["state_raw"])
+                if state is None:
+                    raise ValueError("Submission state is missing")
+                uploads[state] = row["count"]
             rows = db.execute(
                 "WITH representatives AS (SELECT reference_id,min(id) AS id FROM submissions "
-                "WHERE state='processed' GROUP BY reference_id) "
+                f"WHERE state={SubmissionState.PROCESSED} GROUP BY reference_id) "
                 "SELECT t.id,t.recording_key,t.publication_ready,t.metadata,s.document "
                 "FROM reference_tracks t "
                 "LEFT JOIN representatives r ON r.reference_id=t.reference_key "
@@ -379,7 +397,8 @@ class PostgresStore(PostgresStoreQueueMixin):
                 "FROM reference_tracks "
                 "WHERE publication_ready=1 AND verification_version=%s AND recording_key=ANY(%s) "
                 "ORDER BY id LIMIT 10000), representatives AS ("
-                "SELECT reference_id,min(id) AS id FROM submissions WHERE state='processed' "
+                "SELECT reference_id,min(id) AS id FROM submissions "
+                f"WHERE state={SubmissionState.PROCESSED} "
                 "AND reference_id IN (SELECT reference_key FROM relevant) GROUP BY reference_id) "
                 "SELECT t.recording_key,t.metadata,s.document FROM relevant t "
                 "LEFT JOIN representatives r ON r.reference_id=t.reference_key "
@@ -435,67 +454,3 @@ class PostgresStore(PostgresStoreQueueMixin):
             "DO UPDATE SET value=excluded.value",
             (key, value),
         )
-
-    def _verification_transition(self, db: Connection) -> None:
-        if self.musicbrainz_enabled:
-            db.execute(
-                "UPDATE reference_tracks SET publication_ready=0 WHERE verification_version!=%s",
-                (MUSICBRAINZ_VERIFICATION_VERSION,),
-            )
-            rows = db.execute(
-                "SELECT s.id,s.document,s.state,t.metadata FROM submissions s "
-                "LEFT JOIN reference_tracks t ON t.reference_key=s.reference_id "
-                "WHERE s.state='processed' AND (s.reference_id IS NULL "
-                "OR coalesce(t.verification_version,0)!=%s)",
-                (MUSICBRAINZ_VERIFICATION_VERSION,),
-            ).fetchall()
-            for row in rows:
-                try:
-                    supplied = json.loads(row["document"]).get("metadata", {})
-                    existing = json.loads(row["metadata"]) if row["metadata"] else {}
-                    usable = has_identifier(supplied) or has_identifier(existing)
-                except (ValueError, TypeError, AttributeError):
-                    LOGGER.warning("Cannot inspect retained metadata for submission %s", row["id"])
-                    usable = False
-                if usable:
-                    db.execute(
-                        "UPDATE submissions SET state='pending_metadata',attempts=0,retry_at=0,"
-                        "error=NULL,background_kind=2,pending_check=0,"
-                        "pending_due_at=%s,enqueued_at=0 "
-                        "WHERE id=%s",
-                        (time.time(), row["id"]),
-                    )
-                elif row["metadata"] is not None:
-                    db.execute(
-                        "UPDATE submissions SET state='pending_metadata',"
-                        "error='MusicBrainz identifier unavailable',pending_due_at=CASE "
-                        "WHEN pending_due_at>0 THEN pending_due_at ELSE %s END WHERE id=%s",
-                        (time.time() + self.pending_recheck_days * 86400, row["id"]),
-                    )
-        else:
-            for row in db.execute(
-                "SELECT id,metadata FROM reference_tracks WHERE publication_ready=0"
-            ).fetchall():
-                try:
-                    complete = metadata_complete(json.loads(row["metadata"]))
-                except (TypeError, ValueError):
-                    LOGGER.warning("Cannot restore reference %s with invalid metadata", row["id"])
-                    complete = False
-                if complete:
-                    db.execute(
-                        "UPDATE reference_tracks SET publication_ready=1 WHERE id=%s", (row["id"],)
-                    )
-            for row in db.execute(
-                "SELECT id,document FROM submissions WHERE state='pending_metadata'"
-            ).fetchall():
-                try:
-                    complete = metadata_complete(json.loads(row["document"])["metadata"])
-                except (TypeError, ValueError, KeyError):
-                    LOGGER.warning("Cannot inspect retained submission %s metadata", row["id"])
-                    complete = False
-                if complete:
-                    db.execute(
-                        "UPDATE submissions SET state='queued',attempts=0,retry_at=0,error=NULL,"
-                        "background_kind=0,pending_check=0,enqueued_at=%s WHERE id=%s",
-                        (time.time(), row["id"]),
-                    )

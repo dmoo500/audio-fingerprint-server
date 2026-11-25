@@ -47,9 +47,9 @@ class MusicBrainzClient:
         while (delay := max(deadline, self.cooldown_until) - time.monotonic()) > 0:
             await asyncio.sleep(delay)
 
-    async def lookup(self, kind: str, identifier: str) -> dict[str, Any]:
+    async def lookup(self, kind: str, identifier: str, *, use_batch: bool = True) -> dict[str, Any]:
         """Fetch and cache a bounded, typed identifier lookup."""
-        if kind == "recording" and identifier in self.batch_recordings:
+        if use_batch and kind == "recording" and identifier in self.batch_recordings:
             return {"status": "resolved", "recording": self.batch_recordings[identifier]}
         async with self.lookup_lock:
             self.lookup_call = (

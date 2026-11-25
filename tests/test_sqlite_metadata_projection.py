@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from fingerprint_server.database.migrations import initialize_database
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
+from fingerprint_server.database.sqlite.migrations import DB_SCHEMA_VERSION, initialize_database
 
 
 def test_upgrade_projection_tracks_inserts_updates_and_deletes(tmp_path: Path) -> None:
@@ -33,7 +34,7 @@ def test_upgrade_projection_tracks_inserts_updates_and_deletes(tmp_path: Path) -
         )
     store.initialize()
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
         rows = dict(db.execute("SELECT id,metadata FROM submission_metadata"))
         assert json.loads(rows["valid"]) == {"title": "Original"}
         assert rows["missing"] is None and rows["broken"] is None
@@ -41,10 +42,13 @@ def test_upgrade_projection_tracks_inserts_updates_and_deletes(tmp_path: Path) -
             "UPDATE submissions SET document=? WHERE id='valid'",
             (json.dumps({"metadata": {"title": "Changed"}}),),
         )
-        db.execute("UPDATE submissions SET state='queued',attempts=4 WHERE id='valid'")
         db.execute(
-            "INSERT INTO submissions(id,document,state,created_at) VALUES('new',?,'failed',0)",
-            (json.dumps({"metadata": {"title": "New"}}),),
+            "UPDATE submissions SET state=?,attempts=4 WHERE id='valid'",
+            (SubmissionState.QUEUED,),
+        )
+        db.execute(
+            "INSERT INTO submissions(id,document,state,created_at) VALUES('new',?,?,0)",
+            (json.dumps({"metadata": {"title": "New"}}), SubmissionState.FAILED),
         )
         db.execute("DELETE FROM submissions WHERE id='broken'")
     store.initialize()
@@ -53,7 +57,7 @@ def test_upgrade_projection_tracks_inserts_updates_and_deletes(tmp_path: Path) -
         assert json.loads(rows["valid"]) == {"title": "Changed"}
         assert tuple(
             db.execute("SELECT state,attempts FROM submission_metadata WHERE id='valid'").fetchone()
-        ) == ("queued", 4)
+        ) == (SubmissionState.QUEUED, 4)
         assert json.loads(rows["new"]) == {"title": "New"}
         assert "broken" not in rows
     backups = list(tmp_path.glob("*.pre-v8-*.bak"))
@@ -88,7 +92,7 @@ def test_explicit_upgrade_without_backup(tmp_path: Path, caplog: pytest.LogCaptu
     with store.owner(), store.connect() as db:
         initialize_database(db, store.path, create_backup=False)
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
     assert not list(tmp_path.glob("*.bak"))
     assert "without a backup" in caplog.text
 
@@ -98,23 +102,23 @@ def test_combined_update_and_rollback_keep_projection_in_sync(tmp_path: Path) ->
     store.initialize()
     with store.connect() as db:
         db.execute(
-            "INSERT INTO submissions(id,document,state,created_at) VALUES('item',?,'queued',0)",
-            (json.dumps({"metadata": {"title": "Original"}}),),
+            "INSERT INTO submissions(id,document,state,created_at) VALUES('item',?,?,0)",
+            (json.dumps({"metadata": {"title": "Original"}}), SubmissionState.QUEUED),
         )
     with store.connect() as db:
         db.execute(
-            "UPDATE submissions SET document=?,state='failed',attempts=2 WHERE id='item'",
-            (json.dumps({"metadata": {"title": "Changed"}}),),
+            "UPDATE submissions SET document=?,state=?,attempts=2 WHERE id='item'",
+            (json.dumps({"metadata": {"title": "Changed"}}), SubmissionState.FAILED),
         )
         row = db.execute(
             "SELECT metadata,state,attempts FROM submission_metadata WHERE id='item'"
         ).fetchone()
         assert json.loads(row["metadata"]) == {"title": "Changed"}
-        assert (row["state"], row["attempts"]) == ("failed", 2)
+        assert (row["state"], row["attempts"]) == (SubmissionState.FAILED, 2)
         db.rollback()
     with store.connect() as db:
         row = db.execute(
             "SELECT metadata,state,attempts FROM submission_metadata WHERE id='item'"
         ).fetchone()
         assert json.loads(row["metadata"]) == {"title": "Original"}
-        assert (row["state"], row["attempts"]) == ("queued", 0)
+        assert (row["state"], row["attempts"]) == (SubmissionState.QUEUED, 0)

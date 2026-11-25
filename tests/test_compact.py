@@ -14,6 +14,7 @@ from test_server import UPLOAD, canonical
 import fingerprint_server.api as api_module
 from fingerprint_server.aiohttp_support import HTTPError
 from fingerprint_server.api import parse_submission
+from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.schemas import decode_submission
 
@@ -52,23 +53,36 @@ def test_existing_documents_are_compacted_without_changing_ids(tmp_path: Path) -
         db.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
         db.execute("ALTER TABLE reference_tracks DROP COLUMN verification_version")
         db.execute("DROP TABLE service_state")
-        db.execute("DROP INDEX submissions_fifo")
-        db.execute("DROP INDEX submissions_pending_due")
-        for column in (
-            "pending_rechecks",
-            "pending_due_at",
-            "pending_check",
-            "enqueued_at",
-            "background_kind",
+        for trigger in (
+            "submission_metadata_insert",
+            "submission_metadata_update",
+            "submission_metadata_fields",
+            "submission_metadata_delete",
         ):
-            db.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
+            db.execute(f"DROP TRIGGER {trigger}")
+        db.execute("DROP TABLE submission_metadata")
+        db.execute("DROP TABLE musicbrainz_reviews")
+        db.execute(
+            "CREATE TABLE submissions_v2(id TEXT PRIMARY KEY,document TEXT NOT NULL,"
+            "state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,"
+            "retry_at REAL NOT NULL DEFAULT 0,error TEXT,reference_id TEXT,"
+            "created_at REAL NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO submissions_v2 "
+            "SELECT id,document,'processed',attempts,retry_at,error,reference_id,created_at "
+            "FROM submissions"
+        )
+        db.execute("DROP TABLE submissions")
+        db.execute("ALTER TABLE submissions_v2 RENAME TO submissions")
+        db.execute("CREATE INDEX submissions_pending ON submissions(state,retry_at,created_at)")
         db.execute("PRAGMA user_version=2")
     store.initialize()
     with store.connect() as db:
         row = db.execute("SELECT id,document,reference_id,state FROM submissions").fetchone()
         assert row["id"] == identifier
         assert row["reference_id"] == "reference"
-        assert row["state"] == "processed"
+        assert row["state"] == SubmissionState.PROCESSED
         assert json.loads(row["document"])["fingerprints_encoding"] == ENCODING_ID
         assert decode_document(json.loads(row["document"])) == payload
     assert store.statistics()["references"]["full"] == 1

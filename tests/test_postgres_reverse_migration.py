@@ -14,8 +14,9 @@ from test_postgres_migration import source as source
 
 from fingerprint_server.artwork import ArtworkStore
 from fingerprint_server.database.application_keys import ApplicationKeys, initialize
-from fingerprint_server.database.migrations import DB_SCHEMA_VERSION
+from fingerprint_server.database.codes import ARTWORK_REASONS, ArtworkState, SubmissionState
 from fingerprint_server.database.sqlite import Store
+from fingerprint_server.database.sqlite.migrations import DB_SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -81,8 +82,9 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
         db.execute("INSERT INTO recognition_identity_metrics VALUES (1000,'personal','app-id',9)")
         db.execute("INSERT INTO musicbrainz_reviews VALUES ('second','[]',NULL)")
         db.execute(
-            "INSERT INTO artwork_requests VALUES "
-            "('reference','ready','https://example.com',1,2,'ready_release')"
+            "INSERT INTO artwork_requests(reference_key,state,url,due_at,expires_at,reason) "
+            "VALUES ('reference',?,'https://example.com',1,2,?)",
+            (ArtworkState.READY, ARTWORK_REASONS.encode("ready_release")),
         )
     imported(source, postgres, migration)
     with postgres.transaction():
@@ -90,7 +92,8 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
         postgres.execute("DELETE FROM submissions WHERE id='first'")
         postgres.execute(
             "INSERT INTO submissions(id,document,state,created_at,enqueued_at,queue_order) "
-            "VALUES ('new','{}','queued',1,5,50)"
+            "VALUES ('new','{}',%s,1,5,50)",
+            (SubmissionState.QUEUED,),
         )
         postgres.execute(
             "INSERT INTO reference_tracks(id,reference_key,metadata,created_at) "
@@ -117,7 +120,7 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
         assert db.execute(
             "SELECT state,pending_check,background_kind,pending_due_at FROM submissions "
             "WHERE id='second'"
-        ).fetchone() == ("processing", 1, 1, 42)
+        ).fetchone() == (SubmissionState.PROCESSING, 1, 1, 42)
         assert db.execute("SELECT max(reference_id) FROM landmarks").fetchone()[0] == 5000000000
         assert db.execute("SELECT * FROM admin_hourly_metrics").fetchall() == [
             (1000, 1, 2, 3, 4, 1, 17)
@@ -130,8 +133,19 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
             ("second", "[]", None)
         ]
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert db.execute("SELECT * FROM artwork_requests").fetchall() == [
-            ("reference", "ready", "https://example.com", 1, 2, "ready_release")
+        assert db.execute(
+            "SELECT reference_key,state,state_raw,url,due_at,expires_at,reason "
+            "FROM artwork_requests"
+        ).fetchall() == [
+            (
+                "reference",
+                ArtworkState.READY,
+                None,
+                "https://example.com",
+                1,
+                2,
+                ARTWORK_REASONS.encode("ready_release"),
+            )
         ]
     # Export back to PostgreSQL proves all mapped fields, landmarks and FIFO survive both ways.
     with sqlite3.connect(output) as db:
@@ -147,7 +161,8 @@ def test_roundtrip_preserves_all_fields_and_new_changes(
     assert store.get_submission("second")["state"] == "pending_metadata"
     with store.connect() as db:
         db.execute(
-            "INSERT INTO submissions(id,document,state,created_at) VALUES ('next','{}','queued',2)"
+            "INSERT INTO submissions(id,document,state,created_at) VALUES ('next','{}',?,2)",
+            (SubmissionState.QUEUED,),
         )
         assert db.execute("SELECT rowid FROM submissions WHERE id='next'").fetchone()[0] == 51
 
@@ -173,9 +188,13 @@ def test_legacy_artwork_cache_roundtrip_and_postgres_upgrade(
     output = tmp_path / "legacy.db"
     reverse["export_sqlite"](postgres, "reverse_test", output)
     with sqlite3.connect(output) as db:
-        assert db.execute("SELECT * FROM artwork_requests").fetchone() == (
+        assert db.execute(
+            "SELECT reference_key,state,state_raw,url,due_at,expires_at,reason "
+            "FROM artwork_requests"
+        ).fetchone() == (
             "old",
-            "missing",
+            ArtworkState.MISSING,
+            None,
             None,
             1,
             9999999999,
@@ -193,13 +212,13 @@ def test_legacy_artwork_cache_roundtrip_and_postgres_upgrade(
     queue.initialize()
     with queue.store.connect() as db:
         row = db.execute("SELECT reason,expires_at FROM artwork_requests").fetchone()
-        assert row["reason"] == "legacy_retry"
+        assert ARTWORK_REASONS.decode(row["reason"]) == "legacy_retry"
         assert row["expires_at"] == 0
         assert (
             db.execute("SELECT value FROM service_state WHERE key='artwork_schema'").fetchone()[
                 "value"
             ]
-            == "3"
+            == "4"
         )
 
 

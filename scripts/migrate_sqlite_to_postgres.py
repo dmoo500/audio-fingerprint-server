@@ -17,14 +17,15 @@ import psycopg
 from psycopg import sql
 
 from fingerprint_server.database.application_keys import REGISTRY_VERSION
-from fingerprint_server.database.migrations import _validate_schema
-from fingerprint_server.database.postgres_schema import (
+from fingerprint_server.database.codes import ARTWORK_REASONS, ArtworkState
+from fingerprint_server.database.postgres.schema import (
     EXTENSION_TABLES,
     SQLITE_SCHEMA_VERSION,
     TABLES,
     create_tables,
     finish_schema,
 )
+from fingerprint_server.database.sqlite.migrations import _validate_schema
 
 LOGGER = logging.getLogger(__name__)
 COPY_HEADER = b"PGCOPY\n\xff\r\n\x00" + struct.pack("!ii", 0, 0)
@@ -78,6 +79,20 @@ def source_rows(source: sqlite3.Connection, name: str) -> sqlite3.Cursor:
     fields = ",".join("rowid" if name == "rowid" else f'"{name}"' for name in columns)
     if name == "artwork_requests":
         installed = {row[1] for row in source.execute("PRAGMA table_info(artwork_requests)")}
+        if "state_raw" not in installed:
+            known = [state for state in ArtworkState if state.name != "UNKNOWN"]
+            cases = " ".join(f"WHEN '{state.name.lower()}' THEN {state.value}" for state in known)
+            names = ",".join(f"'{state.name.lower()}'" for state in known)
+            fields = fields.replace(
+                '"state"', f'(CASE state {cases} ELSE {ArtworkState.UNKNOWN.value} END) AS "state"'
+            ).replace(
+                '"state_raw"',
+                f'(CASE WHEN state IN ({names}) THEN NULL ELSE state END) AS "state_raw"',
+            )
+            if "reason" in installed:
+                fields = fields.replace(
+                    '"reason"', f'({ARTWORK_REASONS.encoded_sql("reason")}) AS "reason"'
+                )
         if "reason" not in installed:
             fields = fields.replace('"reason"', 'NULL AS "reason"')
     if name == "admin_hourly_metrics":
