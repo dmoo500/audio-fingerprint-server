@@ -8,8 +8,10 @@ from pathlib import Path
 from uuid import UUID
 
 from audio_fingerprint import SAMPLE_RATE
+from test_metadata_gate import use_legacy_landmark_layout
 
 from fingerprint_server.database.sqlite import Store
+from fingerprint_server.database.sqlite.landmarks import insert_landmarks
 from fingerprint_server.database.sqlite.migrations import DB_SCHEMA_VERSION
 
 RECORDING_ID = "e9c2a2a3-4f4b-4b6a-9c31-3a8b2f3c7f10"
@@ -167,9 +169,7 @@ def test_verified_duplicate_completes_existing_excluded_reference(tmp_path: Path
         reference = db.execute(
             "SELECT id FROM reference_tracks WHERE reference_key='same-acoustic-reference'"
         ).fetchone()
-        db.execute(
-            "INSERT INTO landmarks VALUES(?,?,?)", (bytes.fromhex("0" * 20), reference[0], 0)
-        )
+        insert_landmarks(db, [(bytes.fromhex("0" * 20), reference[0], 0)])
 
     store.finish(
         "new-submission",
@@ -228,15 +228,17 @@ def test_schema_six_upgrade_groups_only_currently_verified_mbid_without_data_los
             "(reference_key,metadata,created_at,publication_ready,verification_version) "
             "VALUES('malformed-reference','[',3,0,1)"
         )
-        db.execute(
-            "INSERT INTO landmarks VALUES(?,?,?)",
-            (
-                bytes.fromhex("2" * 20),
-                db.execute(
-                    "SELECT id FROM reference_tracks WHERE reference_key='malformed-reference'"
-                ).fetchone()[0],
-                2,
-            ),
+        insert_landmarks(
+            db,
+            [
+                (
+                    bytes.fromhex("2" * 20),
+                    db.execute(
+                        "SELECT id FROM reference_tracks WHERE reference_key='malformed-reference'"
+                    ).fetchone()[0],
+                    2,
+                )
+            ],
         )
         before_references = db.execute(
             "SELECT reference_key,metadata,created_at,publication_ready,verification_version "
@@ -250,6 +252,7 @@ def test_schema_six_upgrade_groups_only_currently_verified_mbid_without_data_los
         ).fetchall()
         db.execute("DROP INDEX references_recording")
         db.execute("ALTER TABLE reference_tracks DROP COLUMN recording_key")
+        use_legacy_landmark_layout(db)
         db.execute("PRAGMA user_version=6")
 
     store.initialize()

@@ -14,16 +14,23 @@ from uuid import UUID
 from audio_fingerprint.codec import encode_document
 
 from fingerprint_server.database.codes import SubmissionState
+from fingerprint_server.database.sqlite.landmarks import (
+    LANDMARK_SCHEMA,
+    validate_landmark_dictionary,
+)
+from fingerprint_server.database.sqlite.landmarks import (
+    migrate_landmark_dictionary as _migrate_landmark_dictionary,
+)
 from fingerprint_server.database.sqlite.metadata import FIELDS, install_projection
 from fingerprint_server.database.sqlite.submission_migration import _migrate_submission_codes
 from fingerprint_server.schemas import decode_submission, metadata_complete
 from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 LOGGER = logging.getLogger(__name__)
-DB_SCHEMA_VERSION = 10
+DB_SCHEMA_VERSION = 11
 MUSICBRAINZ_VERIFICATION_VERSION = 1
 
-SCHEMA = """
+SCHEMA = f"""
 CREATE TABLE submissions (
     id TEXT PRIMARY KEY, document TEXT NOT NULL, state INTEGER NOT NULL, state_raw TEXT,
     attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
@@ -45,12 +52,7 @@ CREATE TABLE reference_tracks (
 );
 CREATE INDEX references_ready ON reference_tracks(publication_ready,id);
 CREATE INDEX references_recording ON reference_tracks(recording_key,id);
-CREATE TABLE landmarks (
-    hash BLOB NOT NULL CHECK(typeof(hash)='blob' AND length(hash)=10),
-    reference_id INTEGER NOT NULL REFERENCES reference_tracks(id),
-    offset INTEGER NOT NULL, PRIMARY KEY(hash, reference_id, offset)
-) WITHOUT ROWID;
-CREATE INDEX landmarks_reference ON landmarks(reference_id);
+{LANDMARK_SCHEMA}
 CREATE TABLE enrichment_cache (
     isrc TEXT PRIMARY KEY, document TEXT NOT NULL, expires_at REAL NOT NULL
 );
@@ -105,6 +107,13 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
         db.execute("PRAGMA foreign_keys=OFF")
     previous_cache_size = None
     try:
+        if not empty and version < 11:
+            cache_size = db.execute("PRAGMA cache_size").fetchone()[0]
+            page_size = db.execute("PRAGMA page_size").fetchone()[0]
+            cache_bytes = -cache_size * 1024 if cache_size < 0 else cache_size * page_size
+            if cache_bytes < 64 * 1024 * 1024:
+                db.execute("PRAGMA cache_size=-65536")
+                previous_cache_size = cache_size
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
         empty = _validate_schema(db, version)
@@ -150,11 +159,14 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
             if version < 10:
                 _migrate_submission_codes(db)
                 db.execute("PRAGMA user_version=10")
+            if version < 11:
+                _migrate_landmark_dictionary(db)
+                db.execute("PRAGMA user_version=11")
         if empty or version < DB_SCHEMA_VERSION:
             cache_size = db.execute("PRAGMA cache_size").fetchone()[0]
             page_size = db.execute("PRAGMA page_size").fetchone()[0]
             cache_bytes = -cache_size * 1024 if cache_size < 0 else cache_size * page_size
-            if cache_bytes < 64 * 1024 * 1024:
+            if cache_bytes < 64 * 1024 * 1024 and previous_cache_size is None:
                 db.execute("PRAGMA cache_size=-65536")
                 previous_cache_size = cache_size
             if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
@@ -194,6 +206,9 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
     if not tables and version == 0:
         return True
     expected_tables = set(LEGACY_COLUMNS)
+    if version >= 11:
+        expected_tables.remove("landmarks")
+        expected_tables.update({"landmark_hashes", "landmark_postings"})
     if "artwork_requests" in tables:
         expected_tables.add("artwork_requests")
     expected_tables.update(
@@ -248,6 +263,8 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
         ):
             raise RuntimeError("Incomplete submission metadata projection triggers")
     for table, legacy in LEGACY_COLUMNS.items():
+        if table == "landmarks" and version >= 11:
+            continue
         columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         expected = legacy.copy()
         if table == "reference_tracks":
@@ -277,9 +294,13 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
     reference_columns = {
         row[1]: row[2].upper() for row in db.execute("PRAGMA table_info(reference_tracks)")
     }
-    landmark_columns = {
-        row[1]: row[2].upper() for row in db.execute("PRAGMA table_info(landmarks)")
-    }
+    if version >= 11:
+        validate_landmark_dictionary(db)
+        landmark_columns = {"hash": "BLOB", "reference_id": "INTEGER"}
+    else:
+        landmark_columns = {
+            row[1]: row[2].upper() for row in db.execute("PRAGMA table_info(landmarks)")
+        }
     compact = version >= 2
     if (
         reference_columns["id"] != ("INTEGER" if compact else "TEXT")
@@ -288,8 +309,9 @@ def _validate_schema(db: sqlite3.Connection, version: int) -> bool:
     ):
         raise RuntimeError("Unrecognized fingerprint database column types; refusing to migrate")
     if compact:
+        table = "landmark_postings" if version >= 11 else "landmarks"
         sql = db.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='landmarks'"
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ).fetchone()[0]
         if "WITHOUT ROWID" not in sql.upper():
             raise RuntimeError("Unrecognized fingerprint landmark layout; refusing to migrate")

@@ -39,6 +39,28 @@ CREATE TABLE enrichment_cache (
 );
 """
 
+LEGACY_LANDMARK_SCHEMA = """
+CREATE TABLE landmarks (
+    hash BLOB NOT NULL CHECK(typeof(hash)='blob' AND length(hash)=10),
+    reference_id INTEGER NOT NULL REFERENCES reference_tracks(id),
+    offset INTEGER NOT NULL, PRIMARY KEY(hash, reference_id, offset)
+) WITHOUT ROWID;
+CREATE INDEX landmarks_reference ON landmarks(reference_id);
+"""
+
+
+def use_legacy_landmark_layout(db: sqlite3.Connection) -> None:
+    """Recreate the pre-schema-11 landmark layout in a test fixture."""
+    db.execute("CREATE TEMP TABLE saved_landmarks AS SELECT * FROM landmarks")
+    db.execute("DROP VIEW landmarks")
+    db.execute("DROP TABLE landmark_postings")
+    db.execute("DROP TABLE landmark_hashes")
+    for statement in LEGACY_LANDMARK_SCHEMA.split(";"):
+        if statement.strip():
+            db.execute(statement)
+    db.execute("INSERT INTO landmarks SELECT * FROM saved_landmarks")
+    db.execute("DROP TABLE saved_landmarks")
+
 
 def metadata() -> dict[str, Any]:
     """Complete, deliberately untrimmed supplied source metadata."""

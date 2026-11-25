@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from test_metadata_gate import LEGACY_SCHEMA, legacy_store, metadata
+from test_metadata_gate import LEGACY_SCHEMA, legacy_store, metadata, use_legacy_landmark_layout
 
 from fingerprint_server.database.logic import MAX_MATCH_CANDIDATES
 from fingerprint_server.database.sqlite import MATCH_QUERY, QueryTooBroadError, Store
@@ -34,7 +34,9 @@ def test_fresh_database_is_current_and_compact(tmp_path: Path) -> None:
     store.initialize()
     with store.connect() as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
-        sql = db.execute("SELECT sql FROM sqlite_master WHERE name='landmarks'").fetchone()[0]
+        sql = db.execute("SELECT sql FROM sqlite_master WHERE name='landmark_postings'").fetchone()[
+            0
+        ]
         assert "WITHOUT ROWID" in sql
     assert list(tmp_path.glob("*.bak")) == []
 
@@ -43,6 +45,7 @@ def test_schema_seven_upgrade_creates_reference_index_and_backup(tmp_path: Path)
     store = Store(tmp_path / "legacy.db")
     store.initialize()
     with store.connect() as db:
+        use_legacy_landmark_layout(db)
         db.execute("DROP INDEX landmarks_reference")
         db.execute("PRAGMA user_version=7")
     before = snapshot(store.path)
@@ -50,10 +53,9 @@ def test_schema_seven_upgrade_creates_reference_index_and_backup(tmp_path: Path)
     with store.connect() as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
         plan = db.execute(
-            "EXPLAIN QUERY PLAN DELETE FROM landmarks WHERE reference_id=?", (1,)
+            "EXPLAIN QUERY PLAN DELETE FROM landmark_postings WHERE reference_id=?", (1,)
         ).fetchone()
-        assert "landmarks_reference" in plan[3]
-    assert snapshot(store.path) == before
+        assert "landmark_postings_reference" in plan[3]
     backups = list(tmp_path.glob("*.pre-v7-*.bak"))
     assert len(backups) == 1
     assert snapshot(backups[0]) == before
@@ -65,6 +67,7 @@ def test_schema_seven_index_failure_rolls_back(tmp_path: Path) -> None:
     store = Store(tmp_path / "legacy.db")
     store.initialize()
     with store.connect() as db:
+        use_legacy_landmark_layout(db)
         db.execute("DROP INDEX landmarks_reference")
         db.execute("CREATE VIEW landmarks_reference AS SELECT 1")
         db.execute("PRAGMA user_version=7")
@@ -212,8 +215,123 @@ def test_binary_match_plan_and_reference_order_are_preserved(tmp_path: Path) -> 
             ),
         )
         plan = [row["detail"] for row in db.execute("EXPLAIN QUERY PLAN " + MATCH_QUERY)]
-        assert any("SEARCH l USING PRIMARY KEY (hash=?)" in step for step in plan)
-        assert not any("SCAN l" in step for step in plan)
+        assert any("SEARCH h USING COVERING INDEX" in step for step in plan)
+        assert any("SEARCH p USING PRIMARY KEY (hash_id=?)" in step for step in plan)
+        assert not any("SCAN p" in step for step in plan)
+
+
+def test_schema_ten_dictionary_upgrade_preserves_shared_hashes_and_backup(tmp_path: Path) -> None:
+    store = Store(tmp_path / "schema-ten.db")
+    store.initialize()
+    for submission, reference, hashes in (
+        ("one", "first", [("0" * 20, 1), ("0" * 20, 3), ("f" * 20, 5)]),
+        ("two", "second", [("0" * 20, 2), ("a" * 20, 4)]),
+    ):
+        store.submit(submission, "{}", 10)
+        store.finish(submission, reference, metadata(), hashes)
+    with store.connect() as db:
+        use_legacy_landmark_layout(db)
+        db.execute("PRAGMA user_version=10")
+        before = [
+            tuple(row)
+            for row in db.execute(
+                "SELECT hash,reference_id,offset FROM landmarks ORDER BY hash,reference_id,offset"
+            )
+        ]
+    store.initialize()
+    with store.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
+        assert [
+            tuple(row)
+            for row in db.execute(
+                "SELECT hash,reference_id,offset FROM landmarks ORDER BY hash,reference_id,offset"
+            )
+        ] == before
+        assert db.execute("SELECT count(*) FROM landmark_hashes").fetchone()[0] == 3
+        assert db.execute("SELECT count(*) FROM landmark_postings").fetchone()[0] == 5
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    backup = next(tmp_path.glob("*.pre-v10-*.bak"))
+    with sqlite3.connect(backup) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert (
+            db.execute(
+                "SELECT hash,reference_id,offset FROM landmarks ORDER BY hash,reference_id,offset"
+            ).fetchall()
+            == before
+        )
+    store.initialize()
+    assert list(tmp_path.glob("*.bak")) == [backup]
+
+
+def test_dictionary_migration_rolls_back_and_can_retry(tmp_path: Path) -> None:
+    from fingerprint_server.database.sqlite.migrations import _migrate_landmark_dictionary
+
+    store = Store(tmp_path / "schema-ten.db")
+    store.initialize()
+    store.submit("one", "{}", 10)
+    store.finish("one", "first", metadata(), [("0" * 20, 1)])
+    with store.connect() as db:
+        use_legacy_landmark_layout(db)
+        db.execute("PRAGMA user_version=10")
+    before = snapshot(store.path)
+
+    def interrupt(db: sqlite3.Connection) -> None:
+        _migrate_landmark_dictionary(db)
+        raise RuntimeError("interrupted dictionary migration")
+
+    with (
+        patch(
+            "fingerprint_server.database.sqlite.migrations._migrate_landmark_dictionary",
+            side_effect=interrupt,
+        ),
+        pytest.raises(RuntimeError, match="interrupted dictionary"),
+    ):
+        store.initialize()
+    assert snapshot(store.path) == before
+    with store.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+    store.initialize()
+    assert store.match([("0" * 20, 1)])[0]["reference_id"] == "first"
+
+
+def test_missing_dictionary_reference_index_is_rejected(tmp_path: Path) -> None:
+    store = Store(tmp_path / "incomplete.db")
+    store.initialize()
+    with store.connect() as db:
+        db.execute("DROP INDEX landmark_postings_reference")
+    with pytest.raises(RuntimeError, match="landmark indexes"):
+        store.initialize()
+
+
+def test_invalid_publication_rolls_back_dictionary_and_reference(tmp_path: Path) -> None:
+    store = Store(tmp_path / "duplicate.db")
+    store.initialize()
+    store.submit("one", "{}", 10)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.finish("one", "first", metadata(), [("0" * 20, 1), ("0" * 20, 1)])
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM reference_tracks").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM landmark_hashes").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM landmark_postings").fetchone()[0] == 0
+    assert store.get_submission("one")["state"] == "queued"
+
+
+def test_invalid_schema_ten_hash_rolls_back(tmp_path: Path) -> None:
+    store = Store(tmp_path / "invalid-hash.db")
+    store.initialize()
+    store.submit("one", "{}", 10)
+    store.finish("one", "first", metadata(), [("0" * 20, 1)])
+    with store.connect() as db:
+        use_legacy_landmark_layout(db)
+        db.execute("PRAGMA ignore_check_constraints=ON")
+        db.execute("UPDATE landmarks SET hash=?", (b"short",))
+        db.execute("PRAGMA user_version=10")
+    before = snapshot(store.path)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.initialize()
+    assert snapshot(store.path) == before
+    with store.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
 
 
 def test_versioned_legacy_missing_gate_is_rejected(tmp_path: Path) -> None:

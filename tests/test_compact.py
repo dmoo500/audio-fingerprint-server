@@ -8,7 +8,7 @@ import httpx
 import pytest
 import test_server
 from audio_fingerprint.codec import ENCODING_ID, decode_document, encode_document
-from test_metadata_gate import document
+from test_metadata_gate import document, use_legacy_landmark_layout
 from test_server import UPLOAD, canonical
 
 import fingerprint_server.api as api_module
@@ -76,6 +76,7 @@ def test_existing_documents_are_compacted_without_changing_ids(tmp_path: Path) -
         db.execute("DROP TABLE submissions")
         db.execute("ALTER TABLE submissions_v2 RENAME TO submissions")
         db.execute("CREATE INDEX submissions_pending ON submissions(state,retry_at,created_at)")
+        use_legacy_landmark_layout(db)
         db.execute("PRAGMA user_version=2")
     store.initialize()
     with store.connect() as db:

@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_metadata_gate import document
+from test_metadata_gate import document, use_legacy_landmark_layout
 from test_server import settings
 
 from fingerprint_server.database.codes import SubmissionState
@@ -745,6 +745,7 @@ def test_version_three_wal_backup_includes_committed_rows(tmp_path: Path) -> Non
         connection.execute(
             "CREATE INDEX submissions_pending ON submissions(state,retry_at,created_at)"
         )
+        use_legacy_landmark_layout(connection)
         connection.execute("PRAGMA user_version=3")
         connection.execute(
             "INSERT INTO submissions(id,document,state,created_at) VALUES('wal','{}','queued',0)"

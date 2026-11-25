@@ -7,7 +7,7 @@ import struct
 from pathlib import Path
 
 import pytest
-from test_metadata_gate import document
+from test_metadata_gate import document, use_legacy_landmark_layout
 
 from fingerprint_server.database.sqlite import Store
 
@@ -28,6 +28,7 @@ def test_snapshot_and_sample_preserve_original(tmp_path: Path) -> None:
     store.submit("sample", json.dumps(payload), 10)
     store.finish("sample", "reference", payload["metadata"], fingerprints)
     with store.connect() as db:
+        use_legacy_landmark_layout(db)
         db.execute("DROP INDEX landmarks_reference")
         db.execute("PRAGMA user_version=7")
     snapshot(original, copied)

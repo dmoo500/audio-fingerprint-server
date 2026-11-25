@@ -55,9 +55,10 @@ from fingerprint_server.settings import MUSICBRAINZ_CACHE_TTL_DAYS
 
 MATCH_QUERY = f"""
     SELECT t.reference_key AS reference_id,t.recording_key,
-        l.offset-q.offset AS delta,q.idx,q.offset
-    FROM query q CROSS JOIN landmarks l ON l.hash=q.hash
-    JOIN reference_tracks t ON t.id=l.reference_id
+        p.offset-q.offset AS delta,q.idx,q.offset
+    FROM query q CROSS JOIN landmark_hashes h ON h.hash=q.hash
+    CROSS JOIN landmark_postings p ON p.hash_id=h.id
+    JOIN reference_tracks t ON t.id=p.reference_id
     WHERE t.publication_ready=1 LIMIT {MAX_MATCH_CANDIDATES + 1}
 """
 

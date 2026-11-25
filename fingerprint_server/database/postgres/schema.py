@@ -14,7 +14,7 @@ from fingerprint_server.database.review_schema import REVIEW_TABLE
 
 LEGACY_FORMAT_VERSION = 1
 FORMAT_VERSION = 3
-SQLITE_SCHEMA_VERSION = 10
+SQLITE_SCHEMA_VERSION = 11
 
 
 class TableSpec(TypedDict):

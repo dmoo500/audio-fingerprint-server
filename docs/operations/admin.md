@@ -119,7 +119,7 @@ highlights; entries previously filtered out cannot be recovered from them.
 SQLite keeps a derived submission metadata projection for faster
 search and sorting. The fingerprint service creates it during the database
 upgrade, after making the usual pre-upgrade backup. Allow disk space and time
-for the backup and migration; older server versions cannot open schema 10.
+for the backup and migration; older server versions cannot open schema 11.
 The admin service does not upgrade the database itself.
 
 ![Submissions table filtered by Midnight, showing one matching example recording](images/admin-search.png)

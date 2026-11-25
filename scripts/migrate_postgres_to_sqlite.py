@@ -32,6 +32,7 @@ from fingerprint_server.database.postgres.schema import (
     SQLITE_SCHEMA_VERSION,
     TABLES,
 )
+from fingerprint_server.database.sqlite.landmarks import insert_landmarks
 from fingerprint_server.database.sqlite.metadata import install_projection
 from fingerprint_server.database.sqlite.migrations import SCHEMA
 
@@ -88,7 +89,7 @@ def validate_postgres(db: psycopg.Connection, schema: str) -> tuple[str, ...]:
             FORMAT_VERSION,
             POSTINGS_VERSION,
         )
-        for provenance in (8, 9, SQLITE_SCHEMA_VERSION)
+        for provenance in (8, 9, 10, SQLITE_SCHEMA_VERSION)
     }:
         raise ValueError(f"Unsupported PostgreSQL format/provenance: {versions}")
     expected = {name: set(spec["columns"]) for name, spec in TABLES.items()}
@@ -197,7 +198,7 @@ def copy_landmarks(db: psycopg.Connection, target: sqlite3.Connection) -> tuple[
             'SELECT hash,reference_id,"offset" FROM landmarks ORDER BY hash,reference_id,"offset"'
         )
         while rows := cursor.fetchmany(10000):
-            target.executemany("INSERT INTO landmarks VALUES (?,?,?)", rows)
+            insert_landmarks(target, rows)
             for fingerprint, reference_id, offset in rows:
                 digest.update(LANDMARK_ROW.pack(3, 10, fingerprint, 8, reference_id, 4, offset))
             count += len(rows)

@@ -3,12 +3,12 @@
 [Home](../../README.md) · [Documentation](../README.md) · [Deployment](deployment.md)
 
 Only the fingerprint service database is moved. Music Assistant's own library
-database is unrelated and remains unchanged. SQLite schema 10 and PostgreSQL
+database is unrelated and remains unchanged. SQLite schema 11 and PostgreSQL
 formats 3 and 4 store the same collection using different physical layouts.
 The SQLite submission metadata projection is rebuilt from the stored documents
 when exporting from PostgreSQL; it is not an independent source of truth.
 
-For the state-code upgrade, stop all API, worker and administration processes
+For an SQLite schema upgrade, stop all API, worker and administration processes
 before starting the new version. Back up PostgreSQL separately; SQLite creates
 its usual pre-upgrade backup and needs enough free space for it. Start the
 backend before the administration service. Do not mix old and new binaries
@@ -16,7 +16,10 @@ against the same database. PostgreSQL's API/worker ownership locks do not
 detect a separately running admin service, so stopping it is an operator step.
 Older binaries cannot read the upgraded format; restoring an older backup loses
 any later writes. SQLite also needs space for the rebuilt tables and WAL; the
-upgrade and integrity checks can take time on large collections.
+upgrade and integrity checks can take time on large collections. Schema 11
+rebuilds the entire landmark index: allow space for the backup, old and new
+layouts, the migration WAL and temporary index construction. It does not run
+`VACUUM` or shrink the SQLite file automatically.
 
 ## PostgreSQL compact layout and rollback
 
@@ -150,7 +153,7 @@ database directory and configure its worker health URL as described in the
 
 Metadata is compared field by field. Every landmark is checked against the
 source-stream SHA-256 digest and row count. The exporter then builds SQLite's
-secondary indexes, checks integrity and foreign keys, sets schema 10 and analyzes
+secondary indexes, checks integrity and foreign keys, sets schema 11 and analyzes
 the result. It does **not** run worker recovery or rewrite processing states;
 ordinary SQLite startup performs its existing recovery afterward.
 

@@ -13,6 +13,7 @@ from fingerprint_server.database.codes import (
     encode_submission_state,
 )
 from fingerprint_server.database.sqlite.housekeeping import SQLiteHousekeepingMixin
+from fingerprint_server.database.sqlite.landmarks import insert_landmarks
 
 
 class StoreQueueMixin(SQLiteHousekeepingMixin, Protocol):
@@ -212,8 +213,9 @@ class StoreQueueMixin(SQLiteHousekeepingMixin, Protocol):
             )
             if inserted.rowcount:
                 internal_id = inserted.lastrowid
-                db.executemany(
-                    "INSERT INTO landmarks VALUES(?,?,?)",
+                assert internal_id is not None
+                insert_landmarks(
+                    db,
                     (
                         (bytes.fromhex(digest), internal_id, offset)
                         for digest, offset in fingerprints

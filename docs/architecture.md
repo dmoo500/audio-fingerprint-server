@@ -97,13 +97,16 @@ This is a recognition index with a durable ingestion queue, not a full music-lib
 | --- | --- | --- |
 | `submissions` | Legacy or compact JSON, queue state, attempts, retry time, error, published reference ID, FIFO admission time and background-check lifecycle | Durable processing, duplicate upload handling, bounded background admission and status; JSON includes analysis windows and supplied metadata |
 | `reference_tracks` | Internal integer ID, public acoustic reference key, metadata JSON, creation time, publication readiness, verification version and optional verified recording key | Retained acoustic variants; verified recording keys group logical recordings without merging their fingerprints |
-| `landmarks` | Ten-byte binary hash, internal reference ID and absolute offset in FFT hops | Compact searchable acoustic index; potentially many rows per reference |
+| `landmark_hashes` (SQLite) | Each distinct ten-byte hash and its internal integer ID | Shared lossless hash dictionary |
+| `landmark_postings` (SQLite) | Hash ID, internal reference ID and absolute offset in FFT hops | Searchable index; potentially many rows per reference |
+| `landmarks` (PostgreSQL) | Ten-byte hash, internal reference ID and offset | Searchable index; SQLite exposes these fields as a read-only view |
 | `enrichment_cache` | Versioned endpoint and identifier key, lookup result JSON and expiry | Cache metadata lookup results; normally empty when enrichment is disabled |
 | `service_state` | Configuration transition markers | Keep enable and disable transitions durable and idempotent |
 
 ```mermaid
 erDiagram
-    reference_tracks ||--o{ landmarks : contains
+    reference_tracks ||--o{ landmark_postings : contains
+    landmark_hashes ||--o{ landmark_postings : identifies
     reference_tracks |o--o{ submissions : "logically linked after processing"
     submissions {
         TEXT id PK
@@ -123,8 +126,12 @@ erDiagram
         TEXT metadata
         TEXT recording_key
     }
-    landmarks {
-        BLOB hash PK
+    landmark_hashes {
+        INTEGER id PK
+        BLOB hash UK
+    }
+    landmark_postings {
+        INTEGER hash_id PK, FK
         INTEGER reference_id PK, FK
         INTEGER offset PK
     }
@@ -139,6 +146,6 @@ erDiagram
     }
 ```
 
-Only `landmarks.reference_id` has a database-enforced foreign key; the submission link is set by the worker and retains the public acoustic key, not the internal integer ID. The landmark primary key is the combination of hash, reference and offset. In SQLite, the `WITHOUT ROWID` table stores that key once, and the query explicitly keeps the small query table outermost. PostgreSQL uses a heap plus a hash-first B-tree primary key and its planner selects the join strategy. Both backends index landmarks by reference for deletion and store hashes losslessly as ten bytes rather than twenty hexadecimal characters; upload documents and API reference IDs remain unchanged. Queue selection has indexes for state and due work. PostgreSQL uses bigint internal reference IDs and an explicit `queue_order` identity in place of SQLite's rowid FIFO tie-breaker. Its additional `migration_info` table records PostgreSQL format and importer source-version provenance; transient process tokens and heartbeats use `service_state`.
+In SQLite, postings have foreign keys to both the dictionary and reference; their primary key combines hash ID, reference ID and offset. The query keeps the small query table outermost and uses the dictionary's unique hash index and the postings primary key. Housekeeping removes a dictionary hash only when no remaining reference uses it. The SQLite `landmarks` view reconstructs the original rows for read-only inspection and transfer. PostgreSQL's row layout has a foreign key from each landmark to its reference and a hash-first primary key. Both backends index landmarks by reference for deletion and retain the complete ten-byte hashes; upload documents and API reference IDs remain unchanged. The submission link retains the public acoustic key rather than the internal integer ID. Queue selection has indexes for state and due work. PostgreSQL uses bigint internal reference IDs and an explicit `queue_order` identity in place of SQLite's rowid FIFO tie-breaker. Its additional `migration_info` table records PostgreSQL format and importer source-version provenance; transient process tokens and heartbeats use `service_state`.
 
 Recognition creates a connection-local temporary `query` table for the hash join; it is not persistent and disappears when the connection closes. Both backends use the same Python ranking, coverage and identifier-resolution decisions. Coverage statistics are derived from submitted windows and reference duration rather than stored in another table. SQLite WAL/SHM files are database support files, not tables. Table count therefore says little about collection size: count references and landmark rows separately. Processed submissions and published references are not automatically pruned; unused unpublished references can be removed only by the documented missing-identifier housekeeping.

@@ -5,6 +5,7 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from fingerprint_server.database.codes import SubmissionState
+from fingerprint_server.database.sqlite.landmarks import delete_reference_landmarks
 
 
 class SQLiteHousekeepingMixin(Protocol):
@@ -81,9 +82,7 @@ class SQLiteHousekeepingMixin(Protocol):
                     _sqlite.LOGGER.warning("Cannot inspect metadata of reference %s", reference_key)
                 else:
                     if isinstance(metadata, dict) and not _sqlite.has_identifier(metadata):
-                        landmarks_deleted = db.execute(
-                            "DELETE FROM landmarks WHERE reference_id=?", (reference["id"],)
-                        ).rowcount
+                        landmarks_deleted = delete_reference_landmarks(db, reference["id"])
                         db.execute("DELETE FROM reference_tracks WHERE id=?", (reference["id"],))
                         reference_deleted = True
             deleted = db.execute("DELETE FROM submissions WHERE id=?", (submission_id,)).rowcount

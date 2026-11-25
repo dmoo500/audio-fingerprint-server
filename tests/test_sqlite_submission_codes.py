@@ -5,12 +5,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from test_metadata_gate import LEGACY_LANDMARK_SCHEMA
 
 from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.review_schema import REVIEW_TABLE
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.database.sqlite.metadata import TABLE, TRIGGERS
-from fingerprint_server.database.sqlite.migrations import SCHEMA, initialize_database
+from fingerprint_server.database.sqlite.migrations import (
+    DB_SCHEMA_VERSION,
+    LANDMARK_SCHEMA,
+    SCHEMA,
+    initialize_database,
+)
 
 
 def legacy_v9(path: Path) -> None:
@@ -18,7 +24,9 @@ def legacy_v9(path: Path) -> None:
     with sqlite3.connect(path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.executescript(
-            SCHEMA.replace("state INTEGER NOT NULL, state_raw TEXT", "state TEXT NOT NULL")
+            SCHEMA.replace(LANDMARK_SCHEMA, LEGACY_LANDMARK_SCHEMA).replace(
+                "state INTEGER NOT NULL, state_raw TEXT", "state TEXT NOT NULL"
+            )
         )
         db.execute(
             TABLE.replace("state INTEGER NOT NULL,\n    state_raw TEXT,", "state TEXT NOT NULL,")
@@ -61,7 +69,7 @@ def test_v9_migration_preserves_rows_reviews_indexes_and_backup(tmp_path: Path) 
     store = Store(path)
     store.initialize()
     with store.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert db.execute("PRAGMA user_version").fetchone()[0] == DB_SCHEMA_VERSION
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert [
@@ -177,4 +185,6 @@ def test_v9_upgrade_preserves_cache_and_checks_foreign_keys(
         assert actual_bytes >= max(original_bytes, 64 * 1024 * 1024)
         assert db.execute("PRAGMA cache_size").fetchone()[0] == cache_size
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert db.execute("PRAGMA user_version").fetchone()[0] == (9 if orphan else 10)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == (
+            9 if orphan else DB_SCHEMA_VERSION
+        )

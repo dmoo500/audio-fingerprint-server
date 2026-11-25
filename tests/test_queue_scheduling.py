@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from test_metadata_gate import document
+from test_metadata_gate import document, use_legacy_landmark_layout
 from test_musicbrainz_validation import online_settings
 
 import fingerprint_server.database.sqlite as storage
@@ -169,6 +169,7 @@ def test_schema_five_migration_preserves_queue_and_pending_deadlines(tmp_path: P
         db.execute("DROP INDEX submissions_fifo")
         db.execute("ALTER TABLE submissions DROP COLUMN enqueued_at")
         db.execute("ALTER TABLE submissions DROP COLUMN background_kind")
+        use_legacy_landmark_layout(db)
         db.execute("PRAGMA user_version=5")
     store.initialize()
     assert store.claim()["id"] == "first"

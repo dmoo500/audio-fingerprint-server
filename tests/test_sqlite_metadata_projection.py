@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from test_metadata_gate import use_legacy_landmark_layout
 
 from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.sqlite import Store
@@ -23,6 +24,7 @@ def test_upgrade_projection_tracks_inserts_updates_and_deletes(tmp_path: Path) -
         ):
             db.execute(f"DROP TRIGGER {trigger}")
         db.execute("DROP TABLE submission_metadata")
+        use_legacy_landmark_layout(db)
         db.execute("PRAGMA user_version=8")
         db.executemany(
             "INSERT INTO submissions(id,document,state,created_at) VALUES(?,?,'failed',0)",
@@ -88,6 +90,7 @@ def test_explicit_upgrade_without_backup(tmp_path: Path, caplog: pytest.LogCaptu
         ):
             db.execute(f"DROP TRIGGER {trigger}")
         db.execute("DROP TABLE submission_metadata")
+        use_legacy_landmark_layout(db)
         db.execute("PRAGMA user_version=8")
     with store.owner(), store.connect() as db:
         initialize_database(db, store.path, create_backup=False)

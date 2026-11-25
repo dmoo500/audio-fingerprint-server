@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from pydantic import ValidationError
-from test_metadata_gate import document
+from test_metadata_gate import document, use_legacy_landmark_layout
 from test_musicbrainz_validation import (
     ISRC,
     MBID,
@@ -133,6 +133,35 @@ def test_missing_identifier_cleanup_rolls_back_on_error(tmp_path: Path) -> None:
     with store.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM reference_tracks").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM landmarks").fetchone()[0] == 1
+
+
+def test_cleanup_retains_shared_hashes_and_removes_unused_hashes(tmp_path: Path) -> None:
+    store = Store(tmp_path / "test.db", True)
+    store.initialize()
+    legacy_without_identifiers(store)
+    store.submit("retained", json.dumps(document()), 100)
+    store.finish(
+        "retained",
+        "published-reference",
+        document()["metadata"],
+        [("0" * 20, 1), ("1" * 20, 2)],
+        verified=True,
+    )
+    with store.connect() as db:
+        reference_id = db.execute(
+            "SELECT id FROM reference_tracks WHERE reference_key!='published-reference'"
+        ).fetchone()[0]
+        from fingerprint_server.database.sqlite.landmarks import insert_landmarks
+
+        insert_landmarks(db, [(bytes.fromhex("2" * 20), reference_id, 3)])
+    assert store.delete_missing_identifier_submission("legacy") == (True, True, 2)
+    with store.connect() as db:
+        assert [
+            row[0].hex() for row in db.execute("SELECT hash FROM landmark_hashes ORDER BY hash")
+        ] == ["0" * 20, "1" * 20]
+        assert db.execute("SELECT count(*) FROM landmarks").fetchone()[0] == 2
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert store.match([("0" * 20, 1)])[0]["reference_id"] == "published-reference"
 
 
 def test_unrelated_unlinked_submission_does_not_prevent_cleanup(tmp_path: Path) -> None:
@@ -313,6 +342,7 @@ def test_schema_four_migration_preserves_all_rows_and_grace(
             "background_kind",
         ):
             db.execute(f"ALTER TABLE submissions DROP COLUMN {column}")
+        use_legacy_landmark_layout(db)
         db.execute("PRAGMA user_version=4")
     now = 1_800_000_000.0
     monkeypatch.setattr(migrations, "time", SimpleNamespace(time=lambda: now, time_ns=lambda: 1))

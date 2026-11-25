@@ -6,6 +6,20 @@
 
 Schema 2 replaced hexadecimal TEXT hashes with ten-byte BLOBs, introduced internal integer reference IDs and used a `WITHOUT ROWID` landmark table. Public reference keys, acoustic hashes and offsets were preserved. The query-first indexed join avoided the full landmark scan seen in the initial compact-layout experiment.
 
+Schema 11 stores each distinct ten-byte hash once and uses integer IDs in its
+postings and reference index. In a local prototype using a snapshot with
+236,051,356 landmarks and 16,885,292 distinct hashes, the landmark tables and
+indexes occupied 10,960,461,824 bytes before and 8,044,195,840 bytes after
+(26.6% less). This is one collection, not a guaranteed saving. The prototype
+was vacuumed before its physical file size was measured; an automatic upgrade
+does not vacuum and therefore does not immediately shrink the file.
+
+A separate 15-minute local query benchmark compared 48 real landmark windows
+against both complete layouts. Median SQLite candidate retrieval was 448 ms
+before and 424 ms after; all candidate rows matched. This measured retrieval
+and reading, not the whole recognition request, and the shared machine and OS
+cache affected timings. It is not a production latency or capacity guarantee.
+
 | Measurement | Before | After | Interpretation |
 | --- | ---: | ---: | --- |
 | Generated v2 migration fixture, 71,954 landmarks: active SQLite pages | 16.23 MiB | 3.54 MiB | About 78% less active space for this fixture |

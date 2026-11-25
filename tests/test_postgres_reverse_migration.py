@@ -309,12 +309,15 @@ def test_existing_destination_and_unknown_format_are_rejected(
     assert not (tmp_path / "unsupported.db").exists()
 
 
+@pytest.mark.parametrize("version", [8, 9, 10])
 def test_export_accepts_previous_sqlite_provenance(
-    source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path
+    source: Path, postgres, migration: dict, reverse: dict, tmp_path: Path, version: int
 ) -> None:
     imported(source, postgres, migration)
     with postgres.transaction():
-        postgres.execute("UPDATE reverse_test.migration_info SET sqlite_schema_version=8")
+        postgres.execute(
+            "UPDATE reverse_test.migration_info SET sqlite_schema_version=%s", (version,)
+        )
     output = tmp_path / "previous-provenance.db"
     reverse["export_sqlite"](postgres, "reverse_test", output)
     with sqlite3.connect(output) as db:
