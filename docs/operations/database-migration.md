@@ -15,7 +15,8 @@ backend before the administration service. Do not mix old and new binaries
 against the same database. PostgreSQL's API/worker ownership locks do not
 detect a separately running admin service, so stopping it is an operator step.
 Older binaries cannot read the upgraded format; restoring an older backup loses
-any later writes.
+any later writes. SQLite also needs space for the rebuilt tables and WAL; the
+upgrade and integrity checks can take time on large collections.
 
 ## PostgreSQL compact layout and rollback
 

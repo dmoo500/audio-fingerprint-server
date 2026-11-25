@@ -103,6 +103,7 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
     foreign_keys = db.execute("PRAGMA foreign_keys").fetchone()[0]
     if not empty and version < 10:
         db.execute("PRAGMA foreign_keys=OFF")
+    previous_cache_size = None
     try:
         db.execute("BEGIN IMMEDIATE")
         version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -149,10 +150,15 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
             if version < 10:
                 _migrate_submission_codes(db)
                 db.execute("PRAGMA user_version=10")
-        if (empty or version < DB_SCHEMA_VERSION) and db.execute(
-            "PRAGMA foreign_key_check"
-        ).fetchone() is not None:
-            raise RuntimeError("Fingerprint database contains orphaned landmark references")
+        if empty or version < DB_SCHEMA_VERSION:
+            cache_size = db.execute("PRAGMA cache_size").fetchone()[0]
+            page_size = db.execute("PRAGMA page_size").fetchone()[0]
+            cache_bytes = -cache_size * 1024 if cache_size < 0 else cache_size * page_size
+            if cache_bytes < 64 * 1024 * 1024:
+                db.execute("PRAGMA cache_size=-65536")
+                previous_cache_size = cache_size
+            if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise RuntimeError("Fingerprint database contains orphaned landmark references")
         db.execute(
             "UPDATE submissions SET "
             "state=CASE WHEN pending_check=1 AND background_kind=0 "
@@ -166,6 +172,8 @@ def initialize_database(db: sqlite3.Connection, path: Path, *, create_backup: bo
         LOGGER.exception("Fingerprint database upgrade failed; original data retained: %s", path)
         raise
     finally:
+        if previous_cache_size is not None:
+            db.execute(f"PRAGMA cache_size={previous_cache_size}")
         if foreign_keys:
             db.execute("PRAGMA foreign_keys=ON")
 

@@ -10,7 +10,7 @@ from fingerprint_server.database.codes import SubmissionState
 from fingerprint_server.database.review_schema import REVIEW_TABLE
 from fingerprint_server.database.sqlite import Store
 from fingerprint_server.database.sqlite.metadata import TABLE, TRIGGERS
-from fingerprint_server.database.sqlite.migrations import SCHEMA
+from fingerprint_server.database.sqlite.migrations import SCHEMA, initialize_database
 
 
 def legacy_v9(path: Path) -> None:
@@ -142,3 +142,39 @@ def test_v9_migration_failure_rolls_back(tmp_path: Path, error: type[Exception])
         )
         assert db.execute("SELECT count(*) FROM musicbrainz_reviews").fetchone()[0] == 1
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize("cache_size", [-2000, -131072, 512, 32768])
+@pytest.mark.parametrize("orphan", [False, True])
+def test_v9_upgrade_preserves_cache_and_checks_foreign_keys(
+    tmp_path: Path, cache_size: int, orphan: bool
+) -> None:
+    path = tmp_path / "legacy.db"
+    legacy_v9(path)
+    with sqlite3.connect(path) as db:
+        db.execute(f"PRAGMA cache_size={cache_size}")
+        if orphan:
+            db.execute("INSERT INTO landmarks VALUES(?,999,0)", (bytes(10),))
+            db.commit()
+        db.execute("PRAGMA foreign_keys=ON")
+        observed: list[int] = []
+
+        def trace(statement: str) -> None:
+            if statement == "PRAGMA foreign_key_check":
+                observed.append(db.execute("PRAGMA cache_size").fetchone()[0])
+
+        db.set_trace_callback(trace)
+        if orphan:
+            with pytest.raises(RuntimeError, match="orphaned"):
+                initialize_database(db, path, create_backup=False)
+        else:
+            initialize_database(db, path, create_backup=False)
+        assert len(observed) == 1
+        page_size = db.execute("PRAGMA page_size").fetchone()[0]
+        original_bytes = -cache_size * 1024 if cache_size < 0 else cache_size * page_size
+        actual = observed[0]
+        actual_bytes = -actual * 1024 if actual < 0 else actual * page_size
+        assert actual_bytes >= max(original_bytes, 64 * 1024 * 1024)
+        assert db.execute("PRAGMA cache_size").fetchone()[0] == cache_size
+        assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == (9 if orphan else 10)
