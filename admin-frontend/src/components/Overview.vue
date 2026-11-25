@@ -231,7 +231,8 @@ onMounted(() => {
         not a lifetime success rate or a count of unique albums.
       </p>
       <p v-if="artwork.unknown" class="muted">
-        {{ artwork.unknown.toLocaleString() }} cached results have an unknown state.
+        {{ artwork.unknown.toLocaleString() }} cached results have an unknown
+        state.
       </p>
     </template>
     <p v-else class="muted">
