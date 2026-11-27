@@ -7,12 +7,21 @@
 Schema 2 replaced hexadecimal TEXT hashes with ten-byte BLOBs, introduced internal integer reference IDs and used a `WITHOUT ROWID` landmark table. Public reference keys, acoustic hashes and offsets were preserved. The query-first indexed join avoided the full landmark scan seen in the initial compact-layout experiment.
 
 Schema 11 stores each distinct ten-byte hash once and uses integer IDs in its
-postings and reference index. In a local prototype using a snapshot with
-236,051,356 landmarks and 16,885,292 distinct hashes, the landmark tables and
-indexes occupied 10,960,461,824 bytes before and 8,044,195,840 bytes after
-(26.6% less). This is one collection, not a guaranteed saving. The prototype
-was vacuumed before its physical file size was measured; an automatic upgrade
-does not vacuum and therefore does not immediately shrink the file.
+postings and reference index. Previously, the same hash was stored with each
+landmark occurrence and repeated in the reference index. The shared dictionary
+replaces these repeated hashes with smaller integer IDs; it adds its own table
+and index, so the saving depends on how often hashes recur. All hashes, reference
+links and offsets are retained exactly: this does not remove fingerprints or
+merge recordings.
+
+In the 2026-11-27 backup, 265,109,078 landmark occurrences share 17,659,127
+distinct hashes, about 15 occurrences per hash on average. In a separate local
+prototype using a snapshot with 236,051,356 landmarks and 16,885,292 distinct
+hashes, the landmark tables and indexes occupied 10,960,461,824 bytes before and
+8,044,195,840 bytes after (26.6% less). This is one collection, not a guaranteed
+saving. The prototype was vacuumed before its physical file size was measured;
+an automatic upgrade does not vacuum and therefore does not immediately shrink
+the file.
 
 A separate 15-minute local query benchmark compared 48 real landmark windows
 against both complete layouts. Median SQLite candidate retrieval was 448 ms
@@ -70,7 +79,9 @@ upgrade: **12,111.45 MiB occupied**, **3,852 stored references** and
 22,250.43 MiB, including 10,138.97 MiB of reusable pages; its file size excludes
 the live database's WAL. The backup also contained 3,889 submissions. The
 collection changed between snapshots 6 and 7, so their sizes do not measure the
-saving from the schema upgrade.
+saving from the schema upgrade. The reusable pages are not lost data or extra
+space returned to the operating system: SQLite keeps them in the file for future
+writes. The migration does not run `VACUUM` to shrink that file.
 
 Occupied space rose from 1,418.54 to 2,111.26 MiB; published references from 460 to 715;
 and stored landmarks from 38,637,618 to 56,424,148. Stored acoustic references, including
