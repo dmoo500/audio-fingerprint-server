@@ -38,10 +38,11 @@ The deployed snapshot contained 274 references. It is a historical snapshot, not
 
 ## Deployed SQLite storage snapshots
 
-Three read-only SQLite measurements using schema 7 illustrate how the database grew as
-references and landmarks were added. They are an example of possible growth, not
-a forecast: future storage needs depend on the contributed recordings. These
-measurements predate the schema 8 reference index and do not represent PostgreSQL.
+Snapshots 1–3 are read-only SQLite measurements using schema 7. They illustrate
+how the database grew as references and landmarks were added. They are an example
+of possible growth, not a forecast: future storage needs depend on the contributed
+recordings. These measurements predate the schema 8 reference index and do not
+represent PostgreSQL.
 
 The chart uses a separate vertical scale for each measurement; line slopes across
 different scales are not directly comparable.
@@ -62,6 +63,14 @@ unpublished ones; the earlier version of this diagram displayed published counts
 Snapshot 6 measures the live SQLite database after the return from PostgreSQL:
 **6,673.21 MiB occupied**, **1,714 stored references** and **116,999,128 landmarks**.
 The main database measured 6,674.29 MiB including reusable pages, excluding WAL.
+
+Snapshot 7 measures a consistent SQLite backup from 2026-11-27 after the schema 11
+upgrade: **12,111.45 MiB occupied**, **3,852 stored references** and
+**265,109,078 landmarks**, with 17,659,127 distinct hashes. The backup file was
+22,250.43 MiB, including 10,138.97 MiB of reusable pages; its file size excludes
+the live database's WAL. The backup also contained 3,889 submissions. The
+collection changed between snapshots 6 and 7, so their sizes do not measure the
+saving from the schema upgrade.
 
 Occupied space rose from 1,418.54 to 2,111.26 MiB; published references from 460 to 715;
 and stored landmarks from 38,637,618 to 56,424,148. Stored acoustic references, including

@@ -10,7 +10,8 @@
       {"label": "3", "size_mib": 2111.26, "references": 830, "landmarks": 56424148, "source": "Historical live schema 7 snapshot 3"},
       {"label": "4", "size_mib": 3299.09, "references": 845, "landmarks": 57373098, "source": "2026-11-17 pre-PostgreSQL backup; occupied pages, not 4.40 GiB file size"},
       {"label": "5", "size_mib": 3336.75, "size_basis": "file", "references": 846, "landmarks": 57377988, "source": "2026-11-17 isolated compact-runtime rehearsal; new verified SQLite export file size (occupied pages not separately measured), including synthetic changes; not a current live export"},
-      {"label": "6", "size_mib": 6673.21, "references": 1714, "landmarks": 116999128, "source": "2026-11-19T22:14:17Z live SQLite after PostgreSQL cutover; one read transaction measured 1708619 pages, 278 free pages, 4096 bytes per page, and exact counts"}
+      {"label": "6", "size_mib": 6673.21, "references": 1714, "landmarks": 116999128, "source": "2026-11-19T22:14:17Z live SQLite after PostgreSQL cutover; one read transaction measured 1708619 pages, 278 free pages, 4096 bytes per page, and exact counts"},
+      {"label": "7", "size_mib": 12111.45, "references": 3852, "landmarks": 265109078, "source": "2026-11-27 consistent SQLite schema 11 backup; read-only measurement of 5696109 pages, 2595577 free pages, 4096 bytes per page, and exact counts"}
     ]
   },
   "psql": {
