@@ -23,6 +23,14 @@ saving. The prototype was vacuumed before its physical file size was measured;
 an automatic upgrade does not vacuum and therefore does not immediately shrink
 the file.
 
+```mermaid
+xychart-beta
+    title "Landmark tables and indexes: local schema 11 prototype"
+    x-axis ["Before schema 11", "Schema 11"]
+    y-axis "Occupied GiB" 0 --> 12
+    bar [10.21, 7.49]
+```
+
 A separate 15-minute local query benchmark compared 48 real landmark windows
 against both complete layouts. Median SQLite candidate retrieval was 448 ms
 before and 424 ms after; all candidate rows matched. This measured retrieval
