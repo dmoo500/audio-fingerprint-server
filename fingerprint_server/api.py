@@ -98,6 +98,7 @@ def extract_query(raw: bytes, sample_rate: int, channels: int) -> list[tuple[str
 class PcmParameters(BaseModel):
     sample_rate: Annotated[int, Field(ge=8000, le=192000)]
     channels: Annotated[int, Field(ge=1, le=2)] = 1
+    include_candidates: bool = False
 
 
 def create_router() -> web.RouteTableDef:
@@ -346,7 +347,9 @@ def create_router() -> web.RouteTableDef:
         async with recognition_slot(request):
             raw = await bounded_body(request, min(MAX_PCM_BYTES, 15 * sample_rate * channels * 4))
             query = await run_sync(extract_query, raw, sample_rate, channels)
-            result = await match_query(request, query)
+            result = await match_query(
+                request, query, include_candidates=parameters.include_candidates
+            )
             request[RECOGNITION_OUTCOME] = result["status"]
             return web.json_response(result)
 
@@ -365,7 +368,12 @@ def create_router() -> web.RouteTableDef:
             request[RECOGNITION_OUTCOME] = result["status"]
             return web.json_response(result)
 
-    async def match_query(request: web.Request, query: list[tuple[str, int]]) -> dict[str, Any]:
+    async def match_query(
+        request: web.Request,
+        query: list[tuple[str, int]],
+        *,
+        include_candidates: bool = False,
+    ) -> dict[str, Any]:
         if not query:
             LOGGER.info("Recognition decision=no_match reason=no_landmarks")
             return {"status": "no_match", "reason": "No acoustic landmarks", "match": None}
@@ -395,12 +403,16 @@ def create_router() -> web.RouteTableDef:
             best["offset_seconds"],
             candidates[1]["matched_landmarks"] if len(candidates) > 1 else 0,
         )
-        if (
-            best["matched_landmarks"] < settings.minimum_matches
-            or best["match_fraction"] < settings.minimum_fraction
-            or best["matched_span_seconds"] < 1
-            or best["offset_seconds"] < -0.1
-        ):
+
+        def eligible(candidate: dict[str, Any]) -> bool:
+            return (
+                candidate["matched_landmarks"] >= settings.minimum_matches
+                and candidate["match_fraction"] >= settings.minimum_fraction
+                and candidate["matched_span_seconds"] >= 1
+                and candidate["offset_seconds"] >= -0.1
+            )
+
+        if not eligible(best):
             LOGGER.info("Recognition decision=no_match reason=acceptance_threshold")
             return {"status": "no_match", "match": None}
         if len(candidates) > 1 and (
@@ -408,7 +420,18 @@ def create_router() -> web.RouteTableDef:
             or best["matched_landmarks"] - candidates[1]["matched_landmarks"] < 8
         ):
             LOGGER.info("Recognition decision=ambiguous")
-            return {"status": "ambiguous", "match": None}
+            result: dict[str, Any] = {"status": "ambiguous", "match": None}
+            if include_candidates:
+                result["candidates"] = [
+                    {
+                        "metadata": candidate["metadata"],
+                        "match_fraction": candidate["match_fraction"],
+                        "reference_id": candidate["reference_id"],
+                    }
+                    for candidate in candidates[:2]
+                    if eligible(candidate)
+                ]
+            return result
         LOGGER.info("Recognition decision=matched")
         return {"status": "matched", "match": best}
 

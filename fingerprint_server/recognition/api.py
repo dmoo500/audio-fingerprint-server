@@ -44,11 +44,27 @@ class UpstreamMatch(BaseModel):
     metadata: Song
 
 
+class Candidate(BaseModel):
+    """Unconfirmed song and fraction of capture landmarks that match it."""
+
+    metadata: Song
+    match_fraction: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
+class UpstreamCandidate(Candidate):
+    """Include the private reference needed to request artwork."""
+
+    reference_id: str | None = None
+
+
 class RecognitionResult(BaseModel):
-    """Public outcome, deliberately excluding scores and internal reference IDs."""
+    """Public outcome without internal reference IDs."""
 
     status: Literal["matched", "no_match", "ambiguous"]
     match: Song | None
+    candidates: list[Candidate] | None = Field(
+        default=None, max_length=2, exclude_if=lambda value: value is None
+    )
 
 
 class RecordingCount(BaseModel):
@@ -101,6 +117,19 @@ def create_routes(application: web.Application) -> None:
     availability_checked = float("-inf")
     available = False
     artwork_tokens: dict[str, tuple[str, float]] = {}
+
+    def artwork_path(reference: object) -> str | None:
+        if not isinstance(reference, str) or not re.fullmatch(r"[a-f0-9]{64}", reference):
+            return None
+        now = time.monotonic()
+        for token, (_, expires) in list(artwork_tokens.items()):
+            if expires < now:
+                del artwork_tokens[token]
+        if len(artwork_tokens) >= 4096:
+            del artwork_tokens[next(iter(artwork_tokens))]
+        token = secrets.token_urlsafe(24)
+        artwork_tokens[token] = (reference, now + 600)
+        return f"/api/artwork/{token}"
 
     async def statistics(request: web.Request) -> web.Response:
         nonlocal statistics_checked, statistics_count, statistics_retry
@@ -238,7 +267,8 @@ def create_routes(application: web.Application) -> None:
             result = await upstream(
                 request.app[CLIENT_KEY],
                 "POST",
-                f"/api/v1/dejavu/recognize?sample_rate={sample_rate}&channels=1",
+                f"/api/v1/dejavu/recognize?sample_rate={sample_rate}&channels=1"
+                "&include_candidates=true",
                 content=raw,
             )
             try:
@@ -248,25 +278,33 @@ def create_routes(application: web.Application) -> None:
                     raise ValueError("Expected recognition result")
                 status = data.get("status")
                 song = None
+                candidates = None
+                upstream_candidates: list[UpstreamCandidate] = []
                 artwork_reference = None
                 if status == "matched":
                     song = UpstreamMatch.model_validate(data.get("match")).metadata
                     song.artwork = None
                     reference = data["match"].get("reference_id", "")
-                    if isinstance(reference, str) and re.fullmatch(r"[a-f0-9]{64}", reference):
+                    song.artwork = artwork_path(reference)
+                    if song.artwork is not None:
                         artwork_reference = reference
-                        now = time.monotonic()
-                        for token, (_, expires) in list(artwork_tokens.items()):
-                            if expires < now:
-                                del artwork_tokens[token]
-                        if len(artwork_tokens) >= 4096:
-                            del artwork_tokens[next(iter(artwork_tokens))]
-                        token = secrets.token_urlsafe(24)
-                        artwork_tokens[token] = (reference, now + 600)
-                        song.artwork = f"/api/artwork/{token}"
                 elif data.get("match") is not None:
                     raise ValueError("Unexpected recognition match")
-                public = RecognitionResult.model_validate({"status": status, "match": song})
+                if status == "ambiguous":
+                    if "candidates" not in data:
+                        raise ValueError("Missing recognition candidates")
+                    upstream_candidates = TypeAdapter(
+                        Annotated[list[UpstreamCandidate], Field(max_length=2)]
+                    ).validate_python(data["candidates"])
+                    candidates = [candidate.model_dump() for candidate in upstream_candidates]
+                public = RecognitionResult.model_validate(
+                    {"status": status, "match": song, "candidates": candidates}
+                )
+                if public.candidates is not None:
+                    for candidate, source in zip(
+                        public.candidates, upstream_candidates, strict=True
+                    ):
+                        candidate.metadata.artwork = artwork_path(source.reference_id)
             except (ValidationError, ValueError, UnicodeError) as err:
                 LOGGER.error("Recognition upstream returned an invalid match response")
                 raise HTTPError(502, "Recognition returned an invalid response.") from err

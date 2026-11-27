@@ -89,10 +89,21 @@ class Match(BaseModel):
     metadata: dict[str, Any]
 
 
+class RecognitionCandidate(BaseModel):
+    metadata: dict[str, Any]
+    match_fraction: float = Field(ge=0, le=1)
+    reference_id: str
+
+
 class Recognition(BaseModel):
     status: Literal["matched", "no_match", "ambiguous"]
     match: Match | None
     reason: str = Field(default="", description="Only present for some no_match responses.")
+    candidates: list[RecognitionCandidate] = Field(
+        default_factory=list,
+        max_length=2,
+        description="Only returned for ambiguous PCM requests with include_candidates=true.",
+    )
 
 
 class Error(BaseModel):
@@ -355,6 +366,15 @@ def build_schema(gateway: bool = True) -> dict[str, Any]:
                         "title": "Channels",
                     },
                 },
+                {
+                    "in": "query",
+                    "name": "include_candidates",
+                    "required": False,
+                    "schema": {"type": "boolean", "default": False},
+                    "description": (
+                        "Include individually qualified candidates for ambiguous results."
+                    ),
+                },
             ]
             operation["requestBody"] = {
                 "required": True,
@@ -365,7 +385,8 @@ def build_schema(gateway: bool = True) -> dict[str, Any]:
             operation["description"] += (
                 "Raw interleaved little-endian float32 PCM, normalized finite samples in [-1,1], "
                 "3-15 seconds, 8000-192000 Hz, 1-2 channels. No WAV/container or multipart data. "
-                "Byte limit is 15 * sample_rate * channels * 4. match is null unless matched."
+                "Byte limit is 15 * sample_rate * channels * 4. match is null unless matched. "
+                "Candidate fractions are not probabilities."
             )
         for code in codes:
             operation["responses"][str(code)] = {

@@ -47,9 +47,12 @@ The page displays the active audio track's device name after capture starts.
 The name stays in the browser and is not sent to the server.
 
 Microphone audio is transient: it is not saved, indexed, or used to grow the
-collection. Recognition results expose only title, artists and album. Internal
-reference IDs, match scores, retained metadata and upstream error details stay
-private. The authenticated recognition API remains available for clients.
+collection. Recognition results expose title, artists and album. For an ambiguous result, the page can show
+up to two unconfirmed possibilities that each meet the recognition threshold, and the percentage
+of capture landmarks matching each one. This percentage is not a probability that the song is
+correct. Insufficient evidence still produces no suggestions. Internal reference IDs, other
+retained metadata and upstream error details stay private. Unconfirmed possibilities are not
+added to history. The authenticated recognition API remains available for clients.
 
 API diagnostics log capture duration, sample rate, RMS/peak levels, landmark and
 candidate counts, aggregate match evidence and the acceptance decision. They do
@@ -103,8 +106,8 @@ the public cover URL, but no provider links, fingerprints, account data or dates
 
 ## Album artwork
 
-The song appears immediately; the cover can arrive later. If no cover loads,
-the record illustration stays in place. The browser loads images directly from
+The song or possible recordings appear immediately; covers can arrive later. If no cover loads,
+a placeholder stays in place. The browser loads images directly from
 Cover Art Archive or archive.org, which receives the browser's IP address.
 
 For a local deployment with Admin and Recognition, append
@@ -122,7 +125,7 @@ the fingerprint or history database.
 <details>
 <summary>How the worker finds and caches covers</summary>
 
-Successful matches offer a separate, short-lived artwork URL on this service.
+Successful matches and unconfirmed candidates offer separate, short-lived artwork URLs on this service.
 The song card appears immediately, with a decorative record placeholder in the
 reserved cover area while artwork is loading
 or when artwork is absent or unavailable. Loading the image does not move the title.

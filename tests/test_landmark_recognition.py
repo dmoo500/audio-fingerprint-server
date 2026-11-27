@@ -131,3 +131,70 @@ async def test_query_schema_rejects_encoded_documents(client) -> None:
         content=json.dumps(query() | {"fingerprints_encoding": "sha1-80-offset-delta-v1"}),
     )
     assert response.status_code == 422
+
+
+async def test_optional_ambiguous_candidates_keep_normal_recognition_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = create_app(settings(tmp_path))
+    candidate = {
+        "matched_landmarks": 40,
+        "match_fraction": 0.04,
+        "matched_span_seconds": 2,
+        "offset_seconds": 1,
+        "metadata": {"title": "First", "artists": ["Artist"], "album": "Album"},
+        "reference_id": "private",
+    }
+    weaker = candidate | {"matched_landmarks": 29, "metadata": {"title": "Weak"}}
+    async with AsyncClient(application) as client:
+        monkeypatch.setattr(application[STORE], "match", lambda _: [candidate, weaker])
+        samples = audio(3)
+        default = await recognize(client, samples)
+        assert default.json() == {"status": "ambiguous", "match": None}
+        response = await client.post(
+            "/api/v1/dejavu/recognize?sample_rate=44100&include_candidates=true",
+            content=samples.tobytes(),
+            headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
+        )
+        assert response.json() == {
+            "status": "ambiguous",
+            "match": None,
+            "candidates": [
+                {
+                    "metadata": candidate["metadata"],
+                    "match_fraction": 0.04,
+                    "reference_id": candidate["reference_id"],
+                }
+            ],
+        }
+        monkeypatch.setattr(application[STORE], "match", lambda _: [weaker])
+        response = await client.post(
+            "/api/v1/dejavu/recognize?sample_rate=44100&include_candidates=true",
+            content=samples.tobytes(),
+            headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
+        )
+        assert response.json() == {"status": "no_match", "match": None}
+
+
+async def test_real_ambiguous_pcm_exposes_candidates_only_when_requested(client) -> None:
+    connection, _ = client
+    samples = audio()
+    await submit(connection, document(samples))
+    second = document(samples)
+    second["fingerprints"] = second["fingerprints"][:-1]
+    second["metadata"]["title"] = "Another interpretation"
+    await submit(connection, second)
+    excerpt = samples[50 * HOP_SIZE : 50 * HOP_SIZE + 5 * SAMPLE_RATE]
+    response = await connection.post(
+        "/api/v1/dejavu/recognize?sample_rate=44100&include_candidates=true",
+        content=excerpt.tobytes(),
+        headers={"X-API-Key": READ, "Content-Type": "application/octet-stream"},
+    )
+    result = response.json()
+    assert result["status"] == "ambiguous"
+    assert result["match"] is None
+    assert {candidate["metadata"]["title"] for candidate in result["candidates"]} == {
+        "Synthetic reference",
+        "Another interpretation",
+    }
+    assert all(len(candidate["reference_id"]) == 64 for candidate in result["candidates"])

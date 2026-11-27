@@ -119,7 +119,11 @@ def test_facade_keeps_credentials_and_internal_metadata_on_server() -> None:
                     "references": {"total": 100},
                 },
             )
-        assert dict(request.url.params) == {"sample_rate": "8000", "channels": "1"}
+        assert dict(request.url.params) == {
+            "sample_rate": "8000",
+            "channels": "1",
+            "include_candidates": "true",
+        }
         assert request.content == PCM
         return httpx.Response(200, json=matched())
 
@@ -199,13 +203,98 @@ async def test_public_origin_behind_tls_proxy(proxy: str, status: int) -> None:
 @pytest.mark.parametrize("outcome", ["no_match", "ambiguous"])
 def test_unmatched_outcomes_remain_distinct(outcome: str) -> None:
     """Do not invent a successful match for ambiguous or absent evidence."""
-    transport = httpx.MockTransport(
-        lambda _: httpx.Response(200, json={"status": outcome, "match": None})
-    )
+    body: dict[str, object] = {"status": outcome, "match": None}
+    if outcome == "ambiguous":
+        body["candidates"] = []
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json=body))
     with TestClient(create_app(settings(), transport=transport)) as client:
         response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
         assert response.status_code == 200
-        assert response.json() == {"status": outcome, "match": None}
+        assert response.json() == body
+
+
+def test_ambiguous_candidates_expose_only_public_metadata() -> None:
+    candidate = {
+        "metadata": {
+            "title": "Possible song",
+            "artists": ["Example artist"],
+            "album": "Example album",
+            "private": "do not expose",
+            "artwork": "https://example.invalid/private",
+        },
+        "match_fraction": 0.125,
+        "reference_id": "private",
+    }
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            200, json={"status": "ambiguous", "match": None, "candidates": [candidate]}
+        )
+    )
+    with TestClient(create_app(settings(), transport=transport)) as client:
+        response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+    assert response.json() == {
+        "status": "ambiguous",
+        "match": None,
+        "candidates": [
+            {
+                "metadata": {
+                    "title": "Possible song",
+                    "artists": ["Example artist"],
+                    "album": "Example album",
+                },
+                "match_fraction": 0.125,
+            }
+        ],
+    }
+
+
+def test_ambiguous_candidate_artwork_uses_private_short_lived_references() -> None:
+    references = ["a" * 64, "b" * 64]
+    artwork_requests = []
+    candidates = [
+        {
+            "metadata": {
+                "title": f"Possible song {index}",
+                "artists": ["Example artist"],
+                "album": "Example album",
+                "artwork": "https://example.invalid/private",
+            },
+            "match_fraction": 0.125,
+            "reference_id": reference,
+        }
+        for index, reference in enumerate(references)
+    ]
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if "/artwork/" in request.url.path:
+            artwork_requests.append(request.url.path.rsplit("/", 1)[-1])
+            return httpx.Response(200, json={"status": "missing", "url": None})
+        return httpx.Response(
+            200, json={"status": "ambiguous", "match": None, "candidates": candidates}
+        )
+
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(upstream))) as client:
+        response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["match"] is None
+        paths = [candidate["metadata"]["artwork"] for candidate in result["candidates"]]
+        assert len(set(paths)) == 2
+        assert all(path.startswith("/api/artwork/") for path in paths)
+        assert all(reference not in response.text for reference in references)
+        assert "example.invalid" not in response.text
+        for path in paths:
+            assert client.get(path).json() == {"status": "missing", "url": None}
+    assert artwork_requests == references
+
+
+def test_missing_ambiguous_candidates_is_an_upstream_error() -> None:
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"status": "ambiguous", "match": None})
+    )
+    with TestClient(create_app(settings(), transport=transport)) as client:
+        response = client.post("/api/recognize?sample_rate=8000", headers=HEADERS, content=PCM)
+    assert response.status_code == 502
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,7 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h } from "vue";
 import App from "../src/App.vue";
+import CandidateArtwork from "../src/CandidateArtwork.vue";
 import HistoryArtwork from "../src/HistoryArtwork.vue";
 import SongShareLink from "../src/SongShareLink.vue";
 
@@ -123,6 +124,25 @@ it("loads private artwork only when its thumbnail becomes visible", async () => 
       title: "Test track",
       art_url: url,
     }),
+  );
+});
+
+it("shows candidate artwork when available and keeps the placeholder if it fails", async () => {
+  fetchMock.mockResolvedValue(
+    json({ status: "ready", url: "https://coverartarchive.org/fixture" }),
+  );
+  wrapper = mount(CandidateArtwork, {
+    props: { artwork: "/api/artwork/fixture" },
+  });
+  await flushPromises();
+  const image = wrapper.get("img");
+  expect(image.attributes("hidden")).toBeDefined();
+  await image.trigger("load");
+  expect(image.attributes("hidden")).toBeUndefined();
+  await image.trigger("error");
+  expect(image.attributes("hidden")).toBeDefined();
+  expect(wrapper.get(".history-thumbnail").attributes("title")).toContain(
+    "could not be loaded",
   );
 });
 
@@ -347,12 +367,65 @@ describe("recognition page", () => {
     ["ambiguous", "A few possibilities. No sure answer."],
     ["invalid", "We couldn’t catch that."],
   ])("handles %s without inventing a match", async (status, message) => {
-    recognitionResult = { status, match: null };
+    recognitionResult = {
+      status,
+      match: null,
+      ...(status === "ambiguous" ? { candidates: [] } : {}),
+    };
     const view = await open();
     await view.get("#listen").trigger("click");
     await flushPromises();
     expect(view.get("#status-title").text()).toBe(message);
     expect(view.find("#result").exists()).toBe(false);
+  });
+
+  it("shows unconfirmed candidates and clears them for the next recognition", async () => {
+    recognitionResult = {
+      status: "ambiguous",
+      match: null,
+      candidates: [
+        {
+          metadata: {
+            title: "<Example song>",
+            artists: ["Example artist"],
+            album: "Example album",
+            artwork: "/api/artwork/fixture",
+          },
+          match_fraction: 0.125,
+        },
+      ],
+    };
+    const view = await open();
+    await view.get("#listen").trigger("click");
+    await flushPromises();
+    expect(view.get(".candidate-results").text()).toContain("<Example song>");
+    expect(view.get(".candidate-results").text()).toContain("13% matching");
+    expect(view.get(".candidate-results").text()).toContain(
+      "not the probability",
+    );
+    expect(view.find("#result").exists()).toBe(false);
+    expect(view.find(".candidate-results a").exists()).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/artwork/fixture",
+      expect.objectContaining({ credentials: "omit" }),
+    );
+    recognitionResult = { status: "no_match", match: null };
+    await view.get("#listen").trigger("click");
+    await flushPromises();
+    expect(view.find(".candidate-results").exists()).toBe(false);
+  });
+
+  it("rejects malformed candidate results", async () => {
+    recognitionResult = {
+      status: "ambiguous",
+      match: null,
+      candidates: [{ metadata: { title: "Incomplete" }, match_fraction: 2 }],
+    };
+    const view = await open();
+    await view.get("#listen").trigger("click");
+    await flushPromises();
+    expect(view.get("#status-title").text()).toBe("We couldn’t catch that.");
+    expect(view.find(".candidate-results").exists()).toBe(false);
   });
 
   it("shows microphone denial without sending audio", async () => {

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
+import CandidateArtwork from "./CandidateArtwork.vue";
 import SongResult from "./SongResult.vue";
-import type { Song } from "./types";
+import type { Candidate, Song } from "./types";
 
 const props = defineProps<{
   available: boolean;
@@ -13,6 +14,7 @@ const title = ref("Good music deserves a name.");
 const status = ref("Tap to listen. Keep the music nearby.");
 const microphone = ref("");
 const song = ref<Song | null>(null);
+const candidates = ref<Candidate[]>([]);
 const recording = ref(false);
 const listening = ref(false);
 const canCancel = ref(false);
@@ -22,6 +24,7 @@ let controller: AbortController | undefined;
 async function listen() {
   if (controller || !props.available) return;
   song.value = null;
+  candidates.value = [];
   if (
     !window.isSecureContext ||
     !navigator.mediaDevices?.getUserMedia ||
@@ -97,7 +100,14 @@ async function listen() {
       title.value = "Not in tune this time.";
       status.value =
         "Try closer to the music. This song or passage may not be in our collection yet.";
-    } else if (data.status === "ambiguous" && data.match === null) {
+    } else if (
+      data.status === "ambiguous" &&
+      data.match === null &&
+      Array.isArray(data.candidates) &&
+      data.candidates.length <= 2 &&
+      data.candidates.every(isCandidate)
+    ) {
+      candidates.value = data.candidates;
       title.value = "A few possibilities. No sure answer.";
       status.value = "Try another part of the song with less background noise.";
     } else {
@@ -146,6 +156,17 @@ function isSong(value: unknown): value is Song {
     value.artists.every((artist: unknown) => typeof artist === "string") &&
     typeof value.album === "string" &&
     (value.artwork === undefined || typeof value.artwork === "string")
+  );
+}
+
+function isCandidate(value: unknown): value is Candidate {
+  return (
+    isRecord(value) &&
+    isSong(value.metadata) &&
+    typeof value.match_fraction === "number" &&
+    Number.isFinite(value.match_fraction) &&
+    value.match_fraction >= 0 &&
+    value.match_fraction <= 1
   );
 }
 
@@ -223,6 +244,30 @@ onUnmounted(() => {
       Cancel
     </button>
     <SongResult v-if="song" :song="song" />
+    <section
+      v-if="candidates.length"
+      class="candidate-results"
+      aria-labelledby="candidate-heading"
+    >
+      <h3 id="candidate-heading">Possible recordings</h3>
+      <p class="fine">
+        These are not confirmed matches. Percentages show how much of the audio
+        fingerprint matches, not the probability that a song is correct.
+      </p>
+      <ol>
+        <li v-for="(candidate, index) in candidates" :key="index">
+          <CandidateArtwork :artwork="candidate.metadata.artwork" />
+          <div class="candidate-details">
+            <strong>{{ candidate.metadata.title }}</strong>
+            <span>{{ candidate.metadata.artists.join(", ") }}</span>
+            <span class="fine">{{ candidate.metadata.album }}</span>
+            <span class="fine">
+              {{ Math.round(candidate.match_fraction * 100) }}% matching
+            </span>
+          </div>
+        </li>
+      </ol>
+    </section>
     <p id="microphone" class="fine">{{ microphone }}</p>
     <p id="privacy" class="privacy">
       Only listens when you ask. Your short recording is processed on the

@@ -119,6 +119,12 @@ All mutation/status calls require the upload key; recognition requires the read 
   `application/octet-stream`, little-endian float32 PCM, 3 to 15 seconds,
   8 to 192 kHz, one or two channels. No audio file/container decoding.
   Returns `matched`, `no_match` or `ambiguous`; `match` is null unless matched.
+  With the optional `include_candidates=true`, an `ambiguous` response also includes
+  `candidates`, containing at most two individually qualified entries with `metadata`,
+  `reference_id` and `match_fraction`. This fraction is the proportion of query landmarks matching a consistent
+  offset, not the probability that a recording is correct. Without the option, responses are
+  unchanged. `no_match` does not return candidates. Deploy the updated fingerprint API to all
+  replicas before updating the recognition app, which requests this option.
 - `POST /api/v1/dejavu/recognize/landmarks`: read-authenticated JSON query with
   precomputed capture-relative landmarks, at most 10,000 pairs and 512,000 bytes.
   Uses the same recognition result, thresholds, backend request budget and

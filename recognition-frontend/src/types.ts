@@ -5,6 +5,11 @@ export interface Song {
   artwork?: string;
 }
 
+export interface Candidate {
+  metadata: Song;
+  match_fraction: number;
+}
+
 export interface CaptureResult {
   bytes: ArrayBuffer;
   sampleRate: number;
